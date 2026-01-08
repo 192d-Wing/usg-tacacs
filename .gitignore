@@ -6,3 +6,10 @@
 */.DS_Store
 .idea
 .vscode
+
+# Security audit documents (sensitive - do not commit to public repos)
+SECURITY_AUDIT.md
+SECURITY_REMEDIATION_PLAN.md
+security-audit/
+*.pentest
+*.vuln
