@@ -1,11 +1,40 @@
+// SPDX-License-Identifier: Apache-2.0
+//! TACACS+ authorization policy engine.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AC-3 (Access Enforcement)**: Enforces authorization rules based on user,
+//!   group membership, and command patterns.
+//!
+//! - **AC-6 (Least Privilege)**: Supports fine-grained command authorization to
+//!   restrict users to minimum required privileges.
+//!
+//! - **SI-10 (Information Input Validation)**: Validates policy regex patterns
+//!   with size limits to prevent ReDoS attacks (CWE-1333).
+
 use anyhow::{Context, Result, anyhow};
 use jsonschema::Draft;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+/// Maximum compiled regex size in bytes to prevent ReDoS attacks (CWE-1333).
+///
+/// # NIST Controls
+/// - **SI-10**: Limits regex complexity to prevent denial-of-service via
+///   exponentially complex patterns.
+///
+/// The default limit of 1MB is generous for authorization patterns while
+/// preventing pathological cases like `(a+)+$` from consuming excessive CPU.
+const MAX_REGEX_SIZE: usize = 1024 * 1024; // 1MB
+
+/// Maximum regex nesting depth to prevent stack overflow.
+const MAX_REGEX_NEST_LEVEL: u32 = 100;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -438,9 +467,25 @@ pub fn normalize_command(cmd: &str) -> String {
     result
 }
 
+/// Compile a policy pattern into a regex with security limits.
+///
+/// # NIST Controls
+/// - **SI-10 (Information Input Validation)**: Applies size and complexity limits
+///   to prevent ReDoS attacks (CWE-1333). Patterns are anchored for full-match
+///   semantics.
+///
+/// # Security
+/// The regex is compiled with:
+/// - Size limit of 1MB to prevent memory exhaustion
+/// - Nesting limit of 100 to prevent stack overflow
+/// - Full-string anchoring to enforce exact command matching
 fn compile_pattern(raw: &str) -> Result<Regex> {
     let anchored = format!("^(?:{})$", raw);
-    Regex::new(&anchored).context("invalid regex")
+    RegexBuilder::new(&anchored)
+        .size_limit(MAX_REGEX_SIZE)
+        .nest_limit(MAX_REGEX_NEST_LEVEL)
+        .build()
+        .context("invalid regex (pattern may be too complex)")
 }
 
 fn validate_against_schema(value: &Value, schema_path: &Path) -> Result<()> {
@@ -1444,5 +1489,43 @@ mod tests {
         let decision = engine.authorize("alice", "show run");
         assert!(!decision.allowed);
         assert_eq!(decision.matched_rule, Some("second".to_string()));
+    }
+
+    // ==================== ReDoS Protection Tests ====================
+
+    #[test]
+    fn compile_pattern_deeply_nested_rejected() {
+        // Very deeply nested pattern should be rejected due to nest_limit
+        let deep_pattern = "(".repeat(200) + "a" + &")".repeat(200);
+        let result = compile_pattern(&deep_pattern);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("regex") || err_msg.contains("complex"));
+    }
+
+    #[test]
+    fn compile_pattern_moderate_nesting_allowed() {
+        // Moderate nesting should be allowed
+        let pattern = "((show|configure)\\s+(run|start))";
+        let result = compile_pattern(pattern);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn compile_pattern_normal_patterns_work() {
+        // Normal authorization patterns should compile fine
+        let patterns = vec![
+            "show.*",
+            "configure terminal",
+            "show (run|start|version)",
+            r"show\s+interface\s+.*",
+            "clear (counters|log|arp)",
+            "ping [0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+",
+        ];
+
+        for pattern in patterns {
+            let result = compile_pattern(pattern);
+            assert!(result.is_ok(), "Pattern '{}' should compile", pattern);
+        }
     }
 }

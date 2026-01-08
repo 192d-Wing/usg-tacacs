@@ -332,6 +332,37 @@ pub async fn verify_password_sources(
     false
 }
 
+/// Compute CHAP response for challenge-response authentication.
+///
+/// # NIST Controls
+/// - **IA-2 (Identification and Authentication)**: Implements CHAP challenge-response
+///   authentication as specified in RFC 1994.
+///
+/// # Security Notice: MD5 Usage (CWE-327)
+///
+/// This function uses MD5 for CHAP response computation as required by the CHAP protocol
+/// specification (RFC 1994). **MD5 is cryptographically broken but acceptable for CHAP**
+/// because:
+///
+/// 1. **Challenge-response, not password storage**: Passwords are NOT stored as MD5 hashes.
+///    MD5 is only used to compute a one-time response to a random challenge.
+///
+/// 2. **Nonce prevents replay**: The server-generated challenge (nonce) ensures each
+///    authentication uses a unique hash input, preventing precomputation attacks.
+///
+/// 3. **Protocol specification**: CHAP mandates MD5 per RFC 1994 Section 4.1.
+///
+/// ## Recommendations
+///
+/// For stronger authentication, consider:
+/// - **PAP with Argon2**: Use PAP authentication with Argon2id password hashing
+/// - **LDAPS**: Integrate with enterprise LDAP directories over TLS
+/// - **mTLS**: Use mutual TLS for certificate-based authentication
+///
+/// ## TLS Requirement
+///
+/// CHAP should only be used over TLS-encrypted connections to protect the challenge
+/// and response from eavesdropping.
 pub fn compute_chap_response(
     user: &str,
     creds: &HashMap<String, String>,
@@ -352,26 +383,41 @@ pub fn compute_chap_response(
     Some(digest.as_ref() == response)
 }
 
+/// Handle CHAP authentication continue message.
+///
+/// # NIST Controls
+/// - **IA-6 (Authenticator Feedback)**: Returns generic error messages that do not
+///   reveal whether a username exists, the specific reason for failure, or internal
+///   state information (CWE-209). Detailed errors are logged internally.
 pub fn handle_chap_continue(
     user: &str,
     cont_data: &[u8],
     state: &mut AuthSessionState,
     credentials: &StaticCreds,
 ) -> AuthenReply {
+    // NIST IA-6: Use generic error message for external response
+    const GENERIC_AUTH_ERROR: &str = "authentication failed";
+
     if cont_data.len() != 1 + 16 {
+        tracing::debug!("CHAP continue: invalid data length {}", cont_data.len());
         return AuthenReply {
             status: AUTHEN_STATUS_ERROR,
             flags: 0,
-            server_msg: "invalid CHAP continue length".into(),
+            server_msg: GENERIC_AUTH_ERROR.into(),
             server_msg_raw: Vec::new(),
             data: Vec::new(),
         };
     }
     if state.chap_id.is_some() && cont_data[0] != state.chap_id.unwrap() {
+        tracing::debug!(
+            "CHAP continue: identifier mismatch (expected {:?}, got {})",
+            state.chap_id,
+            cont_data[0]
+        );
         return AuthenReply {
             status: AUTHEN_STATUS_FAIL,
             flags: 0,
-            server_msg: "CHAP identifier mismatch".into(),
+            server_msg: GENERIC_AUTH_ERROR.into(),
             server_msg_raw: Vec::new(),
             data: Vec::new(),
         };
@@ -393,19 +439,21 @@ pub fn handle_chap_continue(
                 data: Vec::new(),
             }
         } else {
+            tracing::debug!("CHAP continue: invalid response hash");
             AuthenReply {
                 status: AUTHEN_STATUS_FAIL,
                 flags: 0,
-                server_msg: "invalid CHAP response".into(),
+                server_msg: GENERIC_AUTH_ERROR.into(),
                 server_msg_raw: Vec::new(),
                 data: Vec::new(),
             }
         }
     } else {
+        tracing::debug!("CHAP continue: user '{}' not found in credentials", user);
         AuthenReply {
             status: AUTHEN_STATUS_ERROR,
             flags: 0,
-            server_msg: "missing credentials".into(),
+            server_msg: GENERIC_AUTH_ERROR.into(),
             server_msg_raw: Vec::new(),
             data: Vec::new(),
         }
@@ -721,7 +769,8 @@ mod tests {
 
         let result = handle_chap_continue("admin", &[0x42, 0x00, 0x00], &mut state, &creds);
         assert_eq!(result.status, AUTHEN_STATUS_ERROR);
-        assert!(result.server_msg.contains("length"));
+        // NIST IA-6: Generic error message returned
+        assert!(result.server_msg.contains("authentication failed"));
     }
 
     #[test]
@@ -736,7 +785,8 @@ mod tests {
 
         let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
         assert_eq!(result.status, AUTHEN_STATUS_FAIL);
-        assert!(result.server_msg.contains("mismatch"));
+        // NIST IA-6: Generic error message returned
+        assert!(result.server_msg.contains("authentication failed"));
     }
 
     #[test]
@@ -750,7 +800,8 @@ mod tests {
 
         let result = handle_chap_continue("unknown", &cont_data, &mut state, &creds);
         assert_eq!(result.status, AUTHEN_STATUS_ERROR);
-        assert!(result.server_msg.contains("credentials"));
+        // NIST IA-6: Generic error message returned
+        assert!(result.server_msg.contains("authentication failed"));
     }
 
     #[test]
@@ -764,7 +815,8 @@ mod tests {
 
         let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
         assert_eq!(result.status, AUTHEN_STATUS_FAIL);
-        assert!(result.server_msg.contains("invalid CHAP response"));
+        // NIST IA-6: Generic error message returned
+        assert!(result.server_msg.contains("authentication failed"));
     }
 
     #[test]
