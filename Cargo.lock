@@ -3525,6 +3525,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "usg-tacacs-openssh"
+version = "0.76.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "usg-tacacs-client-tls",
+]
+
+[[package]]
 name = "usg-tacacs-policy"
 version = "0.76.0"
 dependencies = [

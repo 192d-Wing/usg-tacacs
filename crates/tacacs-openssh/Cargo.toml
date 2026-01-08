@@ -1,0 +1,39 @@
+[package]
+name = "usg-tacacs-openssh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenSSH integration helpers for TACACS+ authentication and authorization"
+
+[[bin]]
+name = "tacacs-pam-helper"
+path = "src/bin/pam_helper.rs"
+
+[[bin]]
+name = "tacacs-authkeys"
+path = "src/bin/authkeys.rs"
+
+[dependencies]
+# Internal crates
+usg-tacacs-client-tls = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

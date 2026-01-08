@@ -7,6 +7,10 @@ members = [
   "crates/tacacs-server",
   "crates/tacacs-policy-ingest",
   "crates/tacacs-client-tls",
+  "crates/tacacs-openssh",
+]
+exclude = [
+  "crates/tacacs-proto/fuzz",
 ]
 
 [workspace.package]
@@ -20,6 +24,7 @@ usg-tacacs-proto = { path = "crates/tacacs-proto" }
 usg-tacacs-policy = { path = "crates/tacacs-policy" }
 usg-tacacs-secrets = { path = "crates/tacacs-secrets" }
 usg-tacacs-client-tls = { path = "crates/tacacs-client-tls" }
+usg-tacacs-openssh = { path = "crates/tacacs-openssh" }
 
 # Async runtime
 tokio = "1"
