@@ -10,6 +10,22 @@
 //!
 //! Unlike legacy TACACS+, credentials are protected by TLS 1.3 encryption
 //! rather than MD5 obfuscation. This provides stronger security guarantees.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following security controls:
+//!
+//! - **IA-2 (Identification and Authentication)**: Provides user authentication
+//!   via PAP, CHAP, and ASCII methods to verify user identity before granting access.
+//!
+//! - **IA-5 (Authenticator Management)**: Protects password transmission via
+//!   TLS 1.3 encryption. Passwords are never logged or stored by the client.
+//!
+//! - **IA-6 (Authenticator Feedback)**: Authentication results use generic
+//!   pass/fail responses that don't reveal whether username exists.
+//!
+//! - **IA-11 (Re-authentication)**: Supports session-based authentication
+//!   allowing re-authentication for privilege escalation (enable mode).
 
 use crate::client::{Session, TacacsClient};
 use anyhow::{Context, Result, bail};
@@ -239,6 +255,11 @@ impl TacacsClient {
     /// * `username` - The username requesting enable
     /// * `password` - The enable password
     /// * `priv_lvl` - The requested privilege level (0-15)
+    ///
+    /// # NIST Controls
+    /// - **IA-2 (Identification and Authentication)**: Privilege escalation authentication
+    /// - **IA-11 (Re-authentication)**: Re-authentication for elevated access
+    /// - **AC-6 (Least Privilege)**: Supports privilege level enforcement (0-15)
     #[instrument(skip(self, password), fields(username = %username, priv_lvl = priv_lvl))]
     pub async fn authenticate_enable(
         &mut self,

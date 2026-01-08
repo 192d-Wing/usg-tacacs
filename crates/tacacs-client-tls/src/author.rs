@@ -16,6 +16,22 @@
 //!     _ => {}
 //! }
 //! ```
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following security controls:
+//!
+//! - **AC-3 (Access Enforcement)**: Enforces access control decisions by
+//!   checking authorization before allowing command execution or service access.
+//!
+//! - **AC-6 (Least Privilege)**: Supports privilege levels (0-15) to enforce
+//!   minimum necessary access rights for each user/command combination.
+//!
+//! - **AC-17 (Remote Access)**: Controls remote access to network devices
+//!   by authorizing shell, exec, and other remote access services.
+//!
+//! - **CM-5 (Access Restrictions for Change)**: Enforces authorization for
+//!   configuration commands to prevent unauthorized system changes.
 
 use crate::client::{Session, TacacsClient};
 use anyhow::{Context, Result};
