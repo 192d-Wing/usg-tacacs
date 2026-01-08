@@ -1,0 +1,33 @@
+[package]
+name = "usg-tacacs-client-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "TLS-only TACACS+ client library (RFC 9887 compliant, no MD5 obfuscation)"
+
+[dependencies]
+# Internal crates
+usg-tacacs-proto = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["net", "time", "io-util", "sync"] }
+
+# TLS
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+tokio-rustls = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+rcgen = "0.13"
+tempfile = "3"

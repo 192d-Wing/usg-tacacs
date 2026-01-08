@@ -3508,6 +3508,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "usg-tacacs-client-tls"
+version = "0.76.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "usg-tacacs-proto",
+]
+
+[[package]]
 name = "usg-tacacs-policy"
 version = "0.76.0"
 dependencies = [

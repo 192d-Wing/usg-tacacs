@@ -6,6 +6,7 @@ members = [
   "crates/tacacs-secrets",
   "crates/tacacs-server",
   "crates/tacacs-policy-ingest",
+  "crates/tacacs-client-tls",
 ]
 
 [workspace.package]
@@ -18,6 +19,7 @@ license = "Apache-2.0"
 usg-tacacs-proto = { path = "crates/tacacs-proto" }
 usg-tacacs-policy = { path = "crates/tacacs-policy" }
 usg-tacacs-secrets = { path = "crates/tacacs-secrets" }
+usg-tacacs-client-tls = { path = "crates/tacacs-client-tls" }
 
 # Async runtime
 tokio = "1"
