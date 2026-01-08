@@ -1,4 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
+//! Policy enforcement for TACACS+ authorization decisions.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AC-3 (Access Enforcement)**: Enforces authorization policy decisions
+//!   for command execution based on user, group, and command matching.
+//!
+//! - **AC-4 (Information Flow Enforcement)**: Controls server message flow
+//!   with allowlists and denylists per user configuration.
+//!
+//! - **AU-2/AU-12 (Audit Events)**: Authorization decisions are logged with
+//!   rule ID, user, command, and decision outcome.
+
 use crate::ascii::{field_for_policy, username_for_policy};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -6,6 +21,11 @@ use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::{AUTHEN_STATUS_FAIL, AuthSessionState, AuthenReply};
 
 /// Enforce server_msg_raw policy; clears/denies reply if blocked.
+///
+/// # NIST Controls
+/// - **AC-4 (Information Flow Enforcement)**: Controls server message content
+///   based on user-specific allowlists and denylists
+/// - **AU-12 (Audit Generation)**: Policy decisions logged via tracing
 #[tracing::instrument(skip(policy, state, reply), fields(username = ?state.username))]
 pub async fn enforce_server_msg(
     policy: &Arc<RwLock<PolicyEngine>>,

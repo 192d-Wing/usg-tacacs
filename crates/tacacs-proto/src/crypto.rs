@@ -1,5 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TACACS+ shared-secret body obfuscation (MD5 pad).
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **SC-8 (Transmission Confidentiality)**: Implements TACACS+ body
+//!   obfuscation using MD5-based pad generation and XOR. Note: This is
+//!   legacy obfuscation, not encryption. TLS 1.3 provides actual encryption.
+//!
+//! - **SC-13 (Cryptographic Protection)**: Uses MD5 for legacy protocol
+//!   compatibility. The obfuscation is applied as defense-in-depth even
+//!   when TLS is enabled.
+//!
+//! - **SC-12 (Cryptographic Key Establishment)**: Enforces minimum secret
+//!   length (8 bytes) for obfuscation keys.
+//!
+//! Note: MD5 is used here only for legacy TACACS+ protocol compatibility.
+//! Modern cryptographic protection is provided by TLS 1.3 (see tls.rs).
 
 use crate::FLAG_UNENCRYPTED;
 use crate::header::Header;
@@ -12,12 +30,22 @@ use openssl::hash::MessageDigest;
 use openssl::hash::hash;
 use std::convert::TryInto;
 
+/// Apply TACACS+ body obfuscation (encrypt or decrypt).
+///
+/// # NIST Controls
+/// - **SC-8 (Transmission Confidentiality)**: Obfuscates packet body using
+///   MD5-based pad generation and XOR operation.
+/// - **SC-12 (Cryptographic Key Establishment)**: Enforces minimum secret
+///   length requirement.
+/// - **SC-13 (Cryptographic Protection)**: Uses MD5 for legacy compatibility;
+///   actual encryption is provided by TLS 1.3.
 pub fn apply_body_crypto(header: &Header, body: &mut [u8], secret: Option<&[u8]>) -> Result<()> {
     if header.flags & FLAG_UNENCRYPTED != 0 {
         return Ok(());
     }
 
     let secret = secret.ok_or_else(|| anyhow!("encrypted TACACS+ body but no secret provided"))?;
+    // NIST SC-12: Enforce minimum secret length
     if secret.len() < crate::MIN_SECRET_LEN {
         bail!(
             "shared secret too short; minimum {} bytes required",

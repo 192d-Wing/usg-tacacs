@@ -1,4 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
+//! Configuration management for TACACS+ server.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **CM-2 (Baseline Configuration)**: Defines all configurable parameters
+//!   with secure defaults and validation requirements.
+//!
+//! - **CM-6 (Configuration Settings)**: Enforces secure defaults:
+//!   - Static credentials disabled by default
+//!   - Minimum secret lengths enforced
+//!   - Reasonable timeout defaults
+//!
+//! - **SI-10 (Information Input Validation)**: Validates all configuration
+//!   inputs including paths, addresses, and security parameters.
+//!
+//! - **AC-7 (Unsuccessful Logon Attempts)**: Configurable brute-force
+//!   protection parameters (attempt limits, backoff, lockout).
+//!
+//! - **SC-12 (Cryptographic Key Establishment)**: TLS certificate and
+//!   key path configuration.
+
 use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -14,6 +37,11 @@ pub enum LogFormat {
     Json,
 }
 
+/// Command-line arguments for the TACACS+ server.
+///
+/// # NIST Controls
+/// - **CM-2/CM-6**: All parameters support secure baseline configuration
+/// - **SI-10**: Input validation via clap argument parsing
 #[derive(Parser, Debug)]
 #[command(name = "usg-tacacs", version, about = "Rust TACACS+ server")]
 pub struct Args {

@@ -765,11 +765,58 @@ MemoryDenyWriteExecute=yes
 
 ---
 
+## Appendix D: Code-Level NIST Control Comments
+
+NIST control references have been added as code comments throughout the codebase.
+Each module includes a header comment documenting the NIST controls it implements,
+and key functions include inline comments referencing specific controls.
+
+### Files with NIST Control Documentation
+
+| File | Controls Documented |
+|------|---------------------|
+| `crates/tacacs-server/src/auth.rs` | IA-2, IA-5, IA-6, AC-2, SC-8, AU-2, AU-12 |
+| `crates/tacacs-server/src/ascii.rs` | AC-7, IA-2, IA-6, AU-2, AU-12 |
+| `crates/tacacs-server/src/tls.rs` | SC-8, SC-12, SC-13, SC-17, SC-23, IA-3 |
+| `crates/tacacs-server/src/server.rs` | AC-10, AC-11, AC-12, SC-7, SC-23, IA-3, AU-2, AU-12 |
+| `crates/tacacs-server/src/policy.rs` | AC-3, AC-4, AU-2, AU-12 |
+| `crates/tacacs-server/src/session.rs` | SC-23, AU-2, AU-3, SI-7 |
+| `crates/tacacs-server/src/metrics.rs` | AU-2, AU-6, SI-4 |
+| `crates/tacacs-server/src/telemetry.rs` | AU-4, AU-6, AU-8, AU-12 |
+| `crates/tacacs-server/src/config.rs` | CM-2, CM-6, SI-10, AC-7, SC-12 |
+| `crates/tacacs-server/src/api/rbac.rs` | AC-2, AC-3, AC-6, AU-12 |
+| `crates/tacacs-proto/src/crypto.rs` | SC-8, SC-12, SC-13 |
+
+### Comment Format
+
+Module-level documentation uses the format:
+```rust
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AC-7 (Unsuccessful Logon Attempts)**: Description of implementation...
+```
+
+Function-level documentation uses:
+```rust
+/// # NIST Controls
+/// - **AC-7**: Description of how this function supports the control
+```
+
+Inline comments mark specific control implementations:
+```rust
+// NIST AC-7: Exponential backoff calculation
+```
+
+---
+
 ## Document History
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-07 | Generated | Initial NIST mapping |
+| 1.1 | 2026-01-07 | Generated | Added code-level NIST control comments |
 
 ---
 

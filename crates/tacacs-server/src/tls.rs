@@ -1,4 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
+//! TLS configuration for TACACS+ server (RFC 9887 compliant).
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **SC-8 (Transmission Confidentiality and Integrity)**: Enforces TLS 1.3
+//!   for all connections with no fallback to older protocol versions.
+//!
+//! - **SC-13 (Cryptographic Protection)**: Uses modern TLS 1.3 cipher suites
+//!   with forward secrecy via Rustls (memory-safe TLS implementation).
+//!
+//! - **SC-17 (PKI Certificates)**: Implements X.509 certificate validation
+//!   with WebPkiClientVerifier for certificate chain verification.
+//!
+//! - **SC-23 (Session Authenticity)**: Requires mutual TLS (mTLS) for all
+//!   connections, authenticating both client and server.
+//!
+//! - **IA-3 (Device Identification and Authentication)**: Client certificates
+//!   are validated against trusted CA chain for device authentication.
+//!
+//! - **SC-12 (Cryptographic Key Establishment)**: Supports multiple trust
+//!   roots and certificate chain validation.
+
 use anyhow::{Context, Result, bail};
 use std::fs::File;
 use std::io::BufReader;
@@ -9,6 +33,15 @@ use tokio_rustls::rustls::{
     server::WebPkiClientVerifier,
 };
 
+/// Build TLS server configuration with mTLS enforcement.
+///
+/// # NIST Controls
+/// - **SC-8 (Transmission Confidentiality)**: TLS 1.3 only, no protocol fallback
+/// - **SC-13 (Cryptographic Protection)**: Modern cipher suites with forward secrecy
+/// - **SC-17 (PKI Certificates)**: X.509 certificate chain validation
+/// - **SC-23 (Session Authenticity)**: Mutual TLS required for all connections
+/// - **IA-3 (Device Identification)**: Client certificate validation against CA chain
+/// - **SC-12 (Key Establishment)**: Supports multiple trust roots
 pub fn build_tls_config(
     cert: &PathBuf,
     key: &PathBuf,
@@ -17,6 +50,8 @@ pub fn build_tls_config(
 ) -> Result<rustls::ServerConfig> {
     let certs: Vec<CertificateDer<'_>> = load_certs(cert)?;
     let key: PrivateKeyDer<'_> = load_key(key)?;
+
+    // NIST SC-17/SC-12: Build certificate trust store with all trusted CAs
     let mut roots: RootCertStore = RootCertStore::empty();
     for ca in load_certs(client_ca)? {
         roots.add(ca).context("adding client CA")?;
@@ -29,9 +64,12 @@ pub fn build_tls_config(
         }
     }
 
+    // NIST SC-23/IA-3: Require client certificate validation (mTLS)
     let client_auth = WebPkiClientVerifier::builder(roots.into())
         .build()
         .context("building client verifier")?;
+
+    // NIST SC-8/SC-13: TLS 1.3 only - no fallback to older versions
     let mut config: rustls::ServerConfig =
         rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
             .with_client_cert_verifier(client_auth)

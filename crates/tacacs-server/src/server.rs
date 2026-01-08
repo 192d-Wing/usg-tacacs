@@ -1,4 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
+//! TACACS+ server connection handling and session management.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AC-10 (Concurrent Session Control)**: Per-IP connection limiting via
+//!   `ConnLimiter` with configurable maximum concurrent connections.
+//!
+//! - **AC-11/AC-12 (Session Lock/Termination)**: Idle timeout and keepalive
+//!   timeout enforcement for session termination.
+//!
+//! - **SC-7 (Boundary Protection)**: Connection acceptance control, IP-based
+//!   rate limiting, and network isolation support.
+//!
+//! - **SC-23 (Session Authenticity)**: Session ID validation and sequence
+//!   number tracking per RFC 8907.
+//!
+//! - **IA-3 (Device Identification)**: Client certificate CN/SAN allowlist
+//!   enforcement via `enforce_client_cert_policy()`.
+//!
+//! - **AU-2/AU-12 (Audit Events)**: Connection events, authentication attempts,
+//!   and authorization decisions are logged via tracing.
+
 use crate::ascii::{
     AsciiConfig, calc_ascii_backoff_capped, field_for_policy, handle_ascii_continue,
     username_for_policy,
@@ -41,6 +65,11 @@ use usg_tacacs_proto::{
     write_author_response,
 };
 
+/// Per-IP connection rate limiter.
+///
+/// # NIST Controls
+/// - **AC-10 (Concurrent Session Control)**: Limits concurrent connections per IP
+/// - **SC-7 (Boundary Protection)**: Prevents connection exhaustion attacks
 #[derive(Clone)]
 pub(crate) struct ConnLimiter {
     max_per_ip: u32,
@@ -55,6 +84,10 @@ impl ConnLimiter {
         }
     }
 
+    /// Attempt to acquire a connection slot for the given IP.
+    ///
+    /// # NIST Controls
+    /// - **AC-10**: Enforces maximum concurrent connections per IP address
     async fn try_acquire(&self, ip: &str) -> Option<ConnGuard> {
         if self.max_per_ip == 0 {
             return Some(ConnGuard {
@@ -64,6 +97,7 @@ impl ConnLimiter {
         }
         let mut map = self.counts.lock().await;
         let entry = map.entry(ip.to_string()).or_insert(0);
+        // NIST AC-10: Reject if connection limit exceeded
         if *entry >= self.max_per_ip {
             return None;
         }
@@ -139,12 +173,20 @@ pub(crate) struct ConnectionContext {
     pub single_connect_keepalive_secs: u64,
 }
 
+/// Enforce client certificate identity policy (CN/SAN allowlists).
+///
+/// # NIST Controls
+/// - **IA-3 (Device Identification and Authentication)**: Validates client
+///   certificate Common Name and Subject Alternative Names against allowlists
+/// - **IA-4 (Identifier Management)**: Certificate-based device identity
+/// - **SC-23 (Session Authenticity)**: Ensures only authorized devices connect
 fn enforce_client_cert_policy(
     stream: &TlsStream<tokio::net::TcpStream>,
     peer: &SocketAddr,
     allowed_cn: &[String],
     allowed_san: &[String],
 ) -> Result<()> {
+    // NIST IA-3: Skip if no allowlists configured (allow all valid certs)
     if allowed_cn.is_empty() && allowed_san.is_empty() {
         return Ok(());
     }

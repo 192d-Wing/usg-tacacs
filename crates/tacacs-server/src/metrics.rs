@@ -1,5 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Prometheus metrics for TACACS+ server observability.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AU-6 (Audit Review, Analysis, and Reporting)**: Provides Prometheus
+//!   metrics for operational visibility, trend analysis, and alerting.
+//!
+//! - **SI-4 (Information System Monitoring)**: Exposes metrics for:
+//!   - Connection counts (active, total, rejected)
+//!   - Authentication requests by method and result
+//!   - Authorization decisions by result
+//!   - Accounting records by type and status
+//!   - Rate limiting rejections
+//!   - Policy reload status
+//!
+//! - **AU-2 (Audit Events)**: Metrics serve as aggregate audit data for
+//!   detecting anomalies and security incidents.
 
 use prometheus::{
     CounterVec, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,

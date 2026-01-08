@@ -1,5 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 //! OpenTelemetry configuration for distributed tracing.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AU-4 (Audit Storage Capacity)**: Exports traces to external OTLP
+//!   collectors, enabling centralized storage with appropriate capacity.
+//!
+//! - **AU-6 (Audit Review, Analysis, and Reporting)**: Distributed tracing
+//!   enables cross-service correlation and incident investigation.
+//!
+//! - **AU-8 (Time Stamps)**: Uses UTC timestamps for consistent audit records
+//!   across distributed systems.
+//!
+//! - **AU-12 (Audit Generation)**: Integrates with Rust's tracing ecosystem
+//!   to capture structured events throughout the application.
 
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;

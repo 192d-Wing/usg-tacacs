@@ -1,4 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
+//! Session state management for TACACS+ connections.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **SC-23 (Session Authenticity)**: Tracks session state including session ID,
+//!   user identity, and connection status per RFC 8907.
+//!
+//! - **AU-2/AU-3 (Audit Events/Content)**: Task ID tracking enables correlation
+//!   of accounting records (start/stop/watchdog) for audit trails.
+//!
+//! - **SI-7 (Software/Information Integrity)**: Enforces RFC 8907 task_id reuse
+//!   violations to detect protocol anomalies.
+
 use std::collections::HashSet;
 
 #[derive(Debug, Default)]
@@ -28,6 +43,12 @@ impl SingleConnectState {
 /// Tracks active accounting task_ids per connection to enforce RFC 8907:
 /// "Clients MUST NOT reuse a task_id in a start record until it has sent
 /// a stop record for that task_id."
+///
+/// # NIST Controls
+/// - **AU-2/AU-3 (Audit Events)**: Enables correlation of start/stop/watchdog
+///   accounting records for complete audit trails
+/// - **SI-7 (Information Integrity)**: Detects protocol violations that may
+///   indicate misconfiguration or attack attempts
 #[derive(Debug, Default)]
 pub struct TaskIdTracker {
     /// Set of task_ids that have received a START but not yet a STOP.

@@ -1,4 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
+//! ASCII (interactive) authentication handler with brute-force protection.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AC-7 (Unsuccessful Logon Attempts)**: Implements multi-layered brute-force
+//!   protection including:
+//!   - Global attempt limits per session
+//!   - Username prompt attempt limits
+//!   - Password prompt attempt limits
+//!   - Exponential backoff with random jitter
+//!   - Hard lockout after configurable threshold
+//!
+//! - **IA-2 (Identification and Authentication)**: Implements interactive ASCII
+//!   authentication protocol for user identification.
+//!
+//! - **IA-6 (Authenticator Feedback)**: Uses NOECHO flag to prevent password
+//!   display during entry.
+//!
+//! - **AU-2/AU-12 (Audit Events)**: All authentication attempts, failures, and
+//!   lockouts are logged with relevant context.
+
 use crate::auth::{LdapConfig, verify_pap_bytes, verify_pap_bytes_username};
 use openssl::rand::rand_bytes;
 use std::sync::Arc;
@@ -13,22 +36,43 @@ use usg_tacacs_proto::{
 
 const AUTHEN_CONT_ABORT: u8 = 0x01;
 
+/// Configuration for ASCII authentication brute-force protection.
+///
+/// # NIST Controls
+/// - **AC-7 (Unsuccessful Logon Attempts)**: All fields support configurable
+///   limits and delays to prevent brute-force attacks.
 pub struct AsciiConfig {
+    /// Maximum total attempts per session (NIST AC-7)
     pub attempt_limit: u8,
+    /// Maximum username prompt retries (NIST AC-7)
     pub user_attempt_limit: u8,
+    /// Maximum password prompt retries (NIST AC-7)
     pub pass_attempt_limit: u8,
+    /// Base delay for exponential backoff in ms (NIST AC-7)
     pub backoff_ms: u64,
+    /// Maximum backoff delay cap in ms (NIST AC-7)
     pub backoff_max_ms: u64,
+    /// Hard lockout threshold (NIST AC-7)
     pub lockout_limit: u8,
 }
 
+/// Calculate exponential backoff delay with random jitter.
+///
+/// # NIST Controls
+/// - **AC-7 (Unsuccessful Logon Attempts)**: Implements exponential backoff
+///   (base * 2^(attempt-1)) with random jitter to prevent timing attacks
+///   and slow down brute-force attempts.
+///
+/// The jitter uses cryptographically secure random bytes from OpenSSL
+/// to prevent attackers from predicting delay patterns.
 pub fn calc_ascii_backoff_capped(base_ms: u64, attempt: u8, cap_ms: u64) -> Option<Duration> {
     if base_ms == 0 {
         return None;
     }
-    // exponential backoff: base * 2^(attempt-1)
+    // NIST AC-7: Exponential backoff: base * 2^(attempt-1)
     let exp = base_ms.saturating_mul(1u64 << attempt.saturating_sub(1));
     let capped = if cap_ms == 0 { exp } else { exp.min(cap_ms) };
+    // NIST AC-7: Add random jitter to prevent timing attacks
     let mut jitter = 0;
     let mut buf = [0u8; 2];
     if rand_bytes(&mut buf).is_ok() {
@@ -98,6 +142,15 @@ fn build_ascii_prompts(
     (uname_prompt, pwd_prompt)
 }
 
+/// Handle ASCII authentication continuation packets.
+///
+/// # NIST Controls
+/// - **AC-7 (Unsuccessful Logon Attempts)**: Enforces attempt limits, backoff delays,
+///   and lockout thresholds to prevent brute-force attacks.
+/// - **IA-2 (Identification and Authentication)**: Processes interactive authentication
+///   with username/password prompts.
+/// - **IA-6 (Authenticator Feedback)**: Uses NOECHO flag for password entry.
+/// - **AU-12 (Audit Generation)**: All attempts logged via tracing.
 pub async fn handle_ascii_continue(
     cont_user_msg: &[u8],
     cont_data: &[u8],

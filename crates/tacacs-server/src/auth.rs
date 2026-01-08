@@ -1,4 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
+//! Authentication module for TACACS+ server.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **IA-2 (Identification and Authentication)**: Implements multiple authentication
+//!   methods including PAP, CHAP, and LDAPS for user identification and authentication.
+//!
+//! - **IA-5 (Authenticator Management)**: Uses Argon2id for password hashing, providing
+//!   memory-hard protection against brute-force attacks. Enforces LDAPS-only connections
+//!   (rejects StartTLS) to protect credentials in transit.
+//!
+//! - **IA-6 (Authenticator Feedback)**: Returns generic error messages that do not reveal
+//!   whether a username exists or password was incorrect.
+//!
+//! - **AC-2 (Account Management)**: Integrates with LDAP directories for centralized
+//!   account management and group membership validation.
+//!
+//! - **SC-8 (Transmission Confidentiality)**: Requires LDAPS (not StartTLS) to ensure
+//!   credentials are encrypted in transit to the directory server.
+//!
+//! - **AU-2/AU-12 (Audit Events/Generation)**: All authentication attempts are logged
+//!   via tracing instrumentation with relevant context (username, method, result).
+
 use crate::config::StaticCreds;
 use argon2::{PasswordHash, PasswordVerifier};
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
@@ -37,7 +62,14 @@ impl LdapConfig {
     }
 }
 
+/// Performs LDAP authentication in a blocking context.
+///
+/// # NIST Controls
+/// - **SC-8**: Enforces LDAPS-only (rejects plain LDAP/StartTLS) for transmission confidentiality
+/// - **IA-2**: Authenticates users against enterprise directory
+/// - **AC-2**: Validates group membership for account management
 fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -> bool {
+    // NIST SC-8: Reject non-LDAPS URLs to ensure encrypted transmission
     if !cfg.url.to_lowercase().starts_with("ldaps://") {
         return false;
     }
@@ -141,6 +173,12 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
     Vec::new()
 }
 
+/// Verify PAP authentication credentials.
+///
+/// # NIST Controls
+/// - **IA-2**: Authenticates users via Password Authentication Protocol
+/// - **IA-5**: Supports Argon2id hashed passwords for secure storage
+/// - **AU-12**: Instrumented for audit logging via tracing
 #[tracing::instrument(skip(password, creds))]
 pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
     if creds
@@ -157,6 +195,11 @@ pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
     false
 }
 
+/// Verify password against Argon2id hash.
+///
+/// # NIST Controls
+/// - **IA-5 (Authenticator Management)**: Uses Argon2id, a memory-hard key derivation
+///   function resistant to GPU/ASIC brute-force attacks. Provides timing-safe comparison.
 fn verify_argon_hash(hash: &str, password: &[u8]) -> bool {
     let Ok(parsed) = PasswordHash::new(hash) else {
         return false;

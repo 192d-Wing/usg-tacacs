@@ -1,5 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Role-Based Access Control for the Management API.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AC-2 (Account Management)**: Maps users (identified by TLS certificate
+//!   CN/SAN) to roles for access management.
+//!
+//! - **AC-3 (Access Enforcement)**: Enforces role-based permissions for
+//!   Management API endpoints.
+//!
+//! - **AC-6 (Least Privilege)**: Supports granular permissions (read:*, write:*,
+//!   read:status, etc.) enabling minimum necessary access.
+//!
+//! - **AU-12 (Audit Generation)**: Permission denials are logged via tracing.
 
 use axum::{
     body::Body,
@@ -13,11 +28,15 @@ use std::collections::HashMap;
 use tracing::warn;
 
 /// RBAC configuration.
+///
+/// # NIST Controls
+/// - **AC-2 (Account Management)**: User-to-role mapping
+/// - **AC-6 (Least Privilege)**: Granular permission definitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RbacConfig {
-    /// Role definitions: role_name -> list of permissions
+    /// Role definitions: role_name -> list of permissions (NIST AC-6)
     pub roles: HashMap<String, Vec<String>>,
-    /// User to role mapping: CN or identifier -> role_name
+    /// User to role mapping: CN or identifier -> role_name (NIST AC-2)
     pub users: HashMap<String, String>,
 }
 
@@ -46,11 +65,16 @@ impl Default for RbacConfig {
 
 impl RbacConfig {
     /// Check if a user has a specific permission.
+    ///
+    /// # NIST Controls
+    /// - **AC-3 (Access Enforcement)**: Enforces permission checks
+    /// - **AU-12 (Audit Generation)**: Logs permission denials
     pub fn has_permission(&self, user: &str, permission: &str) -> bool {
-        // Get user's role
+        // NIST AC-2: Get user's role from mapping
         let role = match self.users.get(user) {
             Some(r) => r,
             None => {
+                // NIST AU-12: Log unauthorized access attempt
                 warn!(user = %user, "user not found in RBAC config");
                 return false;
             }
