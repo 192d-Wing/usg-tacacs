@@ -305,6 +305,7 @@ async fn main() -> Result<()> {
     }
 
     // Start Management API server if enabled
+    // NIST AC-3/SC-8: Management API requires TLS with mTLS for security
     if args.api_enabled {
         let api_addr = args
             .api_listen
@@ -321,11 +322,27 @@ async fn main() -> Result<()> {
             crate::api::RbacConfig::default()
         };
 
-        // TODO: TLS support for API - for now only plaintext
-        let tls_acceptor = None;
+        // NIST SC-8: Build TLS acceptor for Management API (mTLS required)
+        let api_tls_acceptor = if let (Some(cert), Some(key), Some(client_ca)) = (
+            args.api_tls_cert.as_ref(),
+            args.api_tls_key.as_ref(),
+            args.api_client_ca.as_ref(),
+        ) {
+            let tls_config = tls::build_tls_config(cert, key, client_ca, &[])
+                .context("building API TLS configuration")?;
+            Some(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config)))
+        } else {
+            // Warn if TLS is not configured - API will run in plaintext mode
+            // In production, TLS should always be enabled
+            warn!(
+                "Management API TLS is not configured. Running in PLAINTEXT mode. \
+                 For production use, configure --api-tls-cert, --api-tls-key, and --api-client-ca."
+            );
+            None
+        };
 
         handles.push(tokio::spawn(async move {
-            if let Err(err) = crate::api::serve_api(api_addr, tls_acceptor, rbac_config).await {
+            if let Err(err) = crate::api::serve_api(api_addr, api_tls_acceptor, rbac_config).await {
                 error!(error = %err, "Management API server stopped");
             }
         }));

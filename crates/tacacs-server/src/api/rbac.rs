@@ -21,7 +21,7 @@ use axum::{
     extract::Request,
     http::StatusCode,
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -152,15 +152,25 @@ impl RbacMiddleware {
 }
 
 /// Helper to create RBAC middleware for a specific permission.
+///
+/// # NIST Controls
+/// - **AC-3 (Access Enforcement)**: Creates middleware that enforces permission checks
+///
+/// # Arguments
+/// * `config` - RBAC configuration (cloned for 'static lifetime)
+/// * `permission` - Required permission string (e.g., "read:status")
 pub fn require_permission(
     config: &RbacConfig,
-    permission: impl Into<String>,
+    permission: &'static str,
 ) -> impl Fn(
     Request<Body>,
     Next,
 )
     -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, StatusCode>> + Send>>
-+ Clone {
++ Clone
++ Send
++ Sync
++ 'static {
     let middleware = RbacMiddleware::new(config.clone(), permission);
     move |req: Request<Body>, next: Next| {
         let middleware = middleware.clone();

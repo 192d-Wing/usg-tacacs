@@ -25,6 +25,10 @@ serde_json.workspace = true
 
 # HTTP server for metrics and health endpoints
 axum.workspace = true
+hyper = { version = "1.4", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tower = "0.5"
 
 # Prometheus metrics
 prometheus = "0.13"
@@ -37,5 +41,4 @@ opentelemetry-otlp.workspace = true
 
 [dev-dependencies]
 tempfile = "3.14"
-tower = "0.5"
 rcgen = "0.13"

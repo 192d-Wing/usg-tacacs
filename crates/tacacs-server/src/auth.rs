@@ -37,6 +37,34 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_PASS, AuthSessionState, AuthenReply,
 };
 
+/// Escape special characters in LDAP filter values per RFC 4515.
+///
+/// # NIST Controls
+/// - **SI-10 (Information Input Validation)**: Sanitizes user input to prevent
+///   LDAP injection attacks by escaping metacharacters.
+///
+/// Characters escaped: `*` `(` `)` `\` NUL
+///
+/// # Example
+/// ```ignore
+/// let safe = ldap_escape_filter_value("user*name");
+/// assert_eq!(safe, "user\\2aname");
+/// ```
+fn ldap_escape_filter_value(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len() * 2);
+    for c in input.chars() {
+        match c {
+            '*' => escaped.push_str("\\2a"),
+            '(' => escaped.push_str("\\28"),
+            ')' => escaped.push_str("\\29"),
+            '\\' => escaped.push_str("\\5c"),
+            '\0' => escaped.push_str("\\00"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
+}
+
 #[derive(Clone, Debug)]
 pub struct LdapConfig {
     pub url: String,
@@ -87,7 +115,9 @@ fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -
     {
         return false;
     }
-    let filter = format!("({}={})", cfg.username_attr, username);
+    // NIST SI-10: Escape username to prevent LDAP injection attacks
+    let escaped_username = ldap_escape_filter_value(username);
+    let filter = format!("({}={})", cfg.username_attr, escaped_username);
     let search = ldap.search(
         &cfg.search_base,
         Scope::Subtree,
@@ -153,7 +183,9 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
     {
         return Vec::new();
     }
-    let filter = format!("({}={})", cfg.username_attr, username);
+    // NIST SI-10: Escape username to prevent LDAP injection attacks
+    let escaped_username = ldap_escape_filter_value(username);
+    let filter = format!("({}={})", cfg.username_attr, escaped_username);
     let search = ldap
         .search(
             &cfg.search_base,
@@ -346,6 +378,70 @@ pub fn handle_chap_continue(
 mod tests {
     use super::*;
     use usg_tacacs_proto::Header;
+
+    // ==================== ldap_escape_filter_value Tests ====================
+
+    #[test]
+    fn ldap_escape_asterisk() {
+        assert_eq!(ldap_escape_filter_value("user*name"), "user\\2aname");
+        assert_eq!(ldap_escape_filter_value("*"), "\\2a");
+        assert_eq!(ldap_escape_filter_value("***"), "\\2a\\2a\\2a");
+    }
+
+    #[test]
+    fn ldap_escape_parentheses() {
+        assert_eq!(ldap_escape_filter_value("user(name)"), "user\\28name\\29");
+        assert_eq!(ldap_escape_filter_value(")("), "\\29\\28");
+    }
+
+    #[test]
+    fn ldap_escape_backslash() {
+        assert_eq!(ldap_escape_filter_value("user\\name"), "user\\5cname");
+        assert_eq!(ldap_escape_filter_value("\\\\"), "\\5c\\5c");
+    }
+
+    #[test]
+    fn ldap_escape_null() {
+        assert_eq!(ldap_escape_filter_value("user\0name"), "user\\00name");
+    }
+
+    #[test]
+    fn ldap_escape_combined_injection_payloads() {
+        // Common LDAP injection payloads should be safely escaped
+        assert_eq!(ldap_escape_filter_value("*"), "\\2a");
+        assert_eq!(
+            ldap_escape_filter_value("admin)(|(uid=*"),
+            "admin\\29\\28|\\28uid=\\2a"
+        );
+        assert_eq!(
+            ldap_escape_filter_value("*)(objectClass=*"),
+            "\\2a\\29\\28objectClass=\\2a"
+        );
+        assert_eq!(ldap_escape_filter_value(")(uid=*)"), "\\29\\28uid=\\2a\\29");
+    }
+
+    #[test]
+    fn ldap_escape_normal_username_unchanged() {
+        assert_eq!(ldap_escape_filter_value("alice"), "alice");
+        assert_eq!(ldap_escape_filter_value("bob.jones"), "bob.jones");
+        assert_eq!(
+            ldap_escape_filter_value("user@domain.com"),
+            "user@domain.com"
+        );
+        assert_eq!(ldap_escape_filter_value("user_name-123"), "user_name-123");
+    }
+
+    #[test]
+    fn ldap_escape_empty_string() {
+        assert_eq!(ldap_escape_filter_value(""), "");
+    }
+
+    #[test]
+    fn ldap_escape_unicode() {
+        // Unicode characters should pass through unchanged
+        assert_eq!(ldap_escape_filter_value("用户"), "用户");
+        assert_eq!(ldap_escape_filter_value("café"), "café");
+    }
 
     fn make_creds() -> StaticCreds {
         let mut creds = StaticCreds::default();

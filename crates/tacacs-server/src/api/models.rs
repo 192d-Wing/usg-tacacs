@@ -2,7 +2,6 @@
 //! Data models for the Management API.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Server status response.
 #[derive(Debug, Serialize, Deserialize)]
@@ -72,6 +71,7 @@ pub struct SuccessResponse {
 }
 
 /// Generic error response.
+#[allow(dead_code)] // Will be used for error handling in future phases
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
@@ -79,6 +79,7 @@ pub struct ErrorResponse {
 }
 
 /// Metrics export format.
+#[allow(dead_code)] // Will be used for metrics format selection in future phases
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MetricsFormat {

@@ -1,13 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 //! HTTP handlers for the Management API endpoints.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following NIST security controls:
+//!
+//! - **AC-3 (Access Enforcement)**: All endpoints enforce RBAC permissions
+//!   via middleware before allowing access to resources.
+//!
+//! - **AU-2/AU-12 (Audit Events/Generation)**: All API requests are logged
+//!   with user identity, endpoint, and authorization result.
 
 use super::models::*;
-use super::rbac::RbacConfig;
+use super::rbac::{RbacConfig, require_permission};
 use crate::metrics::metrics;
 use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
+    middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
@@ -23,21 +34,71 @@ pub struct ApiState {
 }
 
 /// Build the API router with all endpoints.
+///
+/// # NIST Controls
+/// - **AC-3 (Access Enforcement)**: Each endpoint is protected by RBAC middleware
+///   that enforces the required permission before allowing access.
+///
+/// # Security Note
+/// All endpoints require authentication. User identity is extracted from:
+/// - TLS client certificate CN (when API TLS is enabled)
+/// - `X-User-CN` header (for testing/development only)
+///
+/// Anonymous users are denied access to all endpoints.
 pub fn build_api_router(rbac: RbacConfig) -> Router {
-    let state = ApiState {
-        rbac,
+    let state = Arc::new(ApiState {
+        rbac: rbac.clone(),
         start_time: SystemTime::now(),
-    };
+    });
 
-    Router::new()
+    // NIST AC-3: Build individual routers with appropriate RBAC middleware
+    // Each endpoint gets its own permission requirement
+
+    // GET /api/v1/status - requires read:status
+    let status_router = Router::new()
         .route("/api/v1/status", get(get_status))
+        .route_layer(middleware::from_fn(require_permission(&rbac, "read:status")));
+
+    // GET /api/v1/sessions - requires read:sessions
+    let sessions_read_router = Router::new()
         .route("/api/v1/sessions", get(get_sessions))
+        .route_layer(middleware::from_fn(require_permission(&rbac, "read:sessions")));
+
+    // DELETE /api/v1/sessions/:id - requires write:sessions
+    let sessions_write_router = Router::new()
         .route("/api/v1/sessions/{id}", delete(delete_session))
+        .route_layer(middleware::from_fn(require_permission(&rbac, "write:sessions")));
+
+    // GET /api/v1/policy - requires read:policy
+    let policy_read_router = Router::new()
         .route("/api/v1/policy", get(get_policy))
+        .route_layer(middleware::from_fn(require_permission(&rbac, "read:policy")));
+
+    // POST /api/v1/policy/reload - requires write:policy
+    let policy_write_router = Router::new()
         .route("/api/v1/policy/reload", post(reload_policy))
+        .route_layer(middleware::from_fn(require_permission(&rbac, "write:policy")));
+
+    // GET /api/v1/config - requires read:config
+    let config_router = Router::new()
         .route("/api/v1/config", get(get_config))
+        .route_layer(middleware::from_fn(require_permission(&rbac, "read:config")));
+
+    // GET /api/v1/metrics - requires read:metrics
+    let metrics_router = Router::new()
         .route("/api/v1/metrics", get(get_metrics))
-        .with_state(Arc::new(state))
+        .route_layer(middleware::from_fn(require_permission(&rbac, "read:metrics")));
+
+    // Merge all routers and attach shared state
+    Router::new()
+        .merge(status_router)
+        .merge(sessions_read_router)
+        .merge(sessions_write_router)
+        .merge(policy_read_router)
+        .merge(policy_write_router)
+        .merge(config_router)
+        .merge(metrics_router)
+        .with_state(state)
 }
 
 /// GET /api/v1/status - Server health and statistics.
@@ -169,11 +230,24 @@ mod tests {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
 
+    /// Create an RBAC config with an admin user for testing.
+    fn make_test_rbac() -> RbacConfig {
+        let mut rbac = RbacConfig::default();
+        rbac.users
+            .insert("CN=admin.test".to_string(), "admin".to_string());
+        rbac.users
+            .insert("CN=viewer.test".to_string(), "viewer".to_string());
+        rbac
+    }
+
+    // ==================== Authentication Tests ====================
+
     #[tokio::test]
-    async fn test_get_status() {
-        let rbac = RbacConfig::default();
+    async fn test_unauthenticated_request_denied() {
+        let rbac = make_test_rbac();
         let app = build_api_router(rbac);
 
+        // Request without X-User-CN header should be denied
         let response = app
             .oneshot(
                 Request::builder()
@@ -184,18 +258,40 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
-    async fn test_get_sessions() {
-        let rbac = RbacConfig::default();
+    async fn test_unknown_user_denied() {
+        let rbac = make_test_rbac();
         let app = build_api_router(rbac);
 
+        // Request with unknown user should be denied
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/v1/status")
+                    .header("X-User-CN", "CN=unknown.user")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_authenticated_admin_allowed() {
+        let rbac = make_test_rbac();
+        let app = build_api_router(rbac);
+
+        // Admin user should have access
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -206,14 +302,116 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_metrics() {
-        let rbac = RbacConfig::default();
+    async fn test_viewer_cannot_write() {
+        let rbac = make_test_rbac();
+        let app = build_api_router(rbac);
+
+        // Viewer should not have write access
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/policy/reload")
+                    .header("X-User-CN", "CN=viewer.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_viewer_can_read_allowed_endpoints() {
+        let rbac = make_test_rbac();
+        let app = build_api_router(rbac);
+
+        // Viewer should have access to read:status
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .header("X-User-CN", "CN=viewer.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_viewer_cannot_read_policy() {
+        let rbac = make_test_rbac();
+        let app = build_api_router(rbac);
+
+        // Viewer role only has read:status and read:metrics, not read:policy
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/policy")
+                    .header("X-User-CN", "CN=viewer.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ==================== Endpoint Functionality Tests ====================
+
+    #[tokio::test]
+    async fn test_get_status_with_auth() {
+        let rbac = make_test_rbac();
+        let app = build_api_router(rbac);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_get_sessions_with_auth() {
+        let rbac = make_test_rbac();
+        let app = build_api_router(rbac);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/sessions")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_get_metrics_with_auth() {
+        let rbac = make_test_rbac();
         let app = build_api_router(rbac);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/metrics")
+                    .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -228,5 +426,44 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(content_type.contains("text/plain"));
+    }
+
+    #[tokio::test]
+    async fn test_get_config_with_auth() {
+        let rbac = make_test_rbac();
+        let app = build_api_router(rbac);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_reload_policy_with_auth() {
+        let rbac = make_test_rbac();
+        let app = build_api_router(rbac);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/policy/reload")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
