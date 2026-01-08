@@ -1,5 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Configuration for TACACS+ OpenSSH integration.
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module supports the following security controls:
+//!
+//! - **SC-17 (PKI Certificates)**: Configuration includes CA certificate paths
+//!   for server verification and optional client certificates for mTLS.
+//!
+//! - **CM-6 (Configuration Settings)**: Supports configuration via file, CLI
+//!   arguments, or environment variables for consistent deployment.
+//!
+//! - **IA-3 (Device Identification)**: Client certificate configuration enables
+//!   device authentication to the TACACS+ server.
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};

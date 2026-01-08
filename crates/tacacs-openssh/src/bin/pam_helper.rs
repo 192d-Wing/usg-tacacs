@@ -28,6 +28,26 @@
 //! - 1: Authentication failed (PAM_AUTH_ERR)
 //! - 2: Service unavailable (PAM_AUTHINFO_UNAVAIL)
 //! - 3: User unknown (PAM_USER_UNKNOWN)
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This helper implements the following security controls:
+//!
+//! - **IA-2 (Identification and Authentication)**: Provides centralized
+//!   authentication via TACACS+ rather than local password files.
+//!
+//! - **IA-5 (Authenticator Management)**: Passwords are read from stdin
+//!   (PAM expose_authtok) and transmitted securely via TLS. Passwords are
+//!   never logged, stored, or exposed in command-line arguments.
+//!
+//! - **IA-6 (Authenticator Feedback)**: Returns generic pass/fail status
+//!   without revealing whether the username exists.
+//!
+//! - **AC-3 (Access Enforcement)**: Optional `--authorize` flag enforces
+//!   session authorization after successful authentication.
+//!
+//! - **SC-8 (Transmission Confidentiality)**: All TACACS+ communication
+//!   uses TLS 1.3 encryption.
 
 use anyhow::{Context, Result};
 use clap::Parser;

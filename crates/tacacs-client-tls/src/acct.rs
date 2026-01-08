@@ -22,6 +22,22 @@
 //! // Record session stop with statistics
 //! client.accounting_stop("alice", "shell", task_id, 3600, 0, 1024, 2048).await?;
 //! ```
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This module implements the following security controls:
+//!
+//! - **AU-2 (Audit Events)**: Defines auditable events including session
+//!   start/stop, command execution, and resource usage.
+//!
+//! - **AU-3 (Content of Audit Records)**: Records include username, service,
+//!   task ID, timestamps, and resource statistics (bytes in/out).
+//!
+//! - **AU-12 (Audit Generation)**: Generates audit records at session start,
+//!   periodic intervals (watchdog), and session end with statistics.
+//!
+//! - **AU-14 (Session Audit)**: Provides session-level accounting with
+//!   elapsed time, status, and data transfer metrics.
 
 use crate::client::{Session, TacacsClient};
 use anyhow::{Context, Result};

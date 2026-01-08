@@ -38,6 +38,31 @@
 //!
 //! - 0: Success (keys printed to stdout, may be empty)
 //! - 1: Error (connection failed, authorization error, etc.)
+//!
+//! # NIST SP 800-53 Security Controls
+//!
+//! This helper implements the following security controls:
+//!
+//! - **IA-2 (Identification and Authentication)**: Enables centralized SSH
+//!   key management through TACACS+, ensuring consistent authentication
+//!   policy across all managed hosts.
+//!
+//! - **IA-5(2) (PKI-Based Authentication)**: Retrieves and validates SSH
+//!   public keys from central authority rather than local files, supporting
+//!   centralized key lifecycle management.
+//!
+//! - **AC-3 (Access Enforcement)**: Uses TACACS+ authorization to determine
+//!   which public keys are valid for a given user, enforcing access policy.
+//!
+//! - **AC-17 (Remote Access)**: Controls SSH remote access by centralizing
+//!   authorized key distribution, enabling rapid key revocation.
+//!
+//! - **CM-3 (Configuration Change Control)**: Centralized key management
+//!   eliminates local authorized_keys file modifications, improving change
+//!   control and auditability.
+//!
+//! - **SC-8 (Transmission Confidentiality)**: All communication with the
+//!   TACACS+ server uses TLS 1.3 encryption.
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -97,18 +122,24 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Fetch SSH authorized keys from TACACS+ server.
+///
+/// # NIST Controls
+/// - **IA-2**: Centralized key retrieval for user identification
+/// - **AC-3**: Authorization-based key access control
+/// - **SC-8**: TLS-encrypted communication with server
 async fn run(args: &Args) -> Result<Vec<String>> {
     debug!(username = %args.username, service = %args.service, "fetching SSH keys");
 
-    // Resolve configuration
+    // NIST SC-8: Configuration includes TLS parameters for secure communication
     let config = args.common.resolve()?;
 
-    // Connect to TACACS+ server
+    // NIST SC-8, SC-17: TLS connection with certificate verification
     let mut client = connect(&config)
         .await
         .context("failed to connect to TACACS+ server")?;
 
-    // Send authorization request for SSH keys
+    // NIST AC-3, IA-5(2): Authorization request for SSH public keys
     // The server is expected to return keys in ssh-key=<key> attributes
     let result = client
         .authorize_service(
@@ -149,6 +180,9 @@ async fn run(args: &Args) -> Result<Vec<String>> {
 /// - `ssh-key=<key>`
 /// - `authorized-key=<key>`
 /// - `pubkey=<key>`
+///
+/// # NIST Controls
+/// - **IA-5(2)**: Validates SSH key format before returning
 fn extract_ssh_keys(args: &[String]) -> Vec<String> {
     let mut keys = Vec::new();
 
@@ -176,6 +210,9 @@ fn extract_ssh_keys(args: &[String]) -> Vec<String> {
 }
 
 /// Basic validation that a string looks like an SSH public key.
+///
+/// # NIST Controls
+/// - **IA-5(2)**: Input validation for PKI-based authenticators
 fn is_valid_ssh_key(key: &str) -> bool {
     // SSH keys start with key type
     let valid_prefixes = [

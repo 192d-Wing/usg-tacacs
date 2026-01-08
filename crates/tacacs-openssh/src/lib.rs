@@ -40,12 +40,36 @@
 //! - Supports mutual TLS for device authentication
 //! - Credentials are never logged or stored
 //!
-//! # NIST SP 800-53 Controls
+//! # NIST SP 800-53 Security Controls
 //!
-//! - **IA-2**: User authentication via TACACS+
-//! - **IA-3**: Device identification via client certificates
-//! - **AC-3**: Access enforcement via authorization
-//! - **AU-2**: Audit events via accounting
+//! This crate implements the following NIST security controls:
+//!
+//! - **IA-2 (Identification and Authentication)**: Provides centralized user
+//!   authentication for SSH access via TACACS+ PAP. Users are authenticated
+//!   against a central authentication server rather than local accounts.
+//!
+//! - **IA-3 (Device Identification and Authentication)**: Supports mutual TLS
+//!   (mTLS) client certificates to authenticate the SSH server/device to the
+//!   TACACS+ server before processing authentication requests.
+//!
+//! - **IA-5 (Authenticator Management)**: Passwords are transmitted securely
+//!   via TLS 1.3 encryption. Credentials are never logged, stored locally,
+//!   or exposed in process arguments.
+//!
+//! - **AC-3 (Access Enforcement)**: Enforces authorization decisions for SSH
+//!   sessions and commands. Users must be explicitly authorized for shell access.
+//!
+//! - **AC-17 (Remote Access)**: Controls remote SSH access by centralizing
+//!   authentication and authorization decisions at the TACACS+ server.
+//!
+//! - **AU-2 (Audit Events)**: Generates audit records for SSH session start/stop
+//!   events via TACACS+ accounting, enabling centralized session tracking.
+//!
+//! - **AU-12 (Audit Generation)**: SSH session accounting records include
+//!   username, task ID, elapsed time, and data transfer statistics.
+//!
+//! - **SC-8 (Transmission Confidentiality)**: All TACACS+ communication uses
+//!   TLS 1.3 encryption with no fallback to legacy MD5 obfuscation.
 
 pub mod config;
 
@@ -58,6 +82,10 @@ use usg_tacacs_client_tls::{AcctResult, AuthenResult, AuthorResult, TacacsClient
 ///
 /// Returns `Ok(true)` if authentication succeeds, `Ok(false)` if it fails,
 /// or an error if there's a communication problem.
+///
+/// # NIST Controls
+/// - **IA-2 (Identification and Authentication)**: Verifies user identity
+/// - **IA-5 (Authenticator Management)**: Password protected by TLS
 pub async fn authenticate_pap(
     client: &mut TacacsClient,
     username: &str,
@@ -78,6 +106,10 @@ pub async fn authenticate_pap(
 /// Authorize an SSH session for a user.
 ///
 /// Checks if the user is allowed to start an SSH shell session.
+///
+/// # NIST Controls
+/// - **AC-3 (Access Enforcement)**: Enforces session authorization
+/// - **AC-17 (Remote Access)**: Controls remote shell access
 pub async fn authorize_ssh_session(
     client: &mut TacacsClient,
     username: &str,
@@ -98,6 +130,11 @@ pub async fn authorize_ssh_session(
 /// Authorize a specific SSH command for a user.
 ///
 /// Used for command authorization in restricted shells or forced commands.
+///
+/// # NIST Controls
+/// - **AC-3 (Access Enforcement)**: Enforces command-level authorization
+/// - **AC-6 (Least Privilege)**: Restricts commands to authorized set
+/// - **CM-5 (Access Restrictions for Change)**: Controls configuration commands
 pub async fn authorize_ssh_command(
     client: &mut TacacsClient,
     username: &str,
@@ -118,6 +155,10 @@ pub async fn authorize_ssh_command(
 /// Record SSH session start.
 ///
 /// Call this when an SSH session begins to create an accounting record.
+///
+/// # NIST Controls
+/// - **AU-2 (Audit Events)**: Records session start event
+/// - **AU-12 (Audit Generation)**: Generates accounting record
 pub async fn accounting_session_start(
     client: &mut TacacsClient,
     username: &str,
@@ -145,6 +186,11 @@ pub async fn accounting_session_start(
 /// Record SSH session end.
 ///
 /// Call this when an SSH session ends to complete the accounting record.
+///
+/// # NIST Controls
+/// - **AU-2 (Audit Events)**: Records session end event
+/// - **AU-3 (Content of Audit Records)**: Includes elapsed time, bytes transferred
+/// - **AU-12 (Audit Generation)**: Completes session accounting record
 pub async fn accounting_session_stop(
     client: &mut TacacsClient,
     username: &str,
@@ -182,6 +228,11 @@ pub async fn accounting_session_stop(
 }
 
 /// Create a TACACS+ client from configuration.
+///
+/// # NIST Controls
+/// - **SC-8 (Transmission Confidentiality)**: Establishes TLS 1.3 connection
+/// - **SC-23 (Session Authenticity)**: Validates server certificate
+/// - **IA-3 (Device Identification)**: Optional mTLS client authentication
 pub async fn connect(config: &Config) -> Result<TacacsClient> {
     let mut tls_builder = TlsClientConfig::builder().with_server_ca(&config.ca_cert)?;
 

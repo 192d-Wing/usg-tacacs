@@ -1,0 +1,44 @@
+[package]
+name = "usg-tacacs-proto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Empty workspace table to opt out of parent workspace
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "io-util"] }
+
+[dependencies.usg-tacacs-proto]
+path = ".."
+features = ["legacy-md5"]
+
+# Fuzz target: TACACS+ header parsing
+[[bin]]
+name = "fuzz_header"
+path = "fuzz_targets/fuzz_header.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target: TACACS+ body crypto (MD5 obfuscation)
+[[bin]]
+name = "fuzz_body_crypto"
+path = "fuzz_targets/fuzz_body_crypto.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target: Full packet parsing
+[[bin]]
+name = "fuzz_packet"
+path = "fuzz_targets/fuzz_packet.rs"
+test = false
+doc = false
+bench = false

@@ -349,7 +349,7 @@ where
         .with_context(|| "reading TACACS+ authorization response body")?;
     crypto::apply_body_crypto(&header, &mut body, secret)?;
 
-    ensure!(body.len() >= 5, "authorization response too short");
+    ensure!(body.len() >= 6, "authorization response too short");
     let status = body[0];
     ensure!(
         status == AUTHOR_STATUS_PASS_REPL
