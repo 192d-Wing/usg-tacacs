@@ -55,7 +55,7 @@ sha2 = "0.10"
 bytes = "1"
 hex = "0.4"
 regex = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # JSON Schema
 jsonschema = "0.28"

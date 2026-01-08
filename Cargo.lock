@@ -3575,6 +3575,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "tokio",
  "tokio-rustls",

@@ -94,8 +94,18 @@ pub struct Args {
     pub tls_trust_root: Vec<PathBuf>,
 
     /// Shared secret for TACACS+ body obfuscation (required for legacy, recommended otherwise).
-    #[arg(long)]
+    ///
+    /// **Security Note**: Prefer --secret-file or TACACS_SECRET env var over CLI argument
+    /// to avoid exposing secrets in process listings.
+    #[arg(long, env = "TACACS_SECRET")]
     pub secret: Option<String>,
+
+    /// Path to file containing the shared secret (recommended for production).
+    ///
+    /// File should have restrictive permissions (e.g., 0600) and contain only the secret.
+    /// Takes precedence over --secret and TACACS_SECRET if specified.
+    #[arg(long)]
+    pub secret_file: Option<PathBuf>,
 
     /// Reject UNENCRYPTED TACACS+ packets when a secret is configured, even over TLS.
     #[arg(long)]
@@ -178,8 +188,18 @@ pub struct Args {
     pub ldap_bind_dn: Option<String>,
 
     /// LDAP service account password.
-    #[arg(long)]
+    ///
+    /// **Security Note**: Prefer --ldap-bind-password-file or LDAP_BIND_PASSWORD env var
+    /// over CLI argument to avoid exposing secrets in process listings.
+    #[arg(long, env = "LDAP_BIND_PASSWORD")]
     pub ldap_bind_password: Option<String>,
+
+    /// Path to file containing the LDAP bind password (recommended for production).
+    ///
+    /// File should have restrictive permissions (e.g., 0600) and contain only the password.
+    /// Takes precedence over --ldap-bind-password and LDAP_BIND_PASSWORD if specified.
+    #[arg(long)]
+    pub ldap_bind_password_file: Option<PathBuf>,
 
     /// LDAP search base for locating user entries.
     #[arg(long)]
@@ -323,6 +343,66 @@ pub struct StaticCreds {
     pub argon: HashMap<String, String>,
 }
 
+/// Read a secret from a file, trimming whitespace.
+///
+/// # NIST Controls
+/// - **SC-28 (Protection of Information at Rest)**: Secrets stored in files with
+///   restrictive permissions (0600 recommended) instead of CLI arguments.
+///
+/// # Errors
+/// Returns an error if the file cannot be read or is empty.
+pub fn read_secret_file(path: &PathBuf) -> std::io::Result<String> {
+    let content = std::fs::read_to_string(path)?;
+    let secret = content.trim().to_string();
+    if secret.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "secret file is empty",
+        ));
+    }
+    Ok(secret)
+}
+
+/// Resolve the TACACS+ shared secret from file, CLI argument, or environment variable.
+///
+/// Priority order (highest to lowest):
+/// 1. --secret-file (file-based secret)
+/// 2. --secret or TACACS_SECRET environment variable
+///
+/// # NIST Controls
+/// - **SC-12 (Cryptographic Key Establishment)**: Supports secure secret provisioning
+///   via files with restrictive permissions, avoiding exposure in process listings.
+pub fn resolve_tacacs_secret(args: &Args) -> std::result::Result<Option<String>, String> {
+    // File-based secret takes precedence
+    if let Some(path) = &args.secret_file {
+        let secret = read_secret_file(path)
+            .map_err(|e| format!("failed to read secret file {:?}: {}", path, e))?;
+        return Ok(Some(secret));
+    }
+    // Fall back to CLI arg / env var (clap handles env)
+    Ok(args.secret.clone())
+}
+
+/// Resolve the LDAP bind password from file, CLI argument, or environment variable.
+///
+/// Priority order (highest to lowest):
+/// 1. --ldap-bind-password-file (file-based secret)
+/// 2. --ldap-bind-password or LDAP_BIND_PASSWORD environment variable
+///
+/// # NIST Controls
+/// - **SC-12 (Cryptographic Key Establishment)**: Supports secure secret provisioning
+///   via files with restrictive permissions, avoiding exposure in process listings.
+pub fn resolve_ldap_bind_password(args: &Args) -> std::result::Result<Option<String>, String> {
+    // File-based password takes precedence
+    if let Some(path) = &args.ldap_bind_password_file {
+        let password = read_secret_file(path)
+            .map_err(|e| format!("failed to read LDAP bind password file {:?}: {}", path, e))?;
+        return Ok(Some(password));
+    }
+    // Fall back to CLI arg / env var (clap handles env)
+    Ok(args.ldap_bind_password.clone())
+}
+
 pub fn credentials_map(args: &Args) -> std::result::Result<StaticCreds, String> {
     if !args.allow_static_credentials
         && (!args.user_password.is_empty()
@@ -412,7 +492,42 @@ fn parse_user_password(s: &str) -> std::result::Result<(String, String), String>
     Ok((user, pass))
 }
 
+/// Parse NAD secret in the format `IP:SECRET` or `[IPv6]:SECRET`.
+///
+/// Supports:
+/// - IPv4: `192.168.1.1:secret`
+/// - IPv6 (bracketed): `[2001:db8::1]:secret`
+///
+/// # NIST Controls
+/// - **SI-10 (Information Input Validation)**: Validates IP address format
+///   and ensures secrets are non-empty.
 fn parse_nad_secret(s: &str) -> std::result::Result<(IpAddr, String), String> {
+    // Check for bracketed IPv6 notation: [IPv6]:secret
+    if s.starts_with('[') {
+        // Find the closing bracket
+        let bracket_end = s
+            .find(']')
+            .ok_or_else(|| "missing closing bracket for IPv6 address".to_string())?;
+
+        let ip_str = &s[1..bracket_end];
+        let ip = ip_str
+            .parse::<IpAddr>()
+            .map_err(|e| format!("invalid IPv6 address: {e}"))?;
+
+        // Expect `:secret` after the bracket
+        let remainder = &s[bracket_end + 1..];
+        if !remainder.starts_with(':') {
+            return Err("expected ':' after closing bracket".to_string());
+        }
+
+        let secret = remainder[1..].to_string();
+        if secret.is_empty() {
+            return Err("secret cannot be empty".into());
+        }
+        return Ok((ip, secret));
+    }
+
+    // Standard IPv4 format: split on first colon
     let mut parts = s.splitn(2, ':');
     let ip = parts
         .next()
@@ -499,15 +614,78 @@ mod tests {
     }
 
     #[test]
-    fn parse_nad_secret_ipv6() {
-        // IPv6 addresses contain colons, so the parser uses splitn(2, ':')
-        // which means the first colon splits IP from secret.
-        // For IPv6, you need to use bracket notation or a full address.
-        // Testing with a full IPv6 address that works with the simple parser:
-        let result = parse_nad_secret("2001:db8:85a3:8d3:1319:8a2e:370:7348:mysecret");
-        // This will fail because the parser splits on first colon
-        // The current parser doesn't support IPv6 well, so we test what it does:
-        assert!(result.is_err()); // First segment "2001" is not a valid IP
+    fn parse_nad_secret_ipv6_bracketed() {
+        // IPv6 addresses require bracketed notation: [IPv6]:secret
+        let result = parse_nad_secret("[2001:db8::1]:mysecret");
+        assert!(result.is_ok());
+        let (ip, secret) = result.unwrap();
+        assert_eq!(ip, "2001:db8::1".parse::<IpAddr>().unwrap());
+        assert_eq!(secret, "mysecret");
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6_full_address() {
+        let result = parse_nad_secret("[2001:db8:85a3:8d3:1319:8a2e:370:7348]:secret123");
+        assert!(result.is_ok());
+        let (ip, secret) = result.unwrap();
+        assert_eq!(
+            ip,
+            "2001:db8:85a3:8d3:1319:8a2e:370:7348".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(secret, "secret123");
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6_loopback() {
+        let result = parse_nad_secret("[::1]:loopback-secret");
+        assert!(result.is_ok());
+        let (ip, secret) = result.unwrap();
+        assert_eq!(ip, "::1".parse::<IpAddr>().unwrap());
+        assert_eq!(secret, "loopback-secret");
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6_secret_with_colons() {
+        let result = parse_nad_secret("[2001:db8::1]:secret:with:colons");
+        assert!(result.is_ok());
+        let (ip, secret) = result.unwrap();
+        assert_eq!(ip, "2001:db8::1".parse::<IpAddr>().unwrap());
+        assert_eq!(secret, "secret:with:colons");
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6_missing_closing_bracket() {
+        let result = parse_nad_secret("[2001:db8::1:secret");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing closing bracket"));
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6_missing_colon_after_bracket() {
+        let result = parse_nad_secret("[2001:db8::1]secret");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected ':'"));
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6_empty_secret() {
+        let result = parse_nad_secret("[2001:db8::1]:");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6_invalid_address() {
+        let result = parse_nad_secret("[not-an-ipv6]:secret");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid IPv6"));
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6_unbracketed_fails() {
+        // Unbracketed IPv6 should fail because "2001" is not a valid IP
+        let result = parse_nad_secret("2001:db8::1:secret");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -650,6 +828,7 @@ mod tests {
             client_ca: None,
             tls_trust_root: Vec::new(),
             secret: None,
+            secret_file: None,
             forbid_unencrypted: false,
             tls_psk: None,
             user_password: Vec::new(),
@@ -671,6 +850,7 @@ mod tests {
             ldaps_url: None,
             ldap_bind_dn: None,
             ldap_bind_password: None,
+            ldap_bind_password_file: None,
             ldap_search_base: None,
             ldap_username_attr: "uid".into(),
             ldap_timeout_ms: 5000,
@@ -728,6 +908,7 @@ mod tests {
             client_ca: None,
             tls_trust_root: Vec::new(),
             secret: None,
+            secret_file: None,
             forbid_unencrypted: false,
             tls_psk: None,
             user_password: vec![
@@ -752,6 +933,7 @@ mod tests {
             ldaps_url: None,
             ldap_bind_dn: None,
             ldap_bind_password: None,
+            ldap_bind_password_file: None,
             ldap_search_base: None,
             ldap_username_attr: "uid".into(),
             ldap_timeout_ms: 5000,
@@ -810,6 +992,7 @@ mod tests {
             client_ca: None,
             tls_trust_root: Vec::new(),
             secret: None,
+            secret_file: None,
             forbid_unencrypted: false,
             tls_psk: None,
             user_password: vec![("admin".into(), "secret".into())],
@@ -831,6 +1014,7 @@ mod tests {
             ldaps_url: None,
             ldap_bind_dn: None,
             ldap_bind_password: None,
+            ldap_bind_password_file: None,
             ldap_search_base: None,
             ldap_username_attr: "uid".into(),
             ldap_timeout_ms: 5000,
@@ -889,6 +1073,7 @@ mod tests {
             client_ca: None,
             tls_trust_root: Vec::new(),
             secret: None,
+            secret_file: None,
             forbid_unencrypted: false,
             tls_psk: None,
             user_password: vec![("admin".into(), "secret".into())],
@@ -910,6 +1095,7 @@ mod tests {
             ldaps_url: None,
             ldap_bind_dn: None,
             ldap_bind_password: None,
+            ldap_bind_password_file: None,
             ldap_search_base: None,
             ldap_username_attr: "uid".into(),
             ldap_timeout_ms: 5000,
@@ -969,6 +1155,7 @@ mod tests {
             client_ca: None,
             tls_trust_root: Vec::new(),
             secret: None,
+            secret_file: None,
             forbid_unencrypted: false,
             tls_psk: None,
             user_password: Vec::new(),
@@ -990,6 +1177,7 @@ mod tests {
             ldaps_url: None,
             ldap_bind_dn: None,
             ldap_bind_password: None,
+            ldap_bind_password_file: None,
             ldap_search_base: None,
             ldap_username_attr: "uid".into(),
             ldap_timeout_ms: 5000,
@@ -1048,6 +1236,7 @@ mod tests {
             client_ca: None,
             tls_trust_root: Vec::new(),
             secret: None,
+            secret_file: None,
             forbid_unencrypted: false,
             tls_psk: None,
             user_password: Vec::new(),
@@ -1069,6 +1258,7 @@ mod tests {
             ldaps_url: None,
             ldap_bind_dn: None,
             ldap_bind_password: None,
+            ldap_bind_password_file: None,
             ldap_search_base: None,
             ldap_username_attr: "uid".into(),
             ldap_timeout_ms: 5000,
@@ -1131,5 +1321,365 @@ mod tests {
             cloned.argon.get("admin"),
             Some(&"$argon2id$...".to_string())
         );
+    }
+
+    // ==================== read_secret_file Tests ====================
+
+    #[test]
+    fn read_secret_file_valid() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "my-secret-value").unwrap();
+
+        let result = read_secret_file(&file.path().to_path_buf());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "my-secret-value");
+    }
+
+    #[test]
+    fn read_secret_file_trims_whitespace() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "  secret-with-spaces  \n\n").unwrap();
+
+        let result = read_secret_file(&file.path().to_path_buf());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "secret-with-spaces");
+    }
+
+    #[test]
+    fn read_secret_file_empty_fails() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "   \n\n  ").unwrap(); // Only whitespace
+
+        let result = read_secret_file(&file.path().to_path_buf());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn read_secret_file_nonexistent() {
+        let result = read_secret_file(&PathBuf::from("/nonexistent/secret/file"));
+        assert!(result.is_err());
+    }
+
+    // ==================== resolve_tacacs_secret Tests ====================
+
+    #[test]
+    fn resolve_tacacs_secret_from_file() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "file-based-secret").unwrap();
+
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: Some("cli-secret".into()), // Should be ignored
+            secret_file: Some(file.path().to_path_buf()),
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: Vec::new(),
+            user_password_file: None,
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: false,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_bind_password_file: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
+        };
+
+        let result = resolve_tacacs_secret(&args);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("file-based-secret".to_string()));
+    }
+
+    #[test]
+    fn resolve_tacacs_secret_from_cli() {
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: Some("cli-secret".into()),
+            secret_file: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: Vec::new(),
+            user_password_file: None,
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: false,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_bind_password_file: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
+        };
+
+        let result = resolve_tacacs_secret(&args);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("cli-secret".to_string()));
+    }
+
+    #[test]
+    fn resolve_tacacs_secret_none() {
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: None,
+            secret_file: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: Vec::new(),
+            user_password_file: None,
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: false,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_bind_password_file: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
+        };
+
+        let result = resolve_tacacs_secret(&args);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    // ==================== resolve_ldap_bind_password Tests ====================
+
+    #[test]
+    fn resolve_ldap_bind_password_from_file() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "ldap-file-password").unwrap();
+
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: None,
+            secret_file: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: Vec::new(),
+            user_password_file: None,
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: false,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: Some("cli-ldap-pass".into()), // Should be ignored
+            ldap_bind_password_file: Some(file.path().to_path_buf()),
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
+        };
+
+        let result = resolve_ldap_bind_password(&args);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("ldap-file-password".to_string()));
     }
 }

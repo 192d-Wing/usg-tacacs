@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TACACS+ shared-secret body obfuscation (MD5 pad).
 //!
+//! # Security Notice: MD5 Usage (CWE-327)
+//!
+//! This module uses MD5 for TACACS+ body obfuscation as required by RFC 8907.
+//! **MD5 is cryptographically broken and provides only obfuscation, not encryption.**
+//!
+//! ## Important:
+//! - **TLS 1.3 is mandatory** for production deployments to provide actual encryption
+//! - The `--forbid-unencrypted` flag should be enabled to reject unobfuscated packets
+//! - MD5 obfuscation is applied as defense-in-depth even when TLS is enabled
+//! - Legacy plaintext listeners should only be used for migration scenarios
+//!
+//! ## Mitigation:
+//! 1. Always use TLS 1.3 for all TACACS+ connections (enforced by default)
+//! 2. Use `--forbid-unencrypted` to reject packets without obfuscation
+//! 3. Migrate legacy NADs to TLS-capable versions when possible
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! This module implements the following NIST security controls:
@@ -10,14 +26,11 @@
 //!   legacy obfuscation, not encryption. TLS 1.3 provides actual encryption.
 //!
 //! - **SC-13 (Cryptographic Protection)**: Uses MD5 for legacy protocol
-//!   compatibility. The obfuscation is applied as defense-in-depth even
-//!   when TLS is enabled.
+//!   compatibility per RFC 8907. The obfuscation is applied as defense-in-depth
+//!   even when TLS is enabled.
 //!
 //! - **SC-12 (Cryptographic Key Establishment)**: Enforces minimum secret
 //!   length (8 bytes) for obfuscation keys.
-//!
-//! Note: MD5 is used here only for legacy TACACS+ protocol compatibility.
-//! Modern cryptographic protection is provided by TLS 1.3 (see tls.rs).
 
 use crate::FLAG_UNENCRYPTED;
 use crate::header::Header;

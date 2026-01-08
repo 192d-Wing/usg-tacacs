@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use subtle::ConstantTimeEq;
 use tokio::task;
 use usg_tacacs_proto::{
     AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_PASS, AuthSessionState, AuthenReply,
@@ -211,12 +212,16 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
 /// - **IA-2**: Authenticates users via Password Authentication Protocol
 /// - **IA-5**: Supports Argon2id hashed passwords for secure storage
 /// - **AU-12**: Instrumented for audit logging via tracing
+///
+/// # Security
+/// Uses constant-time comparison for plaintext passwords to prevent timing
+/// side-channel attacks (CWE-208). Argon2 verification is inherently timing-safe.
 #[tracing::instrument(skip(password, creds))]
 pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
     if creds
         .plain
         .get(user)
-        .map(|stored| stored == password)
+        .map(|stored| constant_time_eq_str(stored, password))
         .unwrap_or(false)
     {
         return true;
@@ -225,6 +230,25 @@ pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
         return verify_argon_hash(hash, password.as_bytes());
     }
     false
+}
+
+/// Constant-time string comparison to prevent timing side-channel attacks.
+///
+/// # NIST Controls
+/// - **SC-13 (Cryptographic Protection)**: Uses constant-time comparison to prevent
+///   timing-based information disclosure about password values (CWE-208).
+#[inline]
+fn constant_time_eq_str(a: &str, b: &str) -> bool {
+    constant_time_eq_bytes(a.as_bytes(), b.as_bytes())
+}
+
+/// Constant-time byte slice comparison to prevent timing side-channel attacks.
+///
+/// Returns true only if both slices have the same length and content.
+/// Comparison time is constant regardless of how many bytes match.
+#[inline]
+fn constant_time_eq_bytes(a: &[u8], b: &[u8]) -> bool {
+    a.ct_eq(b).into()
 }
 
 /// Verify password against Argon2id hash.
@@ -241,11 +265,15 @@ fn verify_argon_hash(hash: &str, password: &[u8]) -> bool {
         .is_ok()
 }
 
+/// Verify PAP authentication with byte password.
+///
+/// # Security
+/// Uses constant-time comparison to prevent timing side-channel attacks.
 pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) -> bool {
     if creds
         .plain
         .get(user)
-        .map(|stored| stored.as_bytes() == password)
+        .map(|stored| constant_time_eq_bytes(stored.as_bytes(), password))
         .unwrap_or(false)
     {
         return true;
@@ -256,15 +284,25 @@ pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) -> boo
     false
 }
 
+/// Verify PAP authentication with byte username and password.
+///
+/// # Security
+/// Uses constant-time comparison for password to prevent timing side-channel attacks.
+/// Username comparison is timing-safe indirectly since we iterate all credentials.
 pub fn verify_pap_bytes_username(username: &[u8], password: &[u8], creds: &StaticCreds) -> bool {
+    // Check all plaintext credentials with constant-time password comparison
+    let plain_match = creds.plain.iter().any(|(u, p)| {
+        constant_time_eq_bytes(u.as_bytes(), username)
+            && constant_time_eq_bytes(p.as_bytes(), password)
+    });
+    if plain_match {
+        return true;
+    }
+    // Check argon2 credentials (argon2 verify is inherently timing-safe)
     creds
-        .plain
+        .argon
         .iter()
-        .any(|(u, p)| u.as_bytes() == username && p.as_bytes() == password)
-        || creds
-            .argon
-            .iter()
-            .any(|(u, h)| u.as_bytes() == username && verify_argon_hash(h, password))
+        .any(|(u, h)| constant_time_eq_bytes(u.as_bytes(), username) && verify_argon_hash(h, password))
 }
 
 #[tracing::instrument(skip(password, creds, ldap), fields(has_ldap = ldap.is_some()))]

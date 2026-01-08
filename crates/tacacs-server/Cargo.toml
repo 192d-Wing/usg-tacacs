@@ -20,6 +20,7 @@ openssl.workspace = true
 hex.workspace = true
 ldap3.workspace = true
 argon2.workspace = true
+subtle = "2.6"
 serde.workspace = true
 serde_json.workspace = true
 
