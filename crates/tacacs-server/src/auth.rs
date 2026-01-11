@@ -239,15 +239,17 @@ pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
 
     // Check plaintext credentials with constant-time comparison
     if let Some(stored) = creds.plain.get(user)
-        && constant_time_eq_str(stored, password) {
-            authenticated = true;
-        }
+        && constant_time_eq_str(stored, password)
+    {
+        authenticated = true;
+    }
 
     // Check Argon2 credentials (always execute to prevent timing leak via early return)
     if let Some(hash) = creds.argon.get(user)
-        && verify_argon_hash(hash, password.as_bytes()) {
-            authenticated = true;
-        }
+        && verify_argon_hash(hash, password.as_bytes())
+    {
+        authenticated = true;
+    }
 
     // If username doesn't exist in either store, perform dummy work to match timing
     // of legitimate authentication attempts. This prevents username enumeration via
@@ -312,15 +314,17 @@ pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) -> boo
 
     // Check plaintext credentials with constant-time comparison
     if let Some(stored) = creds.plain.get(user)
-        && constant_time_eq_bytes(stored.as_bytes(), password) {
-            authenticated = true;
-        }
+        && constant_time_eq_bytes(stored.as_bytes(), password)
+    {
+        authenticated = true;
+    }
 
     // Check Argon2 credentials
     if let Some(hash) = creds.argon.get(user)
-        && verify_argon_hash(hash, password) {
-            authenticated = true;
-        }
+        && verify_argon_hash(hash, password)
+    {
+        authenticated = true;
+    }
 
     // Dummy work if username doesn't exist (prevents timing enumeration)
     if !creds.plain.contains_key(user) && !creds.argon.contains_key(user) {

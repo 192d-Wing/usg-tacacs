@@ -1,9 +1,11 @@
+use crate::ascii::AsciiConfig;
 use crate::auth::LdapConfig;
 use crate::config::{Args, LogFormat, StaticCreds, credentials_map};
 use crate::http::{ServerState, serve_http};
 use crate::metrics::metrics;
 use crate::server::{
-    ConnLimiter, serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup,
+    AuthContext, ConnLimiter, ConnectionConfig, TlsIdentityConfig, serve_legacy, serve_tls,
+    tls_acceptor, validate_policy, watch_sighup,
 };
 use crate::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
 use anyhow::{Context, Result, bail};
@@ -194,43 +196,31 @@ async fn main() -> Result<()> {
             .as_ref()
             .context("--client-ca is required when --listen-tls is set")?;
         let acceptor = tls_acceptor(cert, key, ca, &args.tls_trust_root)?;
-        let policy = shared_policy.clone();
-        let secret = shared_secret.clone();
-        let credentials = credentials.clone();
-        let ascii_attempt_limit = args.ascii_attempt_limit;
-        let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
-        let ascii_pass_attempt_limit = args.ascii_pass_attempt_limit;
-        let ascii_backoff_ms = args.ascii_backoff_ms;
-        let tls_ascii_backoff_max_ms = ascii_backoff_max_ms;
-        let tls_ascii_lockout_limit = ascii_lockout_limit;
-        let tls_single_connect_idle_secs = single_connect_idle_secs;
-        let tls_single_connect_keepalive_secs = single_connect_keepalive_secs;
-        let conn_limiter = conn_limiter.clone();
-        let allowed_cn = args.tls_allowed_client_cn.clone();
-        let allowed_san = args.tls_allowed_client_san.clone();
-        let ldap_config = ldap_config.clone();
+        let auth_ctx = AuthContext {
+            policy: shared_policy.clone(),
+            secret: shared_secret.clone(),
+            credentials: credentials.clone(),
+            ldap: ldap_config.clone(),
+        };
+        let conn_cfg = ConnectionConfig {
+            single_connect_idle_secs,
+            single_connect_keepalive_secs,
+            conn_limiter: conn_limiter.clone(),
+            ascii: AsciiConfig {
+                attempt_limit: args.ascii_attempt_limit,
+                user_attempt_limit: args.ascii_user_attempt_limit,
+                pass_attempt_limit: args.ascii_pass_attempt_limit,
+                backoff_ms: args.ascii_backoff_ms,
+                backoff_max_ms: ascii_backoff_max_ms,
+                lockout_limit: ascii_lockout_limit,
+            },
+        };
+        let tls_identity = TlsIdentityConfig {
+            allowed_cn: args.tls_allowed_client_cn.clone(),
+            allowed_san: args.tls_allowed_client_san.clone(),
+        };
         handles.push(tokio::spawn(async move {
-            if let Err(err) = serve_tls(
-                addr,
-                acceptor,
-                policy,
-                secret,
-                credentials,
-                ascii_attempt_limit,
-                ascii_user_attempt_limit,
-                ascii_pass_attempt_limit,
-                ascii_backoff_ms,
-                tls_ascii_backoff_max_ms,
-                tls_ascii_lockout_limit,
-                tls_single_connect_idle_secs,
-                tls_single_connect_keepalive_secs,
-                conn_limiter,
-                allowed_cn,
-                allowed_san,
-                ldap_config,
-            )
-            .await
-            {
+            if let Err(err) = serve_tls(addr, acceptor, auth_ctx, conn_cfg, tls_identity).await {
                 error!(error = %err, "TLS listener stopped");
             }
         }));
@@ -248,40 +238,28 @@ async fn main() -> Result<()> {
                 MIN_SECRET_LEN
             );
         }
-        let policy = shared_policy.clone();
-        let secret = shared_secret.clone();
+        let auth_ctx = AuthContext {
+            policy: shared_policy.clone(),
+            secret: shared_secret.clone(),
+            credentials: credentials.clone(),
+            ldap: ldap_config.clone(),
+        };
+        let conn_cfg = ConnectionConfig {
+            single_connect_idle_secs,
+            single_connect_keepalive_secs,
+            conn_limiter: conn_limiter.clone(),
+            ascii: AsciiConfig {
+                attempt_limit: args.ascii_attempt_limit,
+                user_attempt_limit: args.ascii_user_attempt_limit,
+                pass_attempt_limit: args.ascii_pass_attempt_limit,
+                backoff_ms: args.ascii_backoff_ms,
+                backoff_max_ms: ascii_backoff_max_ms,
+                lockout_limit: ascii_lockout_limit,
+            },
+        };
         let nad_secrets = legacy_nad_secrets.clone();
-        let credentials = credentials.clone();
-        let ascii_attempt_limit = args.ascii_attempt_limit;
-        let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
-        let ascii_pass_attempt_limit = args.ascii_pass_attempt_limit;
-        let ascii_backoff_ms = args.ascii_backoff_ms;
-        let legacy_ascii_backoff_max_ms = ascii_backoff_max_ms;
-        let legacy_ascii_lockout_limit = ascii_lockout_limit;
-        let legacy_single_connect_idle_secs = single_connect_idle_secs;
-        let legacy_single_connect_keepalive_secs = single_connect_keepalive_secs;
-        let conn_limiter = conn_limiter.clone();
-        let ldap_config = ldap_config.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(err) = serve_legacy(
-                addr,
-                policy,
-                secret,
-                credentials,
-                ascii_attempt_limit,
-                ascii_user_attempt_limit,
-                ascii_pass_attempt_limit,
-                ascii_backoff_ms,
-                legacy_ascii_backoff_max_ms,
-                legacy_ascii_lockout_limit,
-                legacy_single_connect_idle_secs,
-                legacy_single_connect_keepalive_secs,
-                conn_limiter,
-                ldap_config,
-                nad_secrets,
-            )
-            .await
-            {
+            if let Err(err) = serve_legacy(addr, auth_ctx, conn_cfg, nad_secrets).await {
                 error!(error = %err, "legacy listener stopped");
             }
         }));

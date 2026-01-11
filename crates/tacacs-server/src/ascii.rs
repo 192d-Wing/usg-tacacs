@@ -41,6 +41,7 @@ const AUTHEN_CONT_ABORT: u8 = 0x01;
 /// # NIST Controls
 /// - **AC-7 (Unsuccessful Logon Attempts)**: All fields support configurable
 ///   limits and delays to prevent brute-force attacks.
+#[derive(Clone)]
 pub struct AsciiConfig {
     /// Maximum total attempts per session (NIST AC-7)
     pub attempt_limit: u8,

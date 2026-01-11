@@ -136,41 +136,55 @@ impl Drop for ConnGuard {
 
 /// Configuration for connection-level settings.
 ///
-/// Groups connection timeout and rate limiting settings.
-/// TODO: Use this in serve_tls(), serve_legacy(), and handle_connection()
-/// to reduce parameter count.
+/// Groups connection timeout, rate limiting, and ASCII authentication settings.
+///
+/// # NIST Controls
+/// - **AC-7 (Unsuccessful Logon Attempts)**: Contains ASCII authentication limits
+/// - **AC-10 (Concurrent Session Control)**: Contains connection rate limiter
+/// - **AC-11/AC-12 (Session Lock/Termination)**: Contains idle/keepalive timeouts
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) struct ConnectionConfig {
+    /// Idle timeout for single-connect sessions (seconds)
     pub single_connect_idle_secs: u64,
+    /// Keepalive timeout for single-connect sessions (seconds)
     pub single_connect_keepalive_secs: u64,
+    /// Per-IP connection rate limiter
     pub conn_limiter: ConnLimiter,
+    /// ASCII authentication configuration
+    pub ascii: AsciiConfig,
 }
 
 /// Shared authentication context containing policy, credentials, and secrets.
 ///
 /// Groups all authentication-related shared state.
-/// TODO: Use this in serve_tls(), serve_legacy(), and handle_connection()
-/// to reduce parameter count.
+///
+/// # NIST Controls
+/// - **IA-2 (Identification and Authentication)**: Contains credentials and LDAP config
+/// - **AC-3 (Access Enforcement)**: Contains policy engine for authorization
+/// - **SC-8 (Transmission Confidentiality)**: Contains shared secret for obfuscation
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) struct AuthContext {
+    /// Policy engine for authorization decisions
     pub policy: Arc<RwLock<PolicyEngine>>,
+    /// Shared secret for TACACS+ body obfuscation (legacy)
     pub secret: Option<Arc<Vec<u8>>>,
+    /// Static credentials for PAP/CHAP authentication
     pub credentials: Arc<StaticCreds>,
+    /// LDAP configuration for external authentication
     pub ldap: Option<Arc<LdapConfig>>,
 }
 
-/// Context for handling individual connections.
+/// TLS-specific configuration for client certificate validation.
 ///
-/// Groups connection-specific state and timeouts.
-/// TODO: Use this in handle_connection() to reduce parameter count.
-#[derive(Clone)]
-#[allow(dead_code)]
-pub(crate) struct ConnectionContext {
-    pub peer: String,
-    pub single_connect_idle_secs: u64,
-    pub single_connect_keepalive_secs: u64,
+/// # NIST Controls
+/// - **IA-3 (Device Identification)**: Client certificate CN/SAN allowlists
+/// - **SC-23 (Session Authenticity)**: Ensures only authorized devices connect
+#[derive(Clone, Default)]
+pub(crate) struct TlsIdentityConfig {
+    /// Allowed Common Names for client certificates
+    pub allowed_cn: Vec<String>,
+    /// Allowed Subject Alternative Names for client certificates
+    pub allowed_san: Vec<String>,
 }
 
 /// Enforce client certificate identity policy (CN/SAN allowlists).
@@ -685,21 +699,9 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
 pub async fn serve_tls(
     addr: SocketAddr,
     acceptor: TlsAcceptor,
-    policy: Arc<RwLock<PolicyEngine>>,
-    secret: Option<Arc<Vec<u8>>>,
-    credentials: Arc<StaticCreds>,
-    ascii_attempt_limit: u8,
-    ascii_user_attempt_limit: u8,
-    ascii_pass_attempt_limit: u8,
-    ascii_backoff_ms: u64,
-    ascii_backoff_max_ms: u64,
-    ascii_lockout_limit: u8,
-    single_connect_idle_secs: u64,
-    single_connect_keepalive_secs: u64,
-    conn_limiter: ConnLimiter,
-    allowed_cn: Vec<String>,
-    allowed_san: Vec<String>,
-    ldap: Option<Arc<LdapConfig>>,
+    auth_ctx: AuthContext,
+    conn_cfg: ConnectionConfig,
+    tls_identity: TlsIdentityConfig,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -708,16 +710,12 @@ pub async fn serve_tls(
     loop {
         let (socket, peer_addr) = listener.accept().await?;
         let conn_acceptor = acceptor.clone();
-        let conn_policy = policy.clone();
-        let conn_secret = secret.clone();
-        let conn_credentials = credentials.clone();
-        let conn_limiter = conn_limiter.clone();
-        let conn_allowed_cn = allowed_cn.clone();
-        let conn_allowed_san = allowed_san.clone();
-        let conn_ldap = ldap.clone();
+        let conn_auth_ctx = auth_ctx.clone();
+        let conn_cfg = conn_cfg.clone();
+        let conn_tls_identity = tls_identity.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
-            let guard = match conn_limiter.try_acquire(&peer_ip).await {
+            let guard = match conn_cfg.conn_limiter.try_acquire(&peer_ip).await {
                 Some(g) => g,
                 None => {
                     warn!(peer = %peer_addr, "connection rejected: per-peer limit exceeded");
@@ -729,28 +727,18 @@ pub async fn serve_tls(
                     if let Err(err) = enforce_client_cert_policy(
                         &stream,
                         &peer_addr,
-                        &conn_allowed_cn,
-                        &conn_allowed_san,
+                        &conn_tls_identity.allowed_cn,
+                        &conn_tls_identity.allowed_san,
                     ) {
                         warn!(error = %err, peer = %peer_addr, "TLS client cert rejected");
                         return;
                     }
                     if let Err(err) = handle_connection(
                         stream,
-                        conn_policy,
                         format!("{peer_addr}"),
-                        conn_secret,
-                        conn_credentials,
-                        ascii_attempt_limit,
-                        ascii_user_attempt_limit,
-                        ascii_pass_attempt_limit,
-                        ascii_backoff_ms,
-                        ascii_backoff_max_ms,
-                        ascii_lockout_limit,
-                        single_connect_idle_secs,
-                        single_connect_keepalive_secs,
+                        conn_auth_ctx,
+                        &conn_cfg,
                         guard,
-                        conn_ldap.clone(),
                     )
                     .await
                     {
@@ -765,19 +753,8 @@ pub async fn serve_tls(
 
 pub async fn serve_legacy(
     addr: SocketAddr,
-    policy: Arc<RwLock<PolicyEngine>>,
-    secret: Option<Arc<Vec<u8>>>,
-    credentials: Arc<StaticCreds>,
-    ascii_attempt_limit: u8,
-    ascii_user_attempt_limit: u8,
-    ascii_pass_attempt_limit: u8,
-    ascii_backoff_ms: u64,
-    ascii_backoff_max_ms: u64,
-    ascii_lockout_limit: u8,
-    single_connect_idle_secs: u64,
-    single_connect_keepalive_secs: u64,
-    conn_limiter: ConnLimiter,
-    ldap: Option<Arc<LdapConfig>>,
+    auth_ctx: AuthContext,
+    conn_cfg: ConnectionConfig,
     nad_secrets: Arc<HashMap<IpAddr, Arc<Vec<u8>>>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
@@ -786,23 +763,21 @@ pub async fn serve_legacy(
     info!("listening for legacy TACACS+ on {}", addr);
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let conn_policy = policy.clone();
-        let default_secret = secret.clone();
-        let conn_credentials = credentials.clone();
+        let conn_auth_ctx = auth_ctx.clone();
+        let conn_cfg = conn_cfg.clone();
         let conn_nad_secrets = nad_secrets.clone();
-        let conn_limiter = conn_limiter.clone();
-        let conn_ldap = ldap.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
-            let guard = match conn_limiter.try_acquire(&peer_ip).await {
+            let guard = match conn_cfg.conn_limiter.try_acquire(&peer_ip).await {
                 Some(g) => g,
                 None => {
                     warn!(peer = %peer_addr, "connection rejected: per-peer limit exceeded");
                     return;
                 }
             };
+            // For legacy connections, use per-NAD secret if configured, otherwise default
             let conn_secret = if conn_nad_secrets.is_empty() {
-                default_secret.clone()
+                conn_auth_ctx.secret.clone()
             } else {
                 conn_nad_secrets.get(&peer_addr.ip()).cloned()
             };
@@ -810,22 +785,19 @@ pub async fn serve_legacy(
                 warn!(peer = %peer_addr, "legacy connection rejected: NAD not in allowlist");
                 return;
             }
+            // Create a modified auth context with the per-NAD secret
+            let per_nad_auth_ctx = AuthContext {
+                policy: conn_auth_ctx.policy.clone(),
+                secret: conn_secret,
+                credentials: conn_auth_ctx.credentials.clone(),
+                ldap: conn_auth_ctx.ldap.clone(),
+            };
             if let Err(err) = handle_connection(
                 socket,
-                conn_policy,
                 format!("{peer_addr}"),
-                conn_secret,
-                conn_credentials,
-                ascii_attempt_limit,
-                ascii_user_attempt_limit,
-                ascii_pass_attempt_limit,
-                ascii_backoff_ms,
-                ascii_backoff_max_ms,
-                ascii_lockout_limit,
-                single_connect_idle_secs,
-                single_connect_keepalive_secs,
+                per_nad_auth_ctx,
+                &conn_cfg,
                 guard,
-                conn_ldap.clone(),
             )
             .await
             {
@@ -837,24 +809,23 @@ pub async fn serve_legacy(
 
 async fn handle_connection<S>(
     mut stream: S,
-    policy: Arc<RwLock<PolicyEngine>>,
     peer: String,
-    secret: Option<Arc<Vec<u8>>>,
-    credentials: Arc<StaticCreds>,
-    ascii_attempt_limit: u8,
-    ascii_user_attempt_limit: u8,
-    ascii_pass_attempt_limit: u8,
-    ascii_backoff_ms: u64,
-    ascii_backoff_max_ms: u64,
-    ascii_lockout_limit: u8,
-    single_connect_idle_secs: u64,
-    single_connect_keepalive_secs: u64,
+    auth_ctx: AuthContext,
+    conn_cfg: &ConnectionConfig,
     _guard: ConnGuard,
-    ldap: Option<Arc<LdapConfig>>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // Extract references for convenience
+    let policy = &auth_ctx.policy;
+    let secret = &auth_ctx.secret;
+    let credentials = &auth_ctx.credentials;
+    let ldap = &auth_ctx.ldap;
+    let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
+    let single_connect_keepalive_secs = conn_cfg.single_connect_keepalive_secs;
+    let ascii_cfg = &conn_cfg.ascii;
+
     use std::collections::HashMap;
     let mut auth_states: HashMap<u32, AuthSessionState> = HashMap::new();
     let mut single_connect = SingleConnectState::default();
@@ -1481,19 +1452,19 @@ where
                                 }
                             } else if !start.data.is_empty() {
                                 let ok = if let Some(raw) = state.username_raw.as_ref() {
-                                    verify_pap_bytes_username(raw, &start.data, &credentials)
+                                    verify_pap_bytes_username(raw, &start.data, credentials)
                                 } else {
                                     verify_pap_bytes(
                                         state.username.as_deref().unwrap_or_default(),
                                         &start.data,
-                                        &credentials,
+                                        credentials,
                                     )
                                 } || {
                                     if let Some(user) = state.username.as_deref() {
                                         verify_password_sources(
                                             Some(user),
                                             &start.data,
-                                            &credentials,
+                                            credentials,
                                             ldap.as_ref(),
                                         )
                                         .await
@@ -1503,9 +1474,9 @@ where
                                 };
                                 if !ok
                                     && let Some(delay) = calc_ascii_backoff_capped(
-                                        ascii_backoff_ms,
+                                        ascii_cfg.backoff_ms,
                                         state.ascii_attempts,
-                                        ascii_backoff_max_ms,
+                                        ascii_cfg.backoff_max_ms,
                                     )
                                 {
                                     sleep(delay).await;
@@ -1566,11 +1537,11 @@ where
                                     return Ok(());
                                 }
                             };
-                            let ok = verify_pap(&start.user, &password, &credentials)
+                            let ok = verify_pap(&start.user, &password, credentials)
                                 || verify_password_sources(
                                     Some(&start.user),
                                     password.as_bytes(),
-                                    &credentials,
+                                    credentials,
                                     ldap.as_ref(),
                                 )
                                 .await;
@@ -1649,22 +1620,14 @@ where
                     },
                     AuthenPacket::Continue(ref cont) => match state.authen_type {
                         Some(AUTHEN_TYPE_ASCII) => {
-                            let ascii_cfg = AsciiConfig {
-                                attempt_limit: ascii_attempt_limit,
-                                user_attempt_limit: ascii_user_attempt_limit,
-                                pass_attempt_limit: ascii_pass_attempt_limit,
-                                backoff_ms: ascii_backoff_ms,
-                                backoff_max_ms: ascii_backoff_max_ms,
-                                lockout_limit: ascii_lockout_limit,
-                            };
                             handle_ascii_continue(
                                 cont.user_msg.as_slice(),
                                 cont.data.as_slice(),
                                 cont.flags,
                                 state,
-                                &policy,
-                                &credentials,
-                                &ascii_cfg,
+                                policy,
+                                credentials,
+                                ascii_cfg,
                                 ldap.as_ref(),
                             )
                             .await
@@ -1676,7 +1639,7 @@ where
                                     &user,
                                     cont.data.as_slice(),
                                     state,
-                                    &credentials,
+                                    credentials,
                                 ),
                                 _ => AuthenReply {
                                     status: AUTHEN_STATUS_FAIL,
@@ -1801,7 +1764,7 @@ where
                 .await
                 .with_context(|| "sending TACACS+ auth reply")?;
                 if !reply.server_msg_raw.is_empty() {
-                    enforce_server_msg(&policy, state, &mut reply).await;
+                    enforce_server_msg(policy, state, &mut reply).await;
                     debug!(
                         peer = %peer,
                         session = session_id,
