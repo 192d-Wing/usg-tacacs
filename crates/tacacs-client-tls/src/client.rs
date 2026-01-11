@@ -158,7 +158,7 @@ impl Session {
 
     /// Check if we expect a server reply (even sequence number).
     pub fn expects_reply(&self) -> bool {
-        self.seq_no % 2 == 0
+        self.seq_no.is_multiple_of(2)
     }
 }
 
