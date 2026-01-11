@@ -16,13 +16,7 @@
 //!
 //! - **AU-12 (Audit Generation)**: Permission denials are logged via tracing.
 
-use axum::{
-    body::Body,
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
+use axum::{body::Body, extract::Request, http::StatusCode, middleware::Next, response::Response};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::warn;

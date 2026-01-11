@@ -61,11 +61,7 @@ impl TacacsClient {
     /// - **SC-8 (Transmission Confidentiality)**: Establishes TLS 1.3 connection
     /// - **SC-23 (Session Authenticity)**: Validates server certificate
     #[instrument(skip(config), fields(addr = %addr, server_name = %server_name))]
-    pub async fn connect(
-        addr: &str,
-        server_name: &str,
-        config: TlsClientConfig,
-    ) -> Result<Self> {
+    pub async fn connect(addr: &str, server_name: &str, config: TlsClientConfig) -> Result<Self> {
         let socket_addr: SocketAddr = addr
             .parse()
             .with_context(|| format!("parsing server address: {}", addr))?;
@@ -104,7 +100,12 @@ impl TacacsClient {
     ///
     /// This is useful for advanced use cases where you need direct access
     /// to send/receive TACACS+ packets using the protocol library.
-    pub fn split(&mut self) -> (&mut (impl AsyncRead + Unpin), &mut (impl AsyncWrite + Unpin)) {
+    pub fn split(
+        &mut self,
+    ) -> (
+        &mut (impl AsyncRead + Unpin),
+        &mut (impl AsyncWrite + Unpin),
+    ) {
         (&mut self.reader, &mut self.writer)
     }
 

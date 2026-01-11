@@ -630,7 +630,9 @@ mod tests {
         let (ip, secret) = result.unwrap();
         assert_eq!(
             ip,
-            "2001:db8:85a3:8d3:1319:8a2e:370:7348".parse::<IpAddr>().unwrap()
+            "2001:db8:85a3:8d3:1319:8a2e:370:7348"
+                .parse::<IpAddr>()
+                .unwrap()
         );
         assert_eq!(secret, "secret123");
     }

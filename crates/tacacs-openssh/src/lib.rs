@@ -76,7 +76,9 @@ pub mod config;
 pub use config::{CommonArgs, Config};
 
 use anyhow::Result;
-use usg_tacacs_client_tls::{AcctResult, AuthenResult, AuthorResult, TacacsClient, TlsClientConfig};
+use usg_tacacs_client_tls::{
+    AcctResult, AuthenResult, AuthorResult, TacacsClient, TlsClientConfig,
+};
 
 /// Authenticate a user via TACACS+ PAP.
 ///
@@ -110,10 +112,7 @@ pub async fn authenticate_pap(
 /// # NIST Controls
 /// - **AC-3 (Access Enforcement)**: Enforces session authorization
 /// - **AC-17 (Remote Access)**: Controls remote shell access
-pub async fn authorize_ssh_session(
-    client: &mut TacacsClient,
-    username: &str,
-) -> Result<bool> {
+pub async fn authorize_ssh_session(client: &mut TacacsClient, username: &str) -> Result<bool> {
     let result = client
         .authorize_service(username, "shell", Some("ssh"), &[])
         .await?;

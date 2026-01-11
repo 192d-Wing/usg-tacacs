@@ -57,37 +57,58 @@ pub fn build_api_router(rbac: RbacConfig) -> Router {
     // GET /api/v1/status - requires read:status
     let status_router = Router::new()
         .route("/api/v1/status", get(get_status))
-        .route_layer(middleware::from_fn(require_permission(&rbac, "read:status")));
+        .route_layer(middleware::from_fn(require_permission(
+            &rbac,
+            "read:status",
+        )));
 
     // GET /api/v1/sessions - requires read:sessions
     let sessions_read_router = Router::new()
         .route("/api/v1/sessions", get(get_sessions))
-        .route_layer(middleware::from_fn(require_permission(&rbac, "read:sessions")));
+        .route_layer(middleware::from_fn(require_permission(
+            &rbac,
+            "read:sessions",
+        )));
 
     // DELETE /api/v1/sessions/:id - requires write:sessions
     let sessions_write_router = Router::new()
         .route("/api/v1/sessions/{id}", delete(delete_session))
-        .route_layer(middleware::from_fn(require_permission(&rbac, "write:sessions")));
+        .route_layer(middleware::from_fn(require_permission(
+            &rbac,
+            "write:sessions",
+        )));
 
     // GET /api/v1/policy - requires read:policy
     let policy_read_router = Router::new()
         .route("/api/v1/policy", get(get_policy))
-        .route_layer(middleware::from_fn(require_permission(&rbac, "read:policy")));
+        .route_layer(middleware::from_fn(require_permission(
+            &rbac,
+            "read:policy",
+        )));
 
     // POST /api/v1/policy/reload - requires write:policy
     let policy_write_router = Router::new()
         .route("/api/v1/policy/reload", post(reload_policy))
-        .route_layer(middleware::from_fn(require_permission(&rbac, "write:policy")));
+        .route_layer(middleware::from_fn(require_permission(
+            &rbac,
+            "write:policy",
+        )));
 
     // GET /api/v1/config - requires read:config
     let config_router = Router::new()
         .route("/api/v1/config", get(get_config))
-        .route_layer(middleware::from_fn(require_permission(&rbac, "read:config")));
+        .route_layer(middleware::from_fn(require_permission(
+            &rbac,
+            "read:config",
+        )));
 
     // GET /api/v1/metrics - requires read:metrics
     let metrics_router = Router::new()
         .route("/api/v1/metrics", get(get_metrics))
-        .route_layer(middleware::from_fn(require_permission(&rbac, "read:metrics")));
+        .route_layer(middleware::from_fn(require_permission(
+            &rbac,
+            "read:metrics",
+        )));
 
     // Merge all routers and attach shared state
     Router::new()
@@ -189,7 +210,8 @@ async fn reload_policy() -> impl IntoResponse {
     // For now, operators must send SIGHUP externally after calling this endpoint
     let response = SuccessResponse {
         success: true,
-        message: "Policy reload request logged. Send SIGHUP to process to trigger reload.".to_string(),
+        message: "Policy reload request logged. Send SIGHUP to process to trigger reload."
+            .to_string(),
     };
 
     Json(response)

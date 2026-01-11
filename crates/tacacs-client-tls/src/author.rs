@@ -38,7 +38,10 @@ use anyhow::{Context, Result};
 use bytes::{BufMut, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, instrument};
-use usg_tacacs_proto::{AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL, TYPE_AUTHOR, VERSION};
+use usg_tacacs_proto::{
+    AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
+    TYPE_AUTHOR, VERSION,
+};
 
 /// Authentication method used for the authorization request.
 pub const AUTHEN_METHOD_TACACSPLUS: u8 = 0x06;
@@ -105,10 +108,7 @@ impl TacacsClient {
         let session = self.new_session();
 
         // Build arguments list
-        let mut args = vec![
-            format!("service=shell"),
-            format!("cmd={}", cmd),
-        ];
+        let mut args = vec![format!("service=shell"), format!("cmd={}", cmd)];
         for arg in cmd_args {
             args.push(format!("cmd-arg={}", arg));
         }
@@ -180,7 +180,10 @@ impl TacacsClient {
         send_author_packet(&mut self.writer, &session, &body).await?;
         let reply = recv_author_reply(&mut self.reader).await?;
 
-        debug!(status = reply.status, "received service authorization reply");
+        debug!(
+            status = reply.status,
+            "received service authorization reply"
+        );
 
         Ok(parse_author_result(&reply))
     }
@@ -456,7 +459,9 @@ mod tests {
         };
 
         match parse_author_result(&reply) {
-            AuthorResult::PassReplace { args, server_msg, .. } => {
+            AuthorResult::PassReplace {
+                args, server_msg, ..
+            } => {
                 assert_eq!(server_msg, "Modified");
                 assert_eq!(args.len(), 2);
             }

@@ -442,7 +442,8 @@ where
     };
 
     let data = if data_len > 0 && body.len() >= 5 + server_msg_len + data_len {
-        String::from_utf8_lossy(&body[5 + server_msg_len..5 + server_msg_len + data_len]).to_string()
+        String::from_utf8_lossy(&body[5 + server_msg_len..5 + server_msg_len + data_len])
+            .to_string()
     } else {
         String::new()
     };
@@ -475,10 +476,7 @@ mod tests {
 
     #[test]
     fn build_acct_request_start() {
-        let args = vec![
-            "service=shell".to_string(),
-            "task_id=12345".to_string(),
-        ];
+        let args = vec!["service=shell".to_string(), "task_id=12345".to_string()];
 
         let body = build_acct_request(
             ACCT_FLAG_START,

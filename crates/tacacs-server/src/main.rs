@@ -313,10 +313,12 @@ async fn main() -> Result<()> {
 
         // Load RBAC configuration from file or use defaults
         let rbac_config = if let Some(rbac_path) = args.api_rbac_config.as_ref() {
-            let rbac_json = std::fs::read_to_string(rbac_path)
-                .with_context(|| format!("failed to read RBAC config from {}", rbac_path.display()))?;
-            serde_json::from_str(&rbac_json)
-                .with_context(|| format!("failed to parse RBAC config from {}", rbac_path.display()))?
+            let rbac_json = std::fs::read_to_string(rbac_path).with_context(|| {
+                format!("failed to read RBAC config from {}", rbac_path.display())
+            })?;
+            serde_json::from_str(&rbac_json).with_context(|| {
+                format!("failed to parse RBAC config from {}", rbac_path.display())
+            })?
         } else {
             info!("using default RBAC configuration (admin, operator, viewer roles)");
             crate::api::RbacConfig::default()
@@ -330,7 +332,9 @@ async fn main() -> Result<()> {
         ) {
             let tls_config = tls::build_tls_config(cert, key, client_ca, &[])
                 .context("building API TLS configuration")?;
-            Some(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config)))
+            Some(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(
+                tls_config,
+            )))
         } else {
             // Warn if TLS is not configured - API will run in plaintext mode
             // In production, TLS should always be enabled

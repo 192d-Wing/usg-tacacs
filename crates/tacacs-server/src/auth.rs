@@ -299,10 +299,9 @@ pub fn verify_pap_bytes_username(username: &[u8], password: &[u8], creds: &Stati
         return true;
     }
     // Check argon2 credentials (argon2 verify is inherently timing-safe)
-    creds
-        .argon
-        .iter()
-        .any(|(u, h)| constant_time_eq_bytes(u.as_bytes(), username) && verify_argon_hash(h, password))
+    creds.argon.iter().any(|(u, h)| {
+        constant_time_eq_bytes(u.as_bytes(), username) && verify_argon_hash(h, password)
+    })
 }
 
 #[tracing::instrument(skip(password, creds, ldap), fields(has_ldap = ldap.is_some()))]

@@ -106,7 +106,11 @@ impl TacacsClient {
     /// - **IA-2 (Identification and Authentication)**: User authentication
     /// - **IA-5 (Authenticator Management)**: Password transmission (TLS protected)
     #[instrument(skip(self, password), fields(username = %username))]
-    pub async fn authenticate_pap(&mut self, username: &str, password: &str) -> Result<AuthenResult> {
+    pub async fn authenticate_pap(
+        &mut self,
+        username: &str,
+        password: &str,
+    ) -> Result<AuthenResult> {
         let session = self.new_session();
 
         // Build authentication START packet for PAP
@@ -193,7 +197,10 @@ impl TacacsClient {
     /// Returns the initial server response, which may be `Pass`, `Fail`, or
     /// a prompt for additional data.
     #[instrument(skip(self), fields(username = %username))]
-    pub async fn authenticate_ascii_start(&mut self, username: &str) -> Result<(Session, AuthenResult)> {
+    pub async fn authenticate_ascii_start(
+        &mut self,
+        username: &str,
+    ) -> Result<(Session, AuthenResult)> {
         let mut session = self.new_session();
 
         let body = build_authen_start(
@@ -287,7 +294,10 @@ impl TacacsClient {
         send_authen_packet(&mut self.writer, &session, &body).await?;
         let reply = recv_authen_reply(&mut self.reader).await?;
 
-        debug!(status = reply.status, "received enable authentication reply");
+        debug!(
+            status = reply.status,
+            "received enable authentication reply"
+        );
 
         Ok(parse_authen_result(&reply))
     }

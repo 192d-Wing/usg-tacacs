@@ -92,9 +92,9 @@ mod tls;
 
 // Re-export main types
 pub use acct::AcctResult;
-pub use authen::{AuthenResult, ACTION_ENABLE, ACTION_LOGIN, SERVICE_ENABLE, SERVICE_LOGIN};
+pub use authen::{ACTION_ENABLE, ACTION_LOGIN, AuthenResult, SERVICE_ENABLE, SERVICE_LOGIN};
 pub use author::AuthorResult;
-pub use client::{Session, TacacsClient, DEFAULT_PORT};
+pub use client::{DEFAULT_PORT, Session, TacacsClient};
 pub use tls::{TlsClientConfig, TlsClientConfigBuilder};
 
 // Re-export accounting flags for custom accounting
