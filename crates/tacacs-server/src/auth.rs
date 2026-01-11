@@ -232,23 +232,22 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
 pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
     // Dummy Argon2id hash for constant-time username enumeration protection.
     // Generated with: echo -n "dummy" | argon2 somesalt -id -t 2 -m 19 -p 1 -l 32
-    const DUMMY_ARGON2_HASH: &str = "$argon2id$v=19$m=524288,t=2,p=1$c29tZXNhbHQ$FI/eVGRPKMwh+VURMA0dFXZJbqKHBvS9lnVJYmFWyeI";
+    const DUMMY_ARGON2_HASH: &str =
+        "$argon2id$v=19$m=524288,t=2,p=1$c29tZXNhbHQ$FI/eVGRPKMwh+VURMA0dFXZJbqKHBvS9lnVJYmFWyeI";
 
     let mut authenticated = false;
 
     // Check plaintext credentials with constant-time comparison
-    if let Some(stored) = creds.plain.get(user) {
-        if constant_time_eq_str(stored, password) {
+    if let Some(stored) = creds.plain.get(user)
+        && constant_time_eq_str(stored, password) {
             authenticated = true;
         }
-    }
 
     // Check Argon2 credentials (always execute to prevent timing leak via early return)
-    if let Some(hash) = creds.argon.get(user) {
-        if verify_argon_hash(hash, password.as_bytes()) {
+    if let Some(hash) = creds.argon.get(user)
+        && verify_argon_hash(hash, password.as_bytes()) {
             authenticated = true;
         }
-    }
 
     // If username doesn't exist in either store, perform dummy work to match timing
     // of legitimate authentication attempts. This prevents username enumeration via
@@ -306,23 +305,22 @@ fn verify_argon_hash(hash: &str, password: &[u8]) -> bool {
 /// Uses constant-time comparison and dummy operations to prevent timing side-channel
 /// attacks and username enumeration (CWE-208, NIST IA-6).
 pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) -> bool {
-    const DUMMY_ARGON2_HASH: &str = "$argon2id$v=19$m=524288,t=2,p=1$c29tZXNhbHQ$FI/eVGRPKMwh+VURMA0dFXZJbqKHBvS9lnVJYmFWyeI";
+    const DUMMY_ARGON2_HASH: &str =
+        "$argon2id$v=19$m=524288,t=2,p=1$c29tZXNhbHQ$FI/eVGRPKMwh+VURMA0dFXZJbqKHBvS9lnVJYmFWyeI";
 
     let mut authenticated = false;
 
     // Check plaintext credentials with constant-time comparison
-    if let Some(stored) = creds.plain.get(user) {
-        if constant_time_eq_bytes(stored.as_bytes(), password) {
+    if let Some(stored) = creds.plain.get(user)
+        && constant_time_eq_bytes(stored.as_bytes(), password) {
             authenticated = true;
         }
-    }
 
     // Check Argon2 credentials
-    if let Some(hash) = creds.argon.get(user) {
-        if verify_argon_hash(hash, password) {
+    if let Some(hash) = creds.argon.get(user)
+        && verify_argon_hash(hash, password) {
             authenticated = true;
         }
-    }
 
     // Dummy work if username doesn't exist (prevents timing enumeration)
     if !creds.plain.contains_key(user) && !creds.argon.contains_key(user) {
@@ -691,7 +689,11 @@ mod tests {
         // Test timing protection for byte-based verification
         let creds = make_creds();
 
-        assert!(!verify_pap_bytes("nonexistent_user", b"any_password", &creds));
+        assert!(!verify_pap_bytes(
+            "nonexistent_user",
+            b"any_password",
+            &creds
+        ));
         assert!(!verify_pap_bytes("another_fake_user", b"test123", &creds));
         assert!(verify_pap_bytes("admin", b"secret123", &creds));
     }
