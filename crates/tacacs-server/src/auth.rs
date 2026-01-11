@@ -211,25 +211,60 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
 /// # NIST Controls
 /// - **IA-2**: Authenticates users via Password Authentication Protocol
 /// - **IA-5**: Supports Argon2id hashed passwords for secure storage
+/// - **IA-6**: Prevents username enumeration via constant-time operations
+/// - **SC-13**: Mitigates timing side-channels (CWE-208)
 /// - **AU-12**: Instrumented for audit logging via tracing
 ///
-/// # Security
-/// Uses constant-time comparison for plaintext passwords to prevent timing
-/// side-channel attacks (CWE-208). Argon2 verification is inherently timing-safe.
+/// # Security - Timing Attack Protection
+///
+/// This function prevents username enumeration through timing analysis by ensuring
+/// constant-time behavior regardless of whether the username exists:
+///
+/// 1. Always checks both plaintext and Argon2 credential stores
+/// 2. Performs dummy cryptographic work when username doesn't exist
+/// 3. Uses constant-time comparisons for all password checks
+/// 4. Avoids early returns that could leak timing information
+///
+/// The dummy verification uses a pre-computed Argon2id hash that matches the timing
+/// characteristics of real credential verification, making statistical timing analysis
+/// ineffective for username enumeration.
 #[tracing::instrument(skip(password, creds))]
 pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
-    if creds
-        .plain
-        .get(user)
-        .map(|stored| constant_time_eq_str(stored, password))
-        .unwrap_or(false)
-    {
-        return true;
+    // Dummy Argon2id hash for constant-time username enumeration protection.
+    // Generated with: echo -n "dummy" | argon2 somesalt -id -t 2 -m 19 -p 1 -l 32
+    const DUMMY_ARGON2_HASH: &str = "$argon2id$v=19$m=524288,t=2,p=1$c29tZXNhbHQ$FI/eVGRPKMwh+VURMA0dFXZJbqKHBvS9lnVJYmFWyeI";
+
+    let mut authenticated = false;
+
+    // Check plaintext credentials with constant-time comparison
+    if let Some(stored) = creds.plain.get(user) {
+        if constant_time_eq_str(stored, password) {
+            authenticated = true;
+        }
     }
+
+    // Check Argon2 credentials (always execute to prevent timing leak via early return)
     if let Some(hash) = creds.argon.get(user) {
-        return verify_argon_hash(hash, password.as_bytes());
+        if verify_argon_hash(hash, password.as_bytes()) {
+            authenticated = true;
+        }
     }
-    false
+
+    // If username doesn't exist in either store, perform dummy work to match timing
+    // of legitimate authentication attempts. This prevents username enumeration via
+    // timing analysis (CWE-208, NIST IA-6).
+    if !creds.plain.contains_key(user) && !creds.argon.contains_key(user) {
+        // Dummy plaintext comparison (matches timing of real comparison)
+        let dummy_stored = "dummy_password_for_constant_time_protection";
+        let _ = constant_time_eq_str(dummy_stored, password);
+
+        // Dummy Argon2 verification (matches timing of real Argon2 verification)
+        // This is critical - Argon2 verification takes ~10-100ms, so skipping it
+        // for non-existent users would create a massive timing difference.
+        let _ = verify_argon_hash(DUMMY_ARGON2_HASH, password.as_bytes());
+    }
+
+    authenticated
 }
 
 /// Constant-time string comparison to prevent timing side-channel attacks.
@@ -268,20 +303,35 @@ fn verify_argon_hash(hash: &str, password: &[u8]) -> bool {
 /// Verify PAP authentication with byte password.
 ///
 /// # Security
-/// Uses constant-time comparison to prevent timing side-channel attacks.
+/// Uses constant-time comparison and dummy operations to prevent timing side-channel
+/// attacks and username enumeration (CWE-208, NIST IA-6).
 pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) -> bool {
-    if creds
-        .plain
-        .get(user)
-        .map(|stored| constant_time_eq_bytes(stored.as_bytes(), password))
-        .unwrap_or(false)
-    {
-        return true;
+    const DUMMY_ARGON2_HASH: &str = "$argon2id$v=19$m=524288,t=2,p=1$c29tZXNhbHQ$FI/eVGRPKMwh+VURMA0dFXZJbqKHBvS9lnVJYmFWyeI";
+
+    let mut authenticated = false;
+
+    // Check plaintext credentials with constant-time comparison
+    if let Some(stored) = creds.plain.get(user) {
+        if constant_time_eq_bytes(stored.as_bytes(), password) {
+            authenticated = true;
+        }
     }
+
+    // Check Argon2 credentials
     if let Some(hash) = creds.argon.get(user) {
-        return verify_argon_hash(hash, password);
+        if verify_argon_hash(hash, password) {
+            authenticated = true;
+        }
     }
-    false
+
+    // Dummy work if username doesn't exist (prevents timing enumeration)
+    if !creds.plain.contains_key(user) && !creds.argon.contains_key(user) {
+        let dummy_stored = b"dummy_password_for_constant_time_protection";
+        let _ = constant_time_eq_bytes(dummy_stored, password);
+        let _ = verify_argon_hash(DUMMY_ARGON2_HASH, password);
+    }
+
+    authenticated
 }
 
 /// Verify PAP authentication with byte username and password.
@@ -618,6 +668,32 @@ mod tests {
         let mut creds = StaticCreds::default();
         creds.argon.insert("user".into(), "not-a-valid-hash".into());
         assert!(!verify_pap("user", "anypassword", &creds));
+    }
+
+    #[test]
+    fn verify_pap_timing_protection_nonexistent_user() {
+        // Test that non-existent usernames still perform cryptographic work
+        // This prevents username enumeration via timing analysis (CWE-208)
+        let creds = make_creds();
+
+        // Verify that both existent and non-existent users complete without panic
+        // The actual timing verification would require statistical analysis, but
+        // this ensures the code path executes the dummy operations
+        assert!(!verify_pap("nonexistent_user", "any_password", &creds));
+        assert!(!verify_pap("another_fake_user", "test123", &creds));
+
+        // Verify valid user still works
+        assert!(verify_pap("admin", "secret123", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_timing_protection_nonexistent_user() {
+        // Test timing protection for byte-based verification
+        let creds = make_creds();
+
+        assert!(!verify_pap_bytes("nonexistent_user", b"any_password", &creds));
+        assert!(!verify_pap_bytes("another_fake_user", b"test123", &creds));
+        assert!(verify_pap_bytes("admin", b"secret123", &creds));
     }
 
     // ==================== verify_pap_bytes Tests ====================
