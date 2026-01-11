@@ -192,7 +192,9 @@ fn extract_ssh_keys(args: &[String]) -> Vec<String> {
             Some(k)
         } else if let Some(k) = arg.strip_prefix("authorized-key=") {
             Some(k)
-        } else { arg.strip_prefix("pubkey=").map(|k| k) };
+        } else {
+            arg.strip_prefix("pubkey=")
+        };
 
         if let Some(k) = key {
             let k = k.trim();
