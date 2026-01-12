@@ -245,7 +245,7 @@ impl Metrics {
             .map(|mf| {
                 mf.get_metric()
                     .iter()
-                    .map(|m| m.get_counter().get_value() as u64)
+                    .map(|m| m.get_counter().value() as u64)
                     .sum()
             })
             .unwrap_or(0)
@@ -259,7 +259,7 @@ impl Metrics {
             .map(|mf| {
                 mf.get_metric()
                     .iter()
-                    .map(|m| m.get_counter().get_value() as u64)
+                    .map(|m| m.get_counter().value() as u64)
                     .sum()
             })
             .unwrap_or(0)
@@ -276,9 +276,9 @@ impl Metrics {
                     .filter(|m| {
                         m.get_label()
                             .iter()
-                            .any(|l| l.get_name() == "result" && l.get_value() == "pass")
+                            .any(|l| l.name() == "result" && l.value() == "pass")
                     })
-                    .map(|m| m.get_counter().get_value() as u64)
+                    .map(|m| m.get_counter().value() as u64)
                     .sum()
             })
             .unwrap_or(0)
@@ -292,7 +292,7 @@ impl Metrics {
             .map(|mf| {
                 mf.get_metric()
                     .iter()
-                    .map(|m| m.get_counter().get_value() as u64)
+                    .map(|m| m.get_counter().value() as u64)
                     .sum()
             })
             .unwrap_or(0)
@@ -308,13 +308,13 @@ impl Metrics {
                     .iter()
                     .filter(|m| {
                         m.get_label().iter().any(|l| {
-                            l.get_name() == "result"
-                                && (l.get_value() == "allow"
-                                    || l.get_value() == "pass_add"
-                                    || l.get_value() == "pass_repl")
+                            l.name() == "result"
+                                && (l.value() == "allow"
+                                    || l.value() == "pass_add"
+                                    || l.value() == "pass_repl")
                         })
                     })
-                    .map(|m| m.get_counter().get_value() as u64)
+                    .map(|m| m.get_counter().value() as u64)
                     .sum()
             })
             .unwrap_or(0)
@@ -328,7 +328,7 @@ impl Metrics {
             .map(|mf| {
                 mf.get_metric()
                     .iter()
-                    .map(|m| m.get_counter().get_value() as u64)
+                    .map(|m| m.get_counter().value() as u64)
                     .sum()
             })
             .unwrap_or(0)
