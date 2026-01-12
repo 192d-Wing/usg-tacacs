@@ -108,7 +108,17 @@ mod tests {
     use super::*;
     use rcgen::{CertificateParams, KeyPair};
     use std::io::Write;
+    use std::sync::Once;
     use tempfile::NamedTempFile;
+
+    /// Install a default CryptoProvider for tests that need TLS operations.
+    /// Uses Once to ensure this only happens once per test process.
+    static CRYPTO_PROVIDER_INIT: Once = Once::new();
+    fn install_crypto_provider() {
+        CRYPTO_PROVIDER_INIT.call_once(|| {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        });
+    }
 
     // Self-signed test certificate (PEM format) - may not match key
     const TEST_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
@@ -327,6 +337,7 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
 
     #[test]
     fn build_tls_config_valid_certs_succeeds() {
+        install_crypto_provider();
         // Generate a valid cert/key pair
         let (cert_pem, key_pem) = generate_valid_cert_and_key();
         let cert_file = create_temp_file(&cert_pem);
@@ -348,6 +359,7 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
 
     #[test]
     fn build_tls_config_with_extra_trust_roots_succeeds() {
+        install_crypto_provider();
         // Generate valid cert/key pairs
         let (cert_pem, key_pem) = generate_valid_cert_and_key();
         let (extra_cert_pem, _) = generate_valid_cert_and_key();
@@ -369,6 +381,7 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
 
     #[test]
     fn build_tls_config_with_multiple_extra_trust_roots() {
+        install_crypto_provider();
         // Generate valid cert/key pairs
         let (cert_pem, key_pem) = generate_valid_cert_and_key();
         let (extra1_cert_pem, _) = generate_valid_cert_and_key();
@@ -395,6 +408,7 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
 
     #[test]
     fn build_tls_config_multiple_certs_in_chain() {
+        install_crypto_provider();
         // Generate certs and put multiple in one file (chain)
         let (cert1_pem, key_pem) = generate_valid_cert_and_key();
         let (cert2_pem, _) = generate_valid_cert_and_key();
