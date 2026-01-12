@@ -13,6 +13,10 @@ pub struct SecretsConfig {
     /// PKI configuration for automatic certificate management (optional).
     #[serde(default)]
     pub pki: Option<PkiConfig>,
+
+    /// EST configuration for zero-touch certificate provisioning (optional).
+    #[serde(default)]
+    pub est: Option<EstConfig>,
 }
 
 /// OpenBao/Vault client configuration.
@@ -126,6 +130,108 @@ impl Default for PkiConfig {
     }
 }
 
+/// EST (RFC 7030) configuration for zero-touch certificate provisioning.
+///
+/// # NIST SP 800-53 Security Controls
+///
+/// This configuration implements:
+/// - **IA-5 (Authenticator Management)**: Automated certificate lifecycle management
+/// - **SC-17 (PKI Certificates)**: RFC 7030-compliant certificate enrollment
+/// - **CM-3 (Configuration Change Control)**: Automated, auditable cert provisioning
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EstConfig {
+    /// Whether EST provisioning is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// EST server URL (e.g., "https://est.example.com/.well-known/est").
+    pub server_url: String,
+
+    /// HTTP Basic Auth username for initial enrollment (optional).
+    #[serde(default)]
+    pub username: Option<String>,
+
+    /// HTTP Basic Auth password for initial enrollment (optional).
+    #[serde(default)]
+    pub password: Option<String>,
+
+    /// Path to file containing the password (alternative to password field).
+    #[serde(default)]
+    pub password_file: Option<PathBuf>,
+
+    /// Client certificate path for mTLS authentication (optional).
+    #[serde(default)]
+    pub client_cert_path: Option<PathBuf>,
+
+    /// Client private key path for mTLS authentication (optional).
+    #[serde(default)]
+    pub client_key_path: Option<PathBuf>,
+
+    /// CA label for fetching the EST CA certificate (optional).
+    #[serde(default)]
+    pub ca_label: Option<String>,
+
+    /// Common name for the certificate (e.g., "tacacs-01.internal").
+    pub common_name: String,
+
+    /// Organization name for the certificate (optional).
+    #[serde(default)]
+    pub organization: Option<String>,
+
+    /// Path to write the enrolled certificate.
+    #[serde(default = "default_est_cert_path")]
+    pub cert_path: PathBuf,
+
+    /// Path to write the generated private key.
+    #[serde(default = "default_est_key_path")]
+    pub key_path: PathBuf,
+
+    /// Path to write the EST CA certificate.
+    #[serde(default = "default_est_ca_cert_path")]
+    pub ca_cert_path: PathBuf,
+
+    /// Renewal threshold as percentage of certificate lifetime (default: 70%).
+    #[serde(default = "default_renewal_threshold")]
+    pub renewal_threshold_percent: u8,
+
+    /// Check interval for certificate renewal in seconds (default: 3600 = 1 hour).
+    #[serde(default = "default_renewal_check_interval")]
+    pub renewal_check_interval_secs: u64,
+
+    /// Bootstrap enrollment timeout in seconds (default: 300 = 5 minutes).
+    #[serde(default = "default_est_bootstrap_timeout")]
+    pub bootstrap_timeout_secs: u64,
+
+    /// Whether initial enrollment is required for server startup (default: false).
+    /// If true, server exits on enrollment failure. If false, server starts degraded.
+    #[serde(default)]
+    pub initial_enrollment_required: bool,
+}
+
+impl Default for EstConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server_url: String::new(),
+            username: None,
+            password: None,
+            password_file: None,
+            client_cert_path: None,
+            client_key_path: None,
+            ca_label: None,
+            common_name: String::new(),
+            organization: None,
+            cert_path: default_est_cert_path(),
+            key_path: default_est_key_path(),
+            ca_cert_path: default_est_ca_cert_path(),
+            renewal_threshold_percent: default_renewal_threshold(),
+            renewal_check_interval_secs: default_renewal_check_interval(),
+            bootstrap_timeout_secs: default_est_bootstrap_timeout(),
+            initial_enrollment_required: false,
+        }
+    }
+}
+
 // Default value functions for serde
 fn default_auth_method() -> String {
     "approle".to_string()
@@ -167,6 +273,22 @@ fn default_renewal_check_interval() -> u64 {
     3600 // 1 hour
 }
 
+fn default_est_cert_path() -> PathBuf {
+    PathBuf::from("/etc/tacacs/server.crt")
+}
+
+fn default_est_key_path() -> PathBuf {
+    PathBuf::from("/etc/tacacs/server.key")
+}
+
+fn default_est_ca_cert_path() -> PathBuf {
+    PathBuf::from("/etc/tacacs/ca.crt")
+}
+
+fn default_est_bootstrap_timeout() -> u64 {
+    300 // 5 minutes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +324,7 @@ mod tests {
                 common_name: Some("nyc01.tacacs.internal".to_string()),
                 ..Default::default()
             }),
+            est: None,
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -216,5 +339,45 @@ mod tests {
             Some("NYC01".to_string())
         );
         assert!(parsed.pki.as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn test_default_est_config() {
+        let config = EstConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.cert_path, PathBuf::from("/etc/tacacs/server.crt"));
+        assert_eq!(config.key_path, PathBuf::from("/etc/tacacs/server.key"));
+        assert_eq!(config.ca_cert_path, PathBuf::from("/etc/tacacs/ca.crt"));
+        assert_eq!(config.renewal_threshold_percent, 70);
+        assert_eq!(config.renewal_check_interval_secs, 3600);
+        assert_eq!(config.bootstrap_timeout_secs, 300);
+        assert!(!config.initial_enrollment_required);
+    }
+
+    #[test]
+    fn test_est_config_serialize_deserialize() {
+        let config = SecretsConfig {
+            openbao: None,
+            pki: None,
+            est: Some(EstConfig {
+                enabled: true,
+                server_url: "https://est.example.com/.well-known/est".to_string(),
+                username: Some("bootstrap".to_string()),
+                password: Some("secret123".to_string()),
+                common_name: "tacacs-01.internal".to_string(),
+                organization: Some("Example Corp".to_string()),
+                ..Default::default()
+            }),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: SecretsConfig = serde_json::from_str(&json).unwrap();
+
+        let est = parsed.est.as_ref().unwrap();
+        assert!(est.enabled);
+        assert_eq!(est.server_url, "https://est.example.com/.well-known/est");
+        assert_eq!(est.username, Some("bootstrap".to_string()));
+        assert_eq!(est.common_name, "tacacs-01.internal");
+        assert_eq!(est.organization, Some("Example Corp".to_string()));
     }
 }

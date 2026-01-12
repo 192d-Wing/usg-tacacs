@@ -4,6 +4,7 @@
 //! - File-based secrets (backward compatibility)
 //! - OpenBao/Vault integration for dynamic secrets
 //! - PKI certificate management via OpenBao PKI secrets engine
+//! - EST (RFC 7030) zero-touch certificate provisioning
 //!
 //! # Example
 //!
@@ -25,10 +26,12 @@
 //! ```
 
 pub mod config;
+pub mod est;
 pub mod openbao;
 pub mod provider;
 
 // Re-exports for convenience
-pub use config::{OpenBaoConfig, PkiConfig, SecretsConfig};
+pub use config::{EstConfig, OpenBaoConfig, PkiConfig, SecretsConfig};
+pub use est::{CertificateBundle, EstProvider};
 pub use openbao::{OpenBaoClient, OpenBaoProvider};
 pub use provider::{FileProvider, SecretChange, SecretValue, SecretsProvider};
