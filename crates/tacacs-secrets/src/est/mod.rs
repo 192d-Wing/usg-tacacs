@@ -298,19 +298,59 @@ impl EstProvider {
             None
         };
 
-        // TODO: Parse certificate to extract serial and expiration
+        // Parse certificate to extract serial number and expiration
+        let (serial_number, expires_at) = Self::parse_cert_metadata(&cert_pem)?;
+
         let bundle = CertificateBundle {
             cert_pem,
             key_pem,
             ca_chain,
-            serial_number: "existing".to_string(),
-            expires_at: 0,
+            serial_number,
+            expires_at,
         };
 
         *self.current_bundle.write().await = Some(bundle.clone());
-        info!("loaded existing certificates from disk");
+        info!(
+            serial = %bundle.serial_number,
+            expires_at = bundle.expires_at,
+            "loaded existing certificates from disk"
+        );
 
         Ok(bundle)
+    }
+
+    /// Parse certificate metadata (serial number and expiration) from PEM.
+    fn parse_cert_metadata(cert_pem: &[u8]) -> Result<(String, u64)> {
+        use x509_cert::Certificate;
+        use x509_cert::der::Decode;
+
+        // Parse PEM to get DER
+        let pem_str = std::str::from_utf8(cert_pem)
+            .context("certificate is not valid UTF-8")?;
+
+        // Find the certificate section
+        let cert_start = pem_str.find("-----BEGIN CERTIFICATE-----")
+            .context("no certificate found in PEM")?;
+        let cert_end = pem_str[cert_start..].find("-----END CERTIFICATE-----")
+            .context("malformed certificate PEM")?;
+        let cert_section = &pem_str[cert_start..cert_start + cert_end + 25];
+
+        let cert_der = pem_rfc7468::decode_vec(cert_section.as_bytes())
+            .map_err(|e| anyhow::anyhow!("failed to decode certificate PEM: {}", e))?
+            .1;
+
+        // Parse DER to X.509 certificate
+        let cert = Certificate::from_der(&cert_der)
+            .context("failed to parse X.509 certificate")?;
+
+        // Extract serial number
+        let serial_hex = hex::encode(cert.tbs_certificate.serial_number.as_bytes());
+
+        // Extract expiration (notAfter)
+        let not_after = cert.tbs_certificate.validity.not_after.to_unix_duration();
+        let expires_at = not_after.as_secs();
+
+        Ok((serial_hex, expires_at))
     }
 
     /// Check certificate expiration and renew if necessary.
