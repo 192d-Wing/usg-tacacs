@@ -219,28 +219,35 @@ impl SessionRegistry {
         }
     }
 
-    /// Check if a new connection from the given address would be allowed.
+    /// Try to register a new connection, checking limits first.
     ///
-    /// Returns `Ok(())` if allowed, or `Err` with reason if rejected.
+    /// Returns `Ok(connection_id)` if successful, or `Err` if limits exceeded.
+    ///
+    /// This method performs the limit check and registration atomically under
+    /// a single write lock to prevent race conditions where concurrent requests
+    /// could exceed configured limits.
     ///
     /// # NIST Controls
-    /// - **AC-10 (Concurrent Session Control)**: Enforces session limits
-    /// - **SC-7 (Boundary Protection)**: Prevents session exhaustion attacks
-    pub async fn check_limits(&self, peer_addr: SocketAddr) -> Result<(), SessionLimitExceeded> {
-        // Check global limit
-        if self.limits.max_total_sessions > 0 {
-            let sessions = self.sessions.read().await;
-            if sessions.len() >= self.limits.max_total_sessions {
-                return Err(SessionLimitExceeded::TotalLimit {
-                    current: sessions.len(),
-                    max: self.limits.max_total_sessions,
-                });
-            }
+    /// - **AC-10**: Enforces session limits and tracks new connection
+    /// - **AU-2 (Audit Events)**: Connection establishment is recorded
+    pub async fn try_register_connection(
+        &self,
+        peer_addr: SocketAddr,
+    ) -> Result<u64, SessionLimitExceeded> {
+        let mut sessions = self.sessions.write().await;
+
+        // Check total limit
+        if self.limits.max_total_sessions > 0
+            && sessions.len() >= self.limits.max_total_sessions
+        {
+            return Err(SessionLimitExceeded::TotalLimit {
+                current: sessions.len(),
+                max: self.limits.max_total_sessions,
+            });
         }
 
         // Check per-IP limit
         if self.limits.max_sessions_per_ip > 0 {
-            let sessions = self.sessions.read().await;
             let ip = peer_addr.ip();
             let count = sessions.values().filter(|r| r.peer_addr.ip() == ip).count();
             if count >= self.limits.max_sessions_per_ip {
@@ -252,25 +259,21 @@ impl SessionRegistry {
             }
         }
 
-        Ok(())
-    }
+        // Register the connection while still holding the lock
+        let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
+        let record = SessionRecord::new(connection_id, peer_addr);
+        sessions.insert(connection_id, record);
 
-    /// Try to register a new connection, checking limits first.
-    ///
-    /// Returns `Ok(connection_id)` if successful, or `Err` if limits exceeded.
-    ///
-    /// # NIST Controls
-    /// - **AC-10**: Enforces session limits and tracks new connection
-    /// - **AU-2 (Audit Events)**: Connection establishment is recorded
-    pub async fn try_register_connection(
-        &self,
-        peer_addr: SocketAddr,
-    ) -> Result<u64, SessionLimitExceeded> {
-        // Check limits first (without holding write lock)
-        self.check_limits(peer_addr).await?;
+        // Update metrics
+        metrics().sessions_active.inc();
 
-        // Now register (with write lock)
-        Ok(self.register_connection(peer_addr).await)
+        debug!(
+            connection_id = connection_id,
+            peer = %peer_addr,
+            "session registered"
+        );
+
+        Ok(connection_id)
     }
 
     /// Register a new connection and return its unique ID.
