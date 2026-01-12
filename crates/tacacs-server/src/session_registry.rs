@@ -127,6 +127,7 @@ impl SessionRecord {
 /// # NIST Controls
 /// - **AC-10 (Concurrent Session Control)**: Configures session limits
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct SessionLimits {
     /// Maximum total sessions across all IPs (0 = unlimited)
     pub max_total_sessions: usize,
@@ -134,14 +135,6 @@ pub struct SessionLimits {
     pub max_sessions_per_ip: usize,
 }
 
-impl Default for SessionLimits {
-    fn default() -> Self {
-        Self {
-            max_total_sessions: 0,
-            max_sessions_per_ip: 0,
-        }
-    }
-}
 
 /// Thread-safe registry for tracking active sessions.
 ///
