@@ -701,4 +701,377 @@ mod tests {
             }
         }
     }
+
+    // ==================== Session Registry Integration Tests ====================
+
+    #[tokio::test]
+    async fn test_sessions_api_shows_registered_sessions() {
+        use http_body_util::BodyExt;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let rbac = make_test_rbac();
+        let (app, _rx, registry) = make_test_router_with_channel(rbac);
+
+        // Register a test session
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
+        let conn_id = registry.register_connection(peer_addr).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/sessions")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Parse response body
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let sessions_response: SessionsResponse = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(sessions_response.total, 1);
+        assert_eq!(sessions_response.sessions.len(), 1);
+        assert_eq!(sessions_response.sessions[0].id, conn_id as u32);
+        assert_eq!(
+            sessions_response.sessions[0].peer_addr,
+            "192.168.1.100:54321"
+        );
+        assert!(sessions_response.sessions[0].username.is_none());
+
+        // Cleanup
+        registry.unregister_connection(conn_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_sessions_api_shows_authenticated_user() {
+        use http_body_util::BodyExt;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let rbac = make_test_rbac();
+        let (app, _rx, registry) = make_test_router_with_channel(rbac);
+
+        // Register and authenticate a session
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 50)), 12345);
+        let conn_id = registry.register_connection(peer_addr).await;
+        registry
+            .update_authentication(conn_id, "network_admin".to_string(), 42)
+            .await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/sessions")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let sessions_response: SessionsResponse = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(sessions_response.total, 1);
+        assert_eq!(
+            sessions_response.sessions[0].username,
+            Some("network_admin".to_string())
+        );
+
+        // Cleanup
+        registry.unregister_connection(conn_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_sessions_api_empty_when_no_sessions() {
+        use http_body_util::BodyExt;
+
+        let rbac = make_test_rbac();
+        let (app, _rx, _registry) = make_test_router_with_channel(rbac);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/sessions")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let sessions_response: SessionsResponse = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(sessions_response.total, 0);
+        assert!(sessions_response.sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_terminates_existing() {
+        use http_body_util::BodyExt;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let rbac = make_test_rbac();
+        let (app, _rx, registry) = make_test_router_with_channel(rbac);
+
+        // Register a session to terminate
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 9999);
+        let conn_id = registry.register_connection(peer_addr).await;
+
+        // Verify session is not yet marked for termination
+        assert!(!registry.is_termination_requested(conn_id).await);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(&format!("/api/v1/sessions/{}", conn_id))
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let success_response: SuccessResponse = serde_json::from_slice(&body).unwrap();
+
+        assert!(success_response.success);
+        assert!(success_response.message.contains("termination requested"));
+
+        // Verify session is now marked for termination
+        assert!(registry.is_termination_requested(conn_id).await);
+
+        // Cleanup
+        registry.unregister_connection(conn_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_nonexistent_returns_not_found() {
+        use http_body_util::BodyExt;
+
+        let rbac = make_test_rbac();
+        let (app, _rx, _registry) = make_test_router_with_channel(rbac);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/v1/sessions/999999")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let success_response: SuccessResponse = serde_json::from_slice(&body).unwrap();
+
+        assert!(!success_response.success);
+        assert!(success_response.message.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_sessions_api_multiple_sessions() {
+        use http_body_util::BodyExt;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let rbac = make_test_rbac();
+        let (app, _rx, registry) = make_test_router_with_channel(rbac);
+
+        // Register multiple sessions
+        let peer1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 1, 1, 1)), 1001);
+        let peer2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 1, 1, 2)), 1002);
+        let peer3 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 1, 1, 3)), 1003);
+
+        let conn1 = registry.register_connection(peer1).await;
+        let conn2 = registry.register_connection(peer2).await;
+        let conn3 = registry.register_connection(peer3).await;
+
+        // Authenticate some sessions
+        registry
+            .update_authentication(conn1, "user1".to_string(), 100)
+            .await;
+        registry
+            .update_authentication(conn3, "user3".to_string(), 300)
+            .await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/sessions")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let sessions_response: SessionsResponse = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(sessions_response.total, 3);
+        assert_eq!(sessions_response.sessions.len(), 3);
+
+        // Verify session details
+        let conn_ids: Vec<u32> = sessions_response.sessions.iter().map(|s| s.id).collect();
+        assert!(conn_ids.contains(&(conn1 as u32)));
+        assert!(conn_ids.contains(&(conn2 as u32)));
+        assert!(conn_ids.contains(&(conn3 as u32)));
+
+        // Cleanup
+        registry.unregister_connection(conn1).await;
+        registry.unregister_connection(conn2).await;
+        registry.unregister_connection(conn3).await;
+    }
+
+    #[tokio::test]
+    async fn test_sessions_disappear_after_unregister() {
+        use http_body_util::BodyExt;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let rbac = make_test_rbac();
+        let (reload_tx, _reload_rx) = mpsc::channel::<PolicyReloadRequest>(1);
+        let registry = Arc::new(SessionRegistry::new());
+        let router = build_api_router(
+            rbac,
+            make_test_policy(),
+            "test-policy.json".to_string(),
+            None,
+            reload_tx,
+            registry.clone(),
+            make_test_config(),
+        );
+
+        // Register a session
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 5000);
+        let conn_id = registry.register_connection(peer_addr).await;
+
+        // Verify it appears
+        {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/sessions")
+                        .header("X-User-CN", "CN=admin.test")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let sessions_response: SessionsResponse = serde_json::from_slice(&body).unwrap();
+            assert_eq!(sessions_response.total, 1);
+        }
+
+        // Unregister the session
+        registry.unregister_connection(conn_id).await;
+
+        // Verify it's gone
+        {
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/sessions")
+                        .header("X-User-CN", "CN=admin.test")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let sessions_response: SessionsResponse = serde_json::from_slice(&body).unwrap();
+            assert_eq!(sessions_response.total, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_request_count_tracked() {
+        use http_body_util::BodyExt;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let rbac = make_test_rbac();
+        let (app, _rx, registry) = make_test_router_with_channel(rbac);
+
+        // Register a session and record some activity
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080);
+        let conn_id = registry.register_connection(peer_addr).await;
+
+        // Record 5 requests
+        for _ in 0..5 {
+            registry.record_activity(conn_id).await;
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/sessions")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let sessions_response: SessionsResponse = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(sessions_response.sessions[0].request_count, 5);
+
+        // Cleanup
+        registry.unregister_connection(conn_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_viewer_cannot_delete_sessions() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let rbac = make_test_rbac();
+        let (app, _rx, registry) = make_test_router_with_channel(rbac);
+
+        // Register a session
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 1234);
+        let conn_id = registry.register_connection(peer_addr).await;
+
+        // Viewer should not be able to delete sessions (requires write:sessions)
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(&format!("/api/v1/sessions/{}", conn_id))
+                    .header("X-User-CN", "CN=viewer.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // Session should NOT be marked for termination
+        assert!(!registry.is_termination_requested(conn_id).await);
+
+        // Cleanup
+        registry.unregister_connection(conn_id).await;
+    }
 }
