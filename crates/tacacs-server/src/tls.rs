@@ -216,7 +216,11 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
         assert!(result.is_err());
         // Error message changed with rustls-pki-types migration
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("private key") || err_msg.contains("opening") || err_msg.contains("No such file"));
+        assert!(
+            err_msg.contains("private key")
+                || err_msg.contains("opening")
+                || err_msg.contains("No such file")
+        );
     }
 
     #[test]

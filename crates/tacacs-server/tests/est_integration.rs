@@ -49,15 +49,21 @@ async fn test_certificate_bundle_file_operations() -> Result<()> {
 
     // Create a mock certificate bundle
     let bundle = CertificateBundle {
-        cert_pem: b"-----BEGIN CERTIFICATE-----\nMOCKCERTIFICATE\n-----END CERTIFICATE-----\n".to_vec(),
-        key_pem: b"-----BEGIN PRIVATE KEY-----\nMOCKPRIVATEKEY\n-----END PRIVATE KEY-----\n".to_vec(),
-        ca_chain: Some(b"-----BEGIN CERTIFICATE-----\nMOCKCAcert\n-----END CERTIFICATE-----\n".to_vec()),
+        cert_pem: b"-----BEGIN CERTIFICATE-----\nMOCKCERTIFICATE\n-----END CERTIFICATE-----\n"
+            .to_vec(),
+        key_pem: b"-----BEGIN PRIVATE KEY-----\nMOCKPRIVATEKEY\n-----END PRIVATE KEY-----\n"
+            .to_vec(),
+        ca_chain: Some(
+            b"-----BEGIN CERTIFICATE-----\nMOCKCAcert\n-----END CERTIFICATE-----\n".to_vec(),
+        ),
         serial_number: "0123456789ABCDEF".to_string(),
         expires_at: 9999999999, // Far future
     };
 
     // Write bundle to files
-    bundle.write_to_files(&cert_path, &key_path, &ca_path).await?;
+    bundle
+        .write_to_files(&cert_path, &key_path, &ca_path)
+        .await?;
 
     // Verify files were created
     assert!(cert_path.exists(), "certificate file should exist");
@@ -204,11 +210,16 @@ async fn test_certificate_bundle_no_ca_chain() -> Result<()> {
     };
 
     // Write without CA (ca_chain is None, so ca_path won't be created)
-    bundle.write_to_files(&cert_path, &key_path, &ca_path).await?;
+    bundle
+        .write_to_files(&cert_path, &key_path, &ca_path)
+        .await?;
 
     assert!(cert_path.exists());
     assert!(key_path.exists());
-    assert!(!ca_path.exists(), "CA file should NOT exist when ca_chain is None");
+    assert!(
+        !ca_path.exists(),
+        "CA file should NOT exist when ca_chain is None"
+    );
 
     let cert = std::fs::read(&cert_path)?;
     let key = std::fs::read(&key_path)?;

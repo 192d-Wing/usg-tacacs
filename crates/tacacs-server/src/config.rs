@@ -506,22 +506,30 @@ pub fn resolve_ldap_bind_password(args: &Args) -> std::result::Result<Option<Str
 /// |---------|------|----------------|
 /// | SC-12 | Cryptographic Key Establishment | Secure credential provisioning for EST enrollment |
 /// | IA-5 | Authenticator Management | Zero-touch certificate lifecycle configuration |
-pub fn build_est_config(args: &Args) -> std::result::Result<Option<usg_tacacs_secrets::EstConfig>, String> {
+pub fn build_est_config(
+    args: &Args,
+) -> std::result::Result<Option<usg_tacacs_secrets::EstConfig>, String> {
     if !args.est_enabled {
         return Ok(None);
     }
 
     // Validate required fields
-    let server_url = args.est_server_url.as_ref()
+    let server_url = args
+        .est_server_url
+        .as_ref()
         .ok_or_else(|| "EST enabled but --est-server-url not provided".to_string())?;
 
-    let common_name = args.est_common_name.as_ref()
+    let common_name = args
+        .est_common_name
+        .as_ref()
         .ok_or_else(|| "EST enabled but --est-common-name not provided".to_string())?;
 
     // Resolve password from file or CLI/env
     let password = if let Some(ref pwd_file) = args.est_password_file {
-        Some(read_secret_file(pwd_file)
-            .map_err(|e| format!("failed to read EST password file {:?}: {}", pwd_file, e))?)
+        Some(
+            read_secret_file(pwd_file)
+                .map_err(|e| format!("failed to read EST password file {:?}: {}", pwd_file, e))?,
+        )
     } else {
         args.est_password.clone()
     };

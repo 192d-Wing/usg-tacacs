@@ -209,10 +209,8 @@ async fn main() -> Result<()> {
 
             // Perform bootstrap enrollment with timeout
             let bootstrap_timeout = Duration::from_secs(est_config.bootstrap_timeout_secs);
-            let enroll_result = tokio::time::timeout(
-                bootstrap_timeout,
-                provider.bootstrap_enrollment()
-            ).await;
+            let enroll_result =
+                tokio::time::timeout(bootstrap_timeout, provider.bootstrap_enrollment()).await;
 
             match enroll_result {
                 Ok(Ok(bundle)) => {
@@ -231,9 +229,15 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(_) => {
-                    error!(timeout_secs = est_config.bootstrap_timeout_secs, "EST bootstrap enrollment timed out");
+                    error!(
+                        timeout_secs = est_config.bootstrap_timeout_secs,
+                        "EST bootstrap enrollment timed out"
+                    );
                     if est_config.initial_enrollment_required {
-                        bail!("EST enrollment required but timed out after {} seconds", est_config.bootstrap_timeout_secs);
+                        bail!(
+                            "EST enrollment required but timed out after {} seconds",
+                            est_config.bootstrap_timeout_secs
+                        );
                     } else {
                         warn!("EST enrollment timed out, continuing in degraded mode");
                     }
@@ -247,7 +251,8 @@ async fn main() -> Result<()> {
         }
 
         // Start certificate renewal loop
-        provider.start_renewal_loop()
+        provider
+            .start_renewal_loop()
             .context("failed to start EST renewal loop")?;
 
         est_provider = Some(Arc::new(provider));
@@ -294,10 +299,9 @@ async fn main() -> Result<()> {
             (&est_cfg.cert_path, &est_cfg.key_path)
         } else {
             // Use manually configured certificates
-            let cert_ref = args
-                .tls_cert
-                .as_ref()
-                .context("--tls-cert is required when --listen-tls is set (or use --est-enabled)")?;
+            let cert_ref = args.tls_cert.as_ref().context(
+                "--tls-cert is required when --listen-tls is set (or use --est-enabled)",
+            )?;
             let key_ref = args
                 .tls_key
                 .as_ref()
@@ -309,7 +313,12 @@ async fn main() -> Result<()> {
             .client_ca
             .as_ref()
             .context("--client-ca is required when --listen-tls is set")?;
-        let acceptor = Arc::new(RwLock::new(tls_acceptor(cert, key, ca, &args.tls_trust_root)?));
+        let acceptor = Arc::new(RwLock::new(tls_acceptor(
+            cert,
+            key,
+            ca,
+            &args.tls_trust_root,
+        )?));
 
         // Create certificate reload channel and watcher task
         let (cert_reload_tx, cert_reload_rx) = mpsc::channel::<CertificateReloadRequest>(10);
@@ -330,7 +339,10 @@ async fn main() -> Result<()> {
             let mut change_rx = (**est_prov).subscribe();
             handles.push(tokio::spawn(async move {
                 while let Ok(change) = change_rx.recv().await {
-                    if matches!(change, usg_tacacs_secrets::SecretChange::TlsCertificates { .. }) {
+                    if matches!(
+                        change,
+                        usg_tacacs_secrets::SecretChange::TlsCertificates { .. }
+                    ) {
                         info!("EST certificate renewed, triggering reload");
                         let request = CertificateReloadRequest::FromFiles {
                             cert_path: est_cert_path.clone(),

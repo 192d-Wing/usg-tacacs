@@ -25,7 +25,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::{broadcast, oneshot, RwLock};
+use tokio::sync::{RwLock, broadcast, oneshot};
 use tracing::{debug, error, info, warn};
 use usg_est_client::csr::CsrBuilder;
 use usg_est_client::{EnrollmentResponse, EstClient, EstClientConfig};
@@ -139,8 +139,7 @@ impl EstProvider {
     /// Create a new EST provider.
     pub async fn new(config: EstConfig) -> Result<Self> {
         // Build EST client configuration
-        let mut client_builder = EstClientConfig::builder()
-            .server_url(&config.server_url)?;
+        let mut client_builder = EstClientConfig::builder().server_url(&config.server_url)?;
 
         // Configure HTTP Basic authentication
         if let Some(ref username) = config.username {
@@ -227,8 +226,9 @@ impl EstProvider {
 
         // Convert certificate to PEM
         let cert_der = certificate.to_der()?;
-        let cert_pem = pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &cert_der)
-            .map_err(|e| anyhow::anyhow!("failed to encode certificate to PEM: {}", e))?;
+        let cert_pem =
+            pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &cert_der)
+                .map_err(|e| anyhow::anyhow!("failed to encode certificate to PEM: {}", e))?;
 
         // Convert private key to PEM
         let key_pem = key_pair.serialize_pem();
@@ -240,8 +240,11 @@ impl EstProvider {
             let mut ca_pem = Vec::new();
             for cert in ca_certs.into_iter() {
                 let der = cert.to_der()?;
-                let pem = pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &der)
-                    .map_err(|e| anyhow::anyhow!("failed to encode CA certificate to PEM: {}", e))?;
+                let pem =
+                    pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &der)
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to encode CA certificate to PEM: {}", e)
+                        })?;
                 ca_pem.extend_from_slice(pem.as_bytes());
             }
             if ca_pem.is_empty() {
@@ -325,13 +328,14 @@ impl EstProvider {
         use x509_cert::der::Decode;
 
         // Parse PEM to get DER
-        let pem_str = std::str::from_utf8(cert_pem)
-            .context("certificate is not valid UTF-8")?;
+        let pem_str = std::str::from_utf8(cert_pem).context("certificate is not valid UTF-8")?;
 
         // Find the certificate section
-        let cert_start = pem_str.find("-----BEGIN CERTIFICATE-----")
+        let cert_start = pem_str
+            .find("-----BEGIN CERTIFICATE-----")
             .context("no certificate found in PEM")?;
-        let cert_end = pem_str[cert_start..].find("-----END CERTIFICATE-----")
+        let cert_end = pem_str[cert_start..]
+            .find("-----END CERTIFICATE-----")
             .context("malformed certificate PEM")?;
         let cert_section = &pem_str[cert_start..cert_start + cert_end + 25];
 
@@ -340,8 +344,7 @@ impl EstProvider {
             .1;
 
         // Parse DER to X.509 certificate
-        let cert = Certificate::from_der(&cert_der)
-            .context("failed to parse X.509 certificate")?;
+        let cert = Certificate::from_der(&cert_der).context("failed to parse X.509 certificate")?;
 
         // Extract serial number
         let serial_hex = hex::encode(cert.tbs_certificate.serial_number.as_bytes());
@@ -393,8 +396,9 @@ impl EstProvider {
 
         // Convert certificate to PEM
         let cert_der = certificate.to_der()?;
-        let cert_pem = pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &cert_der)
-            .map_err(|e| anyhow::anyhow!("failed to encode certificate to PEM: {}", e))?;
+        let cert_pem =
+            pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &cert_der)
+                .map_err(|e| anyhow::anyhow!("failed to encode certificate to PEM: {}", e))?;
 
         // Convert private key to PEM
         let key_pem = key_pair.serialize_pem();
@@ -405,8 +409,11 @@ impl EstProvider {
             let mut ca_pem = Vec::new();
             for cert in ca_certs.into_iter() {
                 let der = cert.to_der()?;
-                let pem = pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &der)
-                    .map_err(|e| anyhow::anyhow!("failed to encode CA certificate to PEM: {}", e))?;
+                let pem =
+                    pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &der)
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to encode CA certificate to PEM: {}", e)
+                        })?;
                 ca_pem.extend_from_slice(pem.as_bytes());
             }
             if ca_pem.is_empty() {
@@ -467,8 +474,7 @@ impl EstProvider {
         let self_clone = Arc::new(self.clone_for_loop());
 
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -685,7 +691,10 @@ mod tests {
             expires_at: 1234567890,
         };
 
-        bundle.write_to_files(&cert_path, &key_path, &ca_path).await.unwrap();
+        bundle
+            .write_to_files(&cert_path, &key_path, &ca_path)
+            .await
+            .unwrap();
 
         // Verify files exist
         assert!(cert_path.exists());
@@ -695,12 +704,20 @@ mod tests {
         // Verify key file has restricted permissions (0o600)
         let key_metadata = std::fs::metadata(&key_path).unwrap();
         let permissions = key_metadata.permissions();
-        assert_eq!(permissions.mode() & 0o777, 0o600, "private key should have 0o600 permissions");
+        assert_eq!(
+            permissions.mode() & 0o777,
+            0o600,
+            "private key should have 0o600 permissions"
+        );
 
         // Verify cert file has readable permissions (0o644)
         let cert_metadata = std::fs::metadata(&cert_path).unwrap();
         let permissions = cert_metadata.permissions();
-        assert_eq!(permissions.mode() & 0o777, 0o644, "certificate should have 0o644 permissions");
+        assert_eq!(
+            permissions.mode() & 0o777,
+            0o644,
+            "certificate should have 0o644 permissions"
+        );
     }
 
     #[tokio::test]
@@ -721,7 +738,10 @@ mod tests {
 
         // Create a dummy CA path even though ca_chain is None
         let ca_path = temp_dir.path().join("ca.pem");
-        bundle.write_to_files(&cert_path, &key_path, &ca_path).await.unwrap();
+        bundle
+            .write_to_files(&cert_path, &key_path, &ca_path)
+            .await
+            .unwrap();
 
         // Verify files exist
         assert!(cert_path.exists());

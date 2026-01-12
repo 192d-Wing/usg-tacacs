@@ -2,8 +2,8 @@
 use anyhow::{Context, Result};
 use axum_server::tls_rustls::RustlsConfig;
 use rustls::RootCertStore;
-use rustls::server::WebPkiClientVerifier;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
+use rustls::server::WebPkiClientVerifier;
 use std::sync::Arc;
 
 /// Build a RustlsConfig that *requires* client certs (mTLS).
