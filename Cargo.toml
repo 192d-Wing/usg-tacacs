@@ -44,7 +44,7 @@ log = "0.4"
 # OpenTelemetry
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31", features = ["tonic"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 
 # TLS
 rustls = "0.23"

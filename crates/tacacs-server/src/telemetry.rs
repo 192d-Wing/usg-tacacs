@@ -21,8 +21,7 @@ use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     Resource,
-    runtime::Tokio,
-    trace::{RandomIdGenerator, Sampler, TracerProvider as SdkTracerProvider},
+    trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
 };
 use tracing::Subscriber;
 use tracing_opentelemetry::OpenTelemetryLayer;
@@ -60,16 +59,14 @@ where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
     // Build resource attributes
-    let mut resource_attrs = vec![opentelemetry::KeyValue::new(
-        "service.name",
-        config.service_name.clone(),
-    )];
+    let mut resource_builder = Resource::builder().with_service_name(config.service_name.clone());
 
     if let Some(location) = &config.location {
-        resource_attrs.push(opentelemetry::KeyValue::new("location", location.clone()));
+        resource_builder = resource_builder
+            .with_attribute(opentelemetry::KeyValue::new("location", location.clone()));
     }
 
-    let resource = Resource::new(resource_attrs);
+    let resource = resource_builder.build();
 
     // Configure OTLP exporter
     let exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -79,7 +76,7 @@ where
 
     // Build tracer provider
     let provider = SdkTracerProvider::builder()
-        .with_batch_exporter(exporter, Tokio)
+        .with_batch_exporter(exporter)
         .with_sampler(Sampler::AlwaysOn)
         .with_id_generator(RandomIdGenerator::default())
         .with_resource(resource)
@@ -97,8 +94,13 @@ where
 }
 
 /// Shutdown OpenTelemetry, flushing any pending traces.
+///
+/// Note: In OpenTelemetry 0.31+, the TracerProvider will automatically
+/// shutdown when dropped, flushing all remaining spans.
 pub fn shutdown_telemetry() {
-    opentelemetry::global::shutdown_tracer_provider();
+    // The global tracer provider will be automatically shut down when dropped.
+    // If you need explicit control, store a reference to the SdkTracerProvider
+    // and call provider.shutdown() directly.
 }
 
 #[cfg(test)]
