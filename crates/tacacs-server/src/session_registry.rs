@@ -1,27 +1,79 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Session registry for tracking active TACACS+ connections.
 //!
-//! Provides centralized session tracking for the Management API to list
-//! active connections and support session termination requests.
+//! This module provides centralized, thread-safe session tracking for the TACACS+
+//! server. It enables the Management API to list active connections, enforce
+//! session limits, and support administrative session termination.
+//!
+//! # Overview
+//!
+//! The [`SessionRegistry`] maintains a registry of all active client connections,
+//! storing metadata such as connection timestamps, authentication state, and
+//! activity counts. This information supports:
+//!
+//! - **Session enumeration**: List all active sessions via the Management API
+//! - **Session limits**: Enforce maximum concurrent sessions (total and per-IP)
+//! - **Idle timeout**: Automatically terminate sessions exceeding idle thresholds
+//! - **Administrative termination**: Force-close sessions by ID or session ID
+//! - **Metrics integration**: Track active session counts for monitoring
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! use std::sync::Arc;
+//! use tacacs_server::session_registry::{SessionRegistry, SessionLimits};
+//!
+//! // Create registry with limits
+//! let limits = SessionLimits {
+//!     max_total_sessions: 1000,
+//!     max_sessions_per_ip: 10,
+//! };
+//! let registry = Arc::new(SessionRegistry::with_limits(limits));
+//!
+//! // Register a new connection (with limit checking)
+//! let peer_addr = "192.168.1.100:12345".parse().unwrap();
+//! let conn_id = registry.try_register_connection(peer_addr).await?;
+//!
+//! // Update after authentication
+//! registry.update_authentication(conn_id, "admin".to_string(), 42).await;
+//!
+//! // Record activity on the connection
+//! registry.record_activity(conn_id).await;
+//!
+//! // List all sessions
+//! let sessions = registry.list_sessions().await;
+//!
+//! // Cleanup on disconnect
+//! registry.unregister_connection(conn_id).await;
+//! ```
+//!
+//! # Idle Session Sweeping
+//!
+//! Use [`run_idle_sweep_task`] to automatically terminate idle sessions:
+//!
+//! ```rust,ignore
+//! use std::time::Duration;
+//!
+//! // Start background task to sweep idle sessions every 30 seconds
+//! tokio::spawn(run_idle_sweep_task(
+//!     registry.clone(),
+//!     Duration::from_secs(300),  // 5 minute idle timeout
+//!     Duration::from_secs(30),   // sweep every 30 seconds
+//! ));
+//! ```
 //!
 //! # NIST SP 800-53 Security Controls
 //!
 //! This module implements the following NIST security controls:
 //!
-//! - **AC-10 (Concurrent Session Control)**: Provides visibility into all
-//!   active sessions for monitoring concurrent connections.
-//!
-//! - **AC-11/AC-12 (Session Lock/Termination)**: Supports session termination
-//!   via the Management API for administrative session control.
-//!
-//! - **AU-2/AU-3 (Audit Events)**: Session records include timestamps and
-//!   activity counts for audit trail purposes.
-//!
-//! - **SC-23 (Session Authenticity)**: Tracks session IDs for session
-//!   identification and validation.
-//!
-//! - **SI-4 (System Monitoring)**: Enables real-time session monitoring
-//!   through the Management API.
+//! | Control | Name | Implementation |
+//! |---------|------|----------------|
+//! | AC-10 | Concurrent Session Control | Session limits and visibility |
+//! | AC-11/AC-12 | Session Lock/Termination | Administrative and idle termination |
+//! | AU-2/AU-3 | Audit Events | Timestamps and activity counts |
+//! | SC-7 | Boundary Protection | Per-IP limits prevent exhaustion attacks |
+//! | SC-23 | Session Authenticity | Session ID tracking and validation |
+//! | SI-4 | System Monitoring | Real-time session enumeration |
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
