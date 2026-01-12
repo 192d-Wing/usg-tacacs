@@ -7,7 +7,7 @@ use crate::server::{
     AuthContext, ConnLimiter, ConnectionConfig, PolicyReloadRequest, TlsIdentityConfig,
     serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_policy_changes,
 };
-use crate::session_registry::{SessionRegistry, run_idle_sweep_task};
+use crate::session_registry::{SessionLimits, SessionRegistry, run_idle_sweep_task};
 use crate::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -160,7 +160,18 @@ async fn main() -> Result<()> {
 
     // NIST AC-10/AC-12: Create session registry for tracking active connections
     // This is shared with both connection handlers and the API for session visibility and termination
-    let session_registry = Arc::new(SessionRegistry::new());
+    let session_limits = SessionLimits {
+        max_total_sessions: args.max_sessions,
+        max_sessions_per_ip: args.max_sessions_per_ip,
+    };
+    let session_registry = Arc::new(SessionRegistry::with_limits(session_limits));
+    if args.max_sessions > 0 || args.max_sessions_per_ip > 0 {
+        info!(
+            max_sessions = args.max_sessions,
+            max_sessions_per_ip = args.max_sessions_per_ip,
+            "session limits configured"
+        );
+    }
 
     // NIST AC-12: Spawn background idle sweep task if idle timeout is configured
     if single_connect_idle_secs > 0 {

@@ -171,6 +171,16 @@ pub struct Args {
     #[arg(long, default_value_t = 50)]
     pub max_connections_per_ip: u32,
 
+    /// Maximum total sessions across all IPs (0 = unlimited).
+    /// Enforced by session registry for NIST AC-10 compliance.
+    #[arg(long, default_value_t = 0)]
+    pub max_sessions: usize,
+
+    /// Maximum sessions per IP address (0 = unlimited).
+    /// Enforced by session registry for NIST AC-10 compliance.
+    #[arg(long, default_value_t = 0)]
+    pub max_sessions_per_ip: usize,
+
     /// Allowed client certificate Common Names (exact match). If set, client CN must match one of these.
     #[arg(long, value_name = "CN", num_args = 0..)]
     pub tls_allowed_client_cn: Vec<String>,
@@ -847,6 +857,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -930,6 +942,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -1011,6 +1025,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -1092,6 +1108,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -1174,6 +1192,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -1255,6 +1275,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -1401,6 +1423,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -1479,6 +1503,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -1557,6 +1583,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,
@@ -1640,6 +1668,8 @@ mod tests {
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             max_connections_per_ip: 50,
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
             tls_allowed_client_cn: Vec::new(),
             tls_allowed_client_san: Vec::new(),
             ldaps_url: None,

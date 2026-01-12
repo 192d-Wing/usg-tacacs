@@ -42,10 +42,19 @@
       "items": {
         "type": "object",
         "properties": {
-          "ip": { "type": "string", "format": "ipv4" },
-          "secret": { "type": "string", "minLength": 8 }
+          "ip": {
+            "type": "string",
+            "format": "ipv4"
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 8
+          }
         },
-        "required": ["ip", "secret"],
+        "required": [
+          "ip",
+          "secret"
+        ],
         "additionalProperties": false
       },
       "default": []
@@ -68,8 +77,16 @@
       },
       "default": []
     },
-    "user_password_file": { "type": ["string", "null"] },
-    "allow_static_credentials": { "type": "boolean", "default": false },
+    "user_password_file": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "allow_static_credentials": {
+      "type": "boolean",
+      "default": false
+    },
     "ascii_attempt_limit": {
       "type": "integer",
       "minimum": 0,
@@ -115,6 +132,18 @@
       "minimum": 0,
       "default": 50
     },
+    "max_sessions": {
+      "description": "Maximum total sessions across all IPs (0 = unlimited). NIST AC-10 compliance.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "max_sessions_per_ip": {
+      "description": "Maximum sessions per IP address (0 = unlimited). NIST AC-10 compliance.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
     "tls_allowed_client_cn": {
       "type": "array",
       "items": {
@@ -129,15 +158,57 @@
       },
       "default": []
     },
-    "ldaps_url": { "type": ["string", "null"], "pattern": "^ldaps://.+" },
-    "ldap_bind_dn": { "type": ["string", "null"] },
-    "ldap_bind_password": { "type": ["string", "null"] },
-    "ldap_search_base": { "type": ["string", "null"] },
-    "ldap_username_attr": { "type": "string", "default": "uid" },
-    "ldap_timeout_ms": { "type": "integer", "minimum": 0, "default": 5000 },
-    "ldap_ca_file": { "type": ["string", "null"] },
-    "ldap_required_group": { "type": "array", "items": { "type": "string" }, "default": [] },
-    "ldap_group_attr": { "type": "string", "default": "memberOf" },
+    "ldaps_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^ldaps://.+"
+    },
+    "ldap_bind_dn": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ldap_bind_password": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ldap_search_base": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ldap_username_attr": {
+      "type": "string",
+      "default": "uid"
+    },
+    "ldap_timeout_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 5000
+    },
+    "ldap_ca_file": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ldap_required_group": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "ldap_group_attr": {
+      "type": "string",
+      "default": "memberOf"
+    },
     "policy": {
       "type": "string"
     },

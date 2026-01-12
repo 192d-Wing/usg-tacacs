@@ -7,8 +7,14 @@
   "tls_trust_root": [],
   "secret": "supersecret123",
   "legacy_nad_secret": [
-    { "ip": "192.0.2.10", "secret": "router-strong-secret" },
-    { "ip": "192.0.2.11", "secret": "switch-strong-secret" }
+    {
+      "ip": "192.0.2.10",
+      "secret": "router-strong-secret"
+    },
+    {
+      "ip": "192.0.2.11",
+      "secret": "switch-strong-secret"
+    }
   ],
   "forbid_unencrypted": true,
   "tls_psk": null,
@@ -24,6 +30,8 @@
   "single_connect_idle_secs": 300,
   "single_connect_keepalive_secs": 120,
   "max_connections_per_ip": 50,
+  "max_sessions": 0,
+  "max_sessions_per_ip": 0,
   "tls_allowed_client_cn": [],
   "tls_allowed_client_san": [],
   "ldaps_url": null,

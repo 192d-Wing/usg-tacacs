@@ -842,8 +842,23 @@ async fn handle_connection<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    // NIST AC-10: Register connection with session registry
-    let connection_id = registry.register_connection(peer_addr).await;
+    // NIST AC-10: Register connection with session registry (enforces session limits)
+    let connection_id = match registry.try_register_connection(peer_addr).await {
+        Ok(id) => id,
+        Err(e) => {
+            warn!(peer = %peer_addr, error = %e, "connection rejected: session limit exceeded");
+            audit_event(
+                "conn_reject",
+                &peer_addr.to_string(),
+                "",
+                0,
+                "error",
+                "session-limit",
+                &e.to_string(),
+            );
+            return Ok(()); // Return Ok to not log as connection error
+        }
+    };
     let peer = peer_addr.to_string();
 
     // Extract references for convenience
