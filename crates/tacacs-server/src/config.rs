@@ -324,6 +324,80 @@ pub struct Args {
     #[arg(long, default_value_t = 70)]
     pub openbao_pki_renewal_threshold: u8,
 
+    // ==================== EST (RFC 7030) Zero-Touch Provisioning ====================
+    /// Enable EST-based certificate provisioning for zero-touch deployment.
+    #[arg(long, default_value_t = false, env = "EST_ENABLED")]
+    pub est_enabled: bool,
+
+    /// EST server URL (e.g., https://est.example.com/.well-known/est).
+    #[arg(long, env = "EST_SERVER_URL")]
+    pub est_server_url: Option<String>,
+
+    /// HTTP Basic Auth username for EST enrollment.
+    #[arg(long, env = "EST_USERNAME")]
+    pub est_username: Option<String>,
+
+    /// HTTP Basic Auth password for EST enrollment.
+    ///
+    /// **Security Note**: Prefer --est-password-file or EST_PASSWORD_FILE to avoid
+    /// exposing credentials in process listings.
+    #[arg(long, env = "EST_PASSWORD")]
+    pub est_password: Option<String>,
+
+    /// Path to file containing the EST password.
+    #[arg(long, env = "EST_PASSWORD_FILE")]
+    pub est_password_file: Option<PathBuf>,
+
+    /// Client certificate for EST mTLS authentication (PEM).
+    #[arg(long, env = "EST_CLIENT_CERT")]
+    pub est_client_cert_path: Option<PathBuf>,
+
+    /// Client private key for EST mTLS authentication (PEM).
+    #[arg(long, env = "EST_CLIENT_KEY")]
+    pub est_client_key_path: Option<PathBuf>,
+
+    /// EST CA label for fetching the EST server's CA certificate.
+    #[arg(long, env = "EST_CA_LABEL")]
+    pub est_ca_label: Option<String>,
+
+    /// Common name for the EST-enrolled certificate (e.g., tacacs-01.internal).
+    #[arg(long, env = "EST_COMMON_NAME")]
+    pub est_common_name: Option<String>,
+
+    /// Organization name for the EST certificate.
+    #[arg(long, env = "EST_ORGANIZATION")]
+    pub est_organization: Option<String>,
+
+    /// Path to write the EST-enrolled certificate (default: /etc/tacacs/server.crt).
+    #[arg(long, default_value = "/etc/tacacs/server.crt", env = "EST_CERT_PATH")]
+    pub est_cert_path: PathBuf,
+
+    /// Path to write the EST-generated private key (default: /etc/tacacs/server.key).
+    #[arg(long, default_value = "/etc/tacacs/server.key", env = "EST_KEY_PATH")]
+    pub est_key_path: PathBuf,
+
+    /// Path to write the EST CA certificate chain (default: /etc/tacacs/ca.crt).
+    #[arg(long, default_value = "/etc/tacacs/ca.crt", env = "EST_CA_CERT_PATH")]
+    pub est_ca_cert_path: PathBuf,
+
+    /// EST certificate renewal threshold as percentage of remaining time (default: 70).
+    /// Renew when <= this percentage of time until expiry remains.
+    #[arg(long, default_value_t = 70, env = "EST_RENEWAL_THRESHOLD")]
+    pub est_renewal_threshold_percent: u8,
+
+    /// EST certificate renewal check interval in seconds (default: 3600 = 1 hour).
+    #[arg(long, default_value_t = 3600, env = "EST_RENEWAL_CHECK_INTERVAL")]
+    pub est_renewal_check_interval_secs: u64,
+
+    /// EST bootstrap enrollment timeout in seconds (default: 300 = 5 minutes).
+    #[arg(long, default_value_t = 300, env = "EST_BOOTSTRAP_TIMEOUT")]
+    pub est_bootstrap_timeout_secs: u64,
+
+    /// Whether EST initial enrollment is required for server startup.
+    /// If true, server exits on enrollment failure. If false, server starts degraded.
+    #[arg(long, default_value_t = false, env = "EST_INITIAL_ENROLLMENT_REQUIRED")]
+    pub est_initial_enrollment_required: bool,
+
     // ==================== Management API Configuration ====================
     /// Enable the Management API server.
     #[arg(long, default_value_t = false)]
@@ -420,6 +494,59 @@ pub fn resolve_ldap_bind_password(args: &Args) -> std::result::Result<Option<Str
     }
     // Fall back to CLI arg / env var (clap handles env)
     Ok(args.ldap_bind_password.clone())
+}
+
+/// Build EST configuration from CLI arguments and environment variables.
+///
+/// Returns None if EST is not enabled. Validates required fields when enabled.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-12 | Cryptographic Key Establishment | Secure credential provisioning for EST enrollment |
+/// | IA-5 | Authenticator Management | Zero-touch certificate lifecycle configuration |
+pub fn build_est_config(args: &Args) -> std::result::Result<Option<usg_tacacs_secrets::EstConfig>, String> {
+    if !args.est_enabled {
+        return Ok(None);
+    }
+
+    // Validate required fields
+    let server_url = args.est_server_url.as_ref()
+        .ok_or_else(|| "EST enabled but --est-server-url not provided".to_string())?;
+
+    let common_name = args.est_common_name.as_ref()
+        .ok_or_else(|| "EST enabled but --est-common-name not provided".to_string())?;
+
+    // Resolve password from file or CLI/env
+    let password = if let Some(ref pwd_file) = args.est_password_file {
+        Some(read_secret_file(pwd_file)
+            .map_err(|e| format!("failed to read EST password file {:?}: {}", pwd_file, e))?)
+    } else {
+        args.est_password.clone()
+    };
+
+    let config = usg_tacacs_secrets::EstConfig {
+        enabled: true,
+        server_url: server_url.clone(),
+        username: args.est_username.clone(),
+        password,
+        password_file: args.est_password_file.clone(),
+        client_cert_path: args.est_client_cert_path.clone(),
+        client_key_path: args.est_client_key_path.clone(),
+        ca_label: args.est_ca_label.clone(),
+        common_name: common_name.clone(),
+        organization: args.est_organization.clone(),
+        cert_path: args.est_cert_path.clone(),
+        key_path: args.est_key_path.clone(),
+        ca_cert_path: args.est_ca_cert_path.clone(),
+        renewal_threshold_percent: args.est_renewal_threshold_percent,
+        renewal_check_interval_secs: args.est_renewal_check_interval_secs,
+        bootstrap_timeout_secs: args.est_bootstrap_timeout_secs,
+        initial_enrollment_required: args.est_initial_enrollment_required,
+    };
+
+    Ok(Some(config))
 }
 
 pub fn credentials_map(args: &Args) -> std::result::Result<StaticCreds, String> {
@@ -908,6 +1035,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = credentials_map(&args);
@@ -993,6 +1137,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = credentials_map(&args);
@@ -1076,6 +1237,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = credentials_map(&args);
@@ -1159,6 +1337,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = credentials_map(&args);
@@ -1243,6 +1438,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = credentials_map(&args);
@@ -1326,6 +1538,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = credentials_map(&args);
@@ -1474,6 +1703,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -1554,6 +1800,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -1634,6 +1897,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -1719,6 +1999,23 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            est_enabled: false,
+            est_server_url: None,
+            est_username: None,
+            est_password: None,
+            est_password_file: None,
+            est_client_cert_path: None,
+            est_client_key_path: None,
+            est_ca_label: None,
+            est_common_name: None,
+            est_organization: None,
+            est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
+            est_key_path: PathBuf::from("/etc/tacacs/server.key"),
+            est_ca_cert_path: PathBuf::from("/etc/tacacs/ca.crt"),
+            est_renewal_threshold_percent: 70,
+            est_renewal_check_interval_secs: 3600,
+            est_bootstrap_timeout_secs: 300,
+            est_initial_enrollment_required: false,
         };
 
         let result = resolve_ldap_bind_password(&args);

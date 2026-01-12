@@ -562,4 +562,137 @@ mod tests {
         assert_eq!(config.renewal_threshold_percent, 70);
         assert_eq!(config.renewal_check_interval_secs, 3600);
     }
+
+    #[test]
+    fn test_certificate_bundle_should_renew_already_expired() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Certificate that expired 100 seconds ago
+        let expired = CertificateBundle {
+            cert_pem: vec![],
+            key_pem: vec![],
+            ca_chain: None,
+            serial_number: "expired".to_string(),
+            expires_at: now - 100,
+        };
+
+        // Should always renew expired certificates regardless of threshold
+        assert!(expired.should_renew(10));
+        assert!(expired.should_renew(50));
+        assert!(expired.should_renew(90));
+    }
+
+    #[test]
+    fn test_certificate_bundle_should_renew_zero_expiration() {
+        // Certificate with unknown expiration (expires_at = 0)
+        let unknown = CertificateBundle {
+            cert_pem: vec![],
+            key_pem: vec![],
+            ca_chain: None,
+            serial_number: "unknown".to_string(),
+            expires_at: 0,
+        };
+
+        // Should NOT renew when expiration is unknown
+        assert!(!unknown.should_renew(10));
+        assert!(!unknown.should_renew(70));
+        assert!(!unknown.should_renew(100));
+    }
+
+    #[test]
+    fn test_certificate_bundle_should_renew_threshold_boundary() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Certificate expires in exactly 100 seconds
+        let bundle = CertificateBundle {
+            cert_pem: vec![],
+            key_pem: vec![],
+            ca_chain: None,
+            serial_number: "boundary".to_string(),
+            expires_at: now + 100,
+        };
+
+        // With 100s remaining:
+        // - 70% threshold: renew when <= 70s remain. Currently 100s, so NO
+        // - 100% threshold: renew when <= 100s remain. Currently 100s, so YES
+        // - 101% threshold: renew when <= 101s remain. Currently 100s, so YES
+        assert!(!bundle.should_renew(70));
+        assert!(bundle.should_renew(100));
+        assert!(bundle.should_renew(101));
+    }
+
+    #[tokio::test]
+    async fn test_certificate_bundle_write_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cert_path = temp_dir.path().join("cert.pem");
+        let key_path = temp_dir.path().join("key.pem");
+        let ca_path = temp_dir.path().join("ca.pem");
+
+        let bundle = CertificateBundle {
+            cert_pem: b"fake cert".to_vec(),
+            key_pem: b"fake key".to_vec(),
+            ca_chain: Some(b"fake ca".to_vec()),
+            serial_number: "test".to_string(),
+            expires_at: 1234567890,
+        };
+
+        bundle.write_to_files(&cert_path, &key_path, &ca_path).await.unwrap();
+
+        // Verify files exist
+        assert!(cert_path.exists());
+        assert!(key_path.exists());
+        assert!(ca_path.exists());
+
+        // Verify key file has restricted permissions (0o600)
+        let key_metadata = std::fs::metadata(&key_path).unwrap();
+        let permissions = key_metadata.permissions();
+        assert_eq!(permissions.mode() & 0o777, 0o600, "private key should have 0o600 permissions");
+
+        // Verify cert file has readable permissions (0o644)
+        let cert_metadata = std::fs::metadata(&cert_path).unwrap();
+        let permissions = cert_metadata.permissions();
+        assert_eq!(permissions.mode() & 0o777, 0o644, "certificate should have 0o644 permissions");
+    }
+
+    #[tokio::test]
+    async fn test_certificate_bundle_write_no_ca() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cert_path = temp_dir.path().join("cert.pem");
+        let key_path = temp_dir.path().join("key.pem");
+
+        let bundle = CertificateBundle {
+            cert_pem: b"fake cert".to_vec(),
+            key_pem: b"fake key".to_vec(),
+            ca_chain: None,
+            serial_number: "test".to_string(),
+            expires_at: 1234567890,
+        };
+
+        // Create a dummy CA path even though ca_chain is None
+        let ca_path = temp_dir.path().join("ca.pem");
+        bundle.write_to_files(&cert_path, &key_path, &ca_path).await.unwrap();
+
+        // Verify files exist
+        assert!(cert_path.exists());
+        assert!(key_path.exists());
+        // CA file should NOT exist since ca_chain is None
+        assert!(!ca_path.exists());
+
+        // Verify contents
+        let cert_content = std::fs::read(&cert_path).unwrap();
+        assert_eq!(cert_content, b"fake cert");
+        let key_content = std::fs::read(&key_path).unwrap();
+        assert_eq!(key_content, b"fake key");
+    }
 }

@@ -1,11 +1,12 @@
 use crate::ascii::AsciiConfig;
 use crate::auth::LdapConfig;
-use crate::config::{Args, LogFormat, StaticCreds, credentials_map};
+use crate::config::{Args, LogFormat, StaticCreds, build_est_config, credentials_map};
 use crate::http::{ServerState, serve_http};
 use crate::metrics::metrics;
 use crate::server::{
-    AuthContext, ConnLimiter, ConnectionConfig, PolicyReloadRequest, TlsIdentityConfig,
-    serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_policy_changes,
+    AuthContext, CertificateReloadRequest, ConnLimiter, ConnectionConfig, PolicyReloadRequest,
+    TlsIdentityConfig, serve_legacy, serve_tls, tls_acceptor, validate_policy,
+    watch_certificate_changes, watch_policy_changes,
 };
 use crate::session_registry::{SessionLimits, SessionRegistry, run_idle_sweep_task};
 use crate::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
@@ -22,6 +23,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::MIN_SECRET_LEN;
+use usg_tacacs_secrets::SecretsProvider;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -184,6 +186,75 @@ async fn main() -> Result<()> {
         });
     }
 
+    // ==================== EST Zero-Touch Certificate Provisioning ====================
+    // NIST IA-5/SC-17: Bootstrap certificate enrollment for zero-touch deployment
+    let mut est_provider: Option<Arc<usg_tacacs_secrets::EstProvider>> = None;
+    let est_config_opt = build_est_config(&args).map_err(anyhow::Error::msg)?;
+
+    if let Some(est_config) = &est_config_opt {
+        info!(
+            server_url = %est_config.server_url,
+            common_name = %est_config.common_name,
+            "EST zero-touch provisioning enabled"
+        );
+
+        // Create EST provider
+        let mut provider = usg_tacacs_secrets::EstProvider::new(est_config.clone())
+            .await
+            .context("failed to initialize EST provider")?;
+
+        // Check if bootstrap enrollment is needed
+        if !est_config.cert_path.exists() || !est_config.key_path.exists() {
+            info!("EST certificates not found, performing bootstrap enrollment");
+
+            // Perform bootstrap enrollment with timeout
+            let bootstrap_timeout = Duration::from_secs(est_config.bootstrap_timeout_secs);
+            let enroll_result = tokio::time::timeout(
+                bootstrap_timeout,
+                provider.bootstrap_enrollment()
+            ).await;
+
+            match enroll_result {
+                Ok(Ok(bundle)) => {
+                    info!(
+                        serial = %bundle.serial_number,
+                        expires_at = bundle.expires_at,
+                        "EST bootstrap enrollment successful"
+                    );
+                }
+                Ok(Err(e)) => {
+                    error!(error = %e, "EST bootstrap enrollment failed");
+                    if est_config.initial_enrollment_required {
+                        bail!("EST enrollment required but failed: {}", e);
+                    } else {
+                        warn!("EST enrollment failed, continuing in degraded mode");
+                    }
+                }
+                Err(_) => {
+                    error!(timeout_secs = est_config.bootstrap_timeout_secs, "EST bootstrap enrollment timed out");
+                    if est_config.initial_enrollment_required {
+                        bail!("EST enrollment required but timed out after {} seconds", est_config.bootstrap_timeout_secs);
+                    } else {
+                        warn!("EST enrollment timed out, continuing in degraded mode");
+                    }
+                }
+            }
+        } else {
+            info!(
+                cert_path = ?est_config.cert_path,
+                "EST certificates found, loading existing"
+            );
+        }
+
+        // Start certificate renewal loop
+        provider.start_renewal_loop()
+            .context("failed to start EST renewal loop")?;
+
+        est_provider = Some(Arc::new(provider));
+
+        info!("EST certificate renewal loop started");
+    }
+
     if let Some(addr) = args.listen_tls {
         // RFC 9887: TACACS+ over TLS 1.3 SHOULD use port 300
         const RFC9887_TLS_PORT: u16 = 300;
@@ -211,19 +282,70 @@ async fn main() -> Result<()> {
         {
             warn!("TLS mode: shared secret missing/short; UNENCRYPTED packets will be accepted");
         }
-        let cert = args
-            .tls_cert
-            .as_ref()
-            .context("--tls-cert is required when --listen-tls is set")?;
-        let key = args
-            .tls_key
-            .as_ref()
-            .context("--tls-key is required when --listen-tls is set")?;
+
+        // Determine certificate source: EST or manual paths
+        let (cert, key) = if let Some(ref est_cfg) = est_config_opt {
+            // Use EST-provisioned certificates
+            info!(
+                cert_path = ?est_cfg.cert_path,
+                key_path = ?est_cfg.key_path,
+                "using EST-provisioned certificates for TLS"
+            );
+            (&est_cfg.cert_path, &est_cfg.key_path)
+        } else {
+            // Use manually configured certificates
+            let cert_ref = args
+                .tls_cert
+                .as_ref()
+                .context("--tls-cert is required when --listen-tls is set (or use --est-enabled)")?;
+            let key_ref = args
+                .tls_key
+                .as_ref()
+                .context("--tls-key is required when --listen-tls is set (or use --est-enabled)")?;
+            (cert_ref, key_ref)
+        };
+
         let ca = args
             .client_ca
             .as_ref()
             .context("--client-ca is required when --listen-tls is set")?;
-        let acceptor = tls_acceptor(cert, key, ca, &args.tls_trust_root)?;
+        let acceptor = Arc::new(RwLock::new(tls_acceptor(cert, key, ca, &args.tls_trust_root)?));
+
+        // Create certificate reload channel and watcher task
+        let (cert_reload_tx, cert_reload_rx) = mpsc::channel::<CertificateReloadRequest>(10);
+        let cert_acceptor = acceptor.clone();
+        handles.push(tokio::spawn(async move {
+            watch_certificate_changes(cert_reload_rx, cert_acceptor).await;
+        }));
+
+        // Wire up EST provider to certificate reload channel
+        if let Some(ref est_prov) = est_provider {
+            let reload_tx = cert_reload_tx.clone();
+            let est_cert_path = est_config_opt.as_ref().unwrap().cert_path.clone();
+            let est_key_path = est_config_opt.as_ref().unwrap().key_path.clone();
+            let est_ca_path = ca.clone();
+            let est_trust_roots = args.tls_trust_root.clone();
+
+            // Subscribe to EST certificate change events
+            let mut change_rx = (**est_prov).subscribe();
+            handles.push(tokio::spawn(async move {
+                while let Ok(change) = change_rx.recv().await {
+                    if matches!(change, usg_tacacs_secrets::SecretChange::TlsCertificates { .. }) {
+                        info!("EST certificate renewed, triggering reload");
+                        let request = CertificateReloadRequest::FromFiles {
+                            cert_path: est_cert_path.clone(),
+                            key_path: est_key_path.clone(),
+                            client_ca_path: est_ca_path.clone(),
+                            extra_trust_roots: est_trust_roots.clone(),
+                        };
+                        if let Err(err) = reload_tx.send(request).await {
+                            warn!(error = %err, "failed to send certificate reload request");
+                        }
+                    }
+                }
+            }));
+        }
+
         let auth_ctx = AuthContext {
             policy: shared_policy.clone(),
             secret: shared_secret.clone(),

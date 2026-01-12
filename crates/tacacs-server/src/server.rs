@@ -725,7 +725,7 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
 /// | SC-8 | Transmission Confidentiality | TLS 1.3 encryption |
 pub async fn serve_tls(
     addr: SocketAddr,
-    acceptor: TlsAcceptor,
+    acceptor: Arc<RwLock<TlsAcceptor>>,
     auth_ctx: AuthContext,
     conn_cfg: ConnectionConfig,
     tls_identity: TlsIdentityConfig,
@@ -737,7 +737,7 @@ pub async fn serve_tls(
     info!("listening for TLS TACACS+ on {}", addr);
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let conn_acceptor = acceptor.clone();
+        let conn_acceptor = acceptor.read().await.clone();
         let conn_auth_ctx = auth_ctx.clone();
         let conn_cfg = conn_cfg.clone();
         let conn_tls_identity = tls_identity.clone();
@@ -2235,6 +2235,157 @@ pub enum PolicyReloadRequest {
         content: String,
         schema: Option<PathBuf>,
     },
+}
+
+/// Request to reload TLS certificates from files.
+///
+/// Used to dynamically update server TLS certificates without restarting,
+/// supporting EST certificate renewal and manual certificate rotation.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | CM-3 | Configuration Change Control | Audit trail for certificate changes |
+/// | IA-5 | Authenticator Management | Certificate lifecycle management |
+/// | SC-17 | PKI Certificates | Dynamic certificate reload |
+#[derive(Debug)]
+pub enum CertificateReloadRequest {
+    /// Reload certificates from disk files
+    FromFiles {
+        cert_path: PathBuf,
+        key_path: PathBuf,
+        client_ca_path: PathBuf,
+        extra_trust_roots: Vec<PathBuf>,
+    },
+}
+
+/// Watch for certificate reload requests.
+///
+/// Monitors certificate reload requests and atomically updates the TLS acceptor
+/// configuration when new certificates are available. Typically triggered by:
+/// - EST certificate renewal
+/// - Manual certificate rotation via API
+/// - External certificate management systems
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5 | Authenticator Management | Automated certificate lifecycle |
+/// | SC-17 | PKI Certificates | Hot-reload without service interruption |
+/// | AU-12 | Audit Generation | Logs all reload attempts with outcome |
+/// Update certificate metrics from PEM file.
+///
+/// Reads certificate and updates Prometheus metrics for expiration tracking.
+fn update_certificate_metrics(cert_path: &PathBuf) {
+    use anyhow::bail;
+    use rustls_pemfile::Item;
+    use std::fs::File;
+    use std::io::BufReader;
+    use x509_cert::Certificate;
+    use x509_cert::der::Decode;
+
+    let metrics = crate::metrics::metrics();
+
+    // Try to read and parse certificate
+    let cert_result = (|| -> Result<Certificate> {
+        let file = File::open(cert_path)
+            .with_context(|| format!("opening certificate file {}", cert_path.display()))?;
+        let mut reader = BufReader::new(file);
+
+        // Read first certificate from PEM
+        let cert_der = match rustls_pemfile::read_one(&mut reader)? {
+            Some(Item::X509Certificate(der)) => der,
+            _ => bail!("no certificate found in PEM file"),
+        };
+
+        // Parse DER to x509
+        Certificate::from_der(&cert_der)
+            .map_err(|e| anyhow::anyhow!("failed to parse certificate: {}", e))
+    })();
+
+    match cert_result {
+        Ok(cert) => {
+            // Extract expiration time (notAfter)
+            let not_after = cert.tbs_certificate.validity.not_after.to_unix_duration();
+            let expiry_secs = not_after.as_secs();
+
+            // Calculate days until expiration
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let days_remaining = if expiry_secs > now {
+                ((expiry_secs - now) as f64) / 86400.0
+            } else {
+                0.0 // Expired
+            };
+
+            // Update metrics
+            metrics.certificate_expiry_timestamp.set(expiry_secs as f64);
+            metrics.certificate_validity_days.set(days_remaining);
+
+            info!(
+                expires_at = expiry_secs,
+                days_remaining = %format!("{:.1}", days_remaining),
+                "certificate metrics updated"
+            );
+        }
+        Err(e) => {
+            warn!(error = %e, cert_path = ?cert_path, "failed to parse certificate for metrics");
+        }
+    }
+}
+
+pub async fn watch_certificate_changes(
+    mut reload_rx: tokio::sync::mpsc::Receiver<CertificateReloadRequest>,
+    tls_acceptor: Arc<RwLock<TlsAcceptor>>,
+) {
+    info!("certificate reload watcher started");
+
+    while let Some(request) = reload_rx.recv().await {
+        match request {
+            CertificateReloadRequest::FromFiles {
+                cert_path,
+                key_path,
+                client_ca_path,
+                extra_trust_roots,
+            } => {
+                match build_tls_config(&cert_path, &key_path, &client_ca_path, &extra_trust_roots) {
+                    Ok(new_config) => {
+                        *tls_acceptor.write().await = TlsAcceptor::from(Arc::new(new_config));
+                        crate::metrics::metrics()
+                            .certificate_renewal_total
+                            .with_label_values(&["success", "reload"])
+                            .inc();
+
+                        // Update certificate expiration metrics
+                        update_certificate_metrics(&cert_path);
+
+                        info!(
+                            cert_path = ?cert_path,
+                            "TLS certificates reloaded successfully"
+                        );
+                    }
+                    Err(err) => {
+                        crate::metrics::metrics()
+                            .certificate_renewal_total
+                            .with_label_values(&["failure", "reload"])
+                            .inc();
+                        warn!(
+                            error = %err,
+                            cert_path = ?cert_path,
+                            "failed to reload TLS certificates"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    info!("certificate reload watcher stopped");
 }
 
 /// Watch for policy changes from SIGHUP or internal channel.

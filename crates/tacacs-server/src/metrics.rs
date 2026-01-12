@@ -64,6 +64,11 @@ pub struct Metrics {
 
     // Rate limiting metrics
     pub ratelimit_rejections_total: CounterVec,
+
+    // Certificate metrics (EST/PKI)
+    pub certificate_expiry_timestamp: Gauge,
+    pub certificate_renewal_total: CounterVec,
+    pub certificate_validity_days: Gauge,
 }
 
 impl Metrics {
@@ -173,6 +178,28 @@ impl Metrics {
         )
         .expect("metric can be created");
 
+        // Certificate metrics (EST/PKI)
+        let certificate_expiry_timestamp = Gauge::with_opts(Opts::new(
+            "tacacs_certificate_expiry_timestamp_seconds",
+            "Unix timestamp when the TLS certificate expires",
+        ))
+        .expect("metric can be created");
+
+        let certificate_renewal_total = CounterVec::new(
+            Opts::new(
+                "tacacs_certificate_renewal_total",
+                "Certificate renewal attempts by result",
+            ),
+            &["result", "source"],
+        )
+        .expect("metric can be created");
+
+        let certificate_validity_days = Gauge::with_opts(Opts::new(
+            "tacacs_certificate_validity_days",
+            "Number of days until certificate expires",
+        ))
+        .expect("metric can be created");
+
         // Register all metrics
         registry
             .register(Box::new(connections_active.clone()))
@@ -210,6 +237,15 @@ impl Metrics {
         registry
             .register(Box::new(ratelimit_rejections_total.clone()))
             .expect("metric can be registered");
+        registry
+            .register(Box::new(certificate_expiry_timestamp.clone()))
+            .expect("metric can be registered");
+        registry
+            .register(Box::new(certificate_renewal_total.clone()))
+            .expect("metric can be registered");
+        registry
+            .register(Box::new(certificate_validity_days.clone()))
+            .expect("metric can be registered");
 
         Self {
             registry,
@@ -225,6 +261,9 @@ impl Metrics {
             policy_reload_total,
             policy_rules_count,
             ratelimit_rejections_total,
+            certificate_expiry_timestamp,
+            certificate_renewal_total,
+            certificate_validity_days,
         }
     }
 

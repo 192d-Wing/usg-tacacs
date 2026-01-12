@@ -3886,6 +3886,7 @@ dependencies = [
  "usg-tacacs-policy",
  "usg-tacacs-proto",
  "usg-tacacs-secrets",
+ "x509-cert",
 ]
 
 [[package]]
