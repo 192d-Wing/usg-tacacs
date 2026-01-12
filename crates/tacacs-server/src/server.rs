@@ -69,8 +69,11 @@ use usg_tacacs_proto::{
 /// Per-IP connection rate limiter.
 ///
 /// # NIST Controls
-/// - **AC-10 (Concurrent Session Control)**: Limits concurrent connections per IP
-/// - **SC-7 (Boundary Protection)**: Prevents connection exhaustion attacks
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Limits concurrent connections per IP |
+/// | SC-7 | Boundary Protection | Prevents connection exhaustion attacks |
 #[derive(Clone)]
 pub(crate) struct ConnLimiter {
     max_per_ip: u32,
@@ -88,7 +91,10 @@ impl ConnLimiter {
     /// Attempt to acquire a connection slot for the given IP.
     ///
     /// # NIST Controls
-    /// - **AC-10**: Enforces maximum concurrent connections per IP address
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-10 | Concurrent Session Control | Enforces maximum concurrent connections per IP |
     async fn try_acquire(&self, ip: &str) -> Option<ConnGuard> {
         if self.max_per_ip == 0 {
             return Some(ConnGuard {
@@ -140,9 +146,12 @@ impl Drop for ConnGuard {
 /// Groups connection timeout, rate limiting, and ASCII authentication settings.
 ///
 /// # NIST Controls
-/// - **AC-7 (Unsuccessful Logon Attempts)**: Contains ASCII authentication limits
-/// - **AC-10 (Concurrent Session Control)**: Contains connection rate limiter
-/// - **AC-11/AC-12 (Session Lock/Termination)**: Contains idle/keepalive timeouts
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-7 | Unsuccessful Logon Attempts | Contains ASCII authentication limits |
+/// | AC-10 | Concurrent Session Control | Contains connection rate limiter |
+/// | AC-11/AC-12 | Session Lock/Termination | Contains idle/keepalive timeouts |
 #[derive(Clone)]
 pub(crate) struct ConnectionConfig {
     /// Idle timeout for single-connect sessions (seconds)
@@ -160,9 +169,12 @@ pub(crate) struct ConnectionConfig {
 /// Groups all authentication-related shared state.
 ///
 /// # NIST Controls
-/// - **IA-2 (Identification and Authentication)**: Contains credentials and LDAP config
-/// - **AC-3 (Access Enforcement)**: Contains policy engine for authorization
-/// - **SC-8 (Transmission Confidentiality)**: Contains shared secret for obfuscation
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Contains policy engine for authorization |
+/// | IA-2 | Identification and Authentication | Contains credentials and LDAP config |
+/// | SC-8 | Transmission Confidentiality | Contains shared secret for obfuscation |
 #[derive(Clone)]
 pub(crate) struct AuthContext {
     /// Policy engine for authorization decisions
@@ -178,8 +190,11 @@ pub(crate) struct AuthContext {
 /// TLS-specific configuration for client certificate validation.
 ///
 /// # NIST Controls
-/// - **IA-3 (Device Identification)**: Client certificate CN/SAN allowlists
-/// - **SC-23 (Session Authenticity)**: Ensures only authorized devices connect
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-3 | Device Identification | Client certificate CN/SAN allowlists |
+/// | SC-23 | Session Authenticity | Ensures only authorized devices connect |
 #[derive(Clone, Default)]
 pub(crate) struct TlsIdentityConfig {
     /// Allowed Common Names for client certificates
@@ -191,10 +206,12 @@ pub(crate) struct TlsIdentityConfig {
 /// Enforce client certificate identity policy (CN/SAN allowlists).
 ///
 /// # NIST Controls
-/// - **IA-3 (Device Identification and Authentication)**: Validates client
-///   certificate Common Name and Subject Alternative Names against allowlists
-/// - **IA-4 (Identifier Management)**: Certificate-based device identity
-/// - **SC-23 (Session Authenticity)**: Ensures only authorized devices connect
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-3 | Device Identification and Authentication | Validates client certificate CN/SAN against allowlists |
+/// | IA-4 | Identifier Management | Certificate-based device identity |
+/// | SC-23 | Session Authenticity | Ensures only authorized devices connect |
 fn enforce_client_cert_policy(
     stream: &TlsStream<tokio::net::TcpStream>,
     peer: &SocketAddr,
@@ -700,9 +717,12 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
 /// Serve TACACS+ over TLS connections.
 ///
 /// # NIST Controls
-/// - **AC-10 (Concurrent Session Control)**: Registers connections with session registry
-/// - **SC-8 (Transmission Confidentiality)**: TLS 1.3 encryption
-/// - **IA-3 (Device Identification)**: Client certificate validation
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Registers connections with session registry |
+/// | IA-3 | Device Identification | Client certificate validation |
+/// | SC-8 | Transmission Confidentiality | TLS 1.3 encryption |
 pub async fn serve_tls(
     addr: SocketAddr,
     acceptor: TlsAcceptor,
@@ -764,8 +784,11 @@ pub async fn serve_tls(
 /// Serve TACACS+ over legacy (non-TLS) connections.
 ///
 /// # NIST Controls
-/// - **AC-10 (Concurrent Session Control)**: Registers connections with session registry
-/// - **SC-7 (Boundary Protection)**: Per-NAD secret enforcement
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Registers connections with session registry |
+/// | SC-7 | Boundary Protection | Per-NAD secret enforcement |
 pub async fn serve_legacy(
     addr: SocketAddr,
     auth_ctx: AuthContext,
@@ -828,9 +851,12 @@ pub async fn serve_legacy(
 /// Handle a single TACACS+ connection.
 ///
 /// # NIST Controls
-/// - **AC-10 (Concurrent Session Control)**: Registers connection with session registry
-/// - **AC-12 (Session Termination)**: Checks for termination requests and unregisters on close
-/// - **AU-2/AU-12 (Audit Events)**: Connection lifecycle logging
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Registers connection with session registry |
+/// | AC-12 | Session Termination | Checks for termination requests and unregisters on close |
+/// | AU-2/AU-12 | Audit Events | Connection lifecycle logging |
 async fn handle_connection<S>(
     mut stream: S,
     peer_addr: SocketAddr,
@@ -2192,8 +2218,11 @@ where
 /// Policy reload request from API or SIGHUP.
 ///
 /// # NIST Controls
-/// - **CM-3 (Configuration Change Control)**: Audit trail for policy changes
-/// - **AU-12 (Audit Generation)**: Log reload source and result
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Log reload source and result |
+/// | CM-3 | Configuration Change Control | Audit trail for policy changes |
 #[derive(Debug)]
 pub enum PolicyReloadRequest {
     /// Reload policy from disk
@@ -2210,9 +2239,11 @@ pub enum PolicyReloadRequest {
 /// policy update mechanism.
 ///
 /// # NIST Controls
-/// - **CM-3 (Configuration Change Control)**: Handles policy updates from
-///   multiple sources with audit logging
-/// - **AU-12 (Audit Generation)**: Logs all reload attempts with source
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Logs all reload attempts with source |
+/// | CM-3 | Configuration Change Control | Handles policy updates from multiple sources |
 pub async fn watch_policy_changes(
     initial_path: PathBuf,
     schema: Option<PathBuf>,

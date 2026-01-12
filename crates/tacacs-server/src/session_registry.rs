@@ -88,7 +88,10 @@ use crate::metrics::metrics;
 /// Error returned when session limits are exceeded.
 ///
 /// # NIST Controls
-/// - **AC-10 (Concurrent Session Control)**: Documents limit violations
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Documents limit violations |
 #[derive(Debug, Clone)]
 pub enum SessionLimitExceeded {
     /// Total session limit across all IPs was exceeded
@@ -126,7 +129,10 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 /// Information about an active session for API display.
 ///
 /// # NIST Controls
-/// - **AU-3 (Content of Audit Records)**: Contains session metadata for audit
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-3 | Content of Audit Records | Contains session metadata for audit |
 #[derive(Debug, Clone)]
 pub struct SessionRecord {
     /// Unique connection ID assigned when connection was established
@@ -177,7 +183,10 @@ impl SessionRecord {
 /// Configuration for session limits.
 ///
 /// # NIST Controls
-/// - **AC-10 (Concurrent Session Control)**: Configures session limits
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Configures session limits |
 #[derive(Debug, Clone, Default)]
 pub struct SessionLimits {
     /// Maximum total sessions across all IPs (0 = unlimited)
@@ -189,8 +198,11 @@ pub struct SessionLimits {
 /// Thread-safe registry for tracking active sessions.
 ///
 /// # NIST Controls
-/// - **AC-10 (Concurrent Session Control)**: Tracks all active connections
-/// - **SI-4 (System Monitoring)**: Enables session visibility for monitoring
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Tracks all active connections |
+/// | SI-4 | System Monitoring | Enables session visibility for monitoring |
 #[derive(Debug)]
 pub struct SessionRegistry {
     /// Map from connection ID to session record
@@ -211,7 +223,10 @@ impl SessionRegistry {
     /// Create a new session registry with configured limits.
     ///
     /// # NIST Controls
-    /// - **AC-10 (Concurrent Session Control)**: Configures session limits
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-10 | Concurrent Session Control | Configures session limits |
     pub fn with_limits(limits: SessionLimits) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
@@ -228,8 +243,11 @@ impl SessionRegistry {
     /// could exceed configured limits.
     ///
     /// # NIST Controls
-    /// - **AC-10**: Enforces session limits and tracks new connection
-    /// - **AU-2 (Audit Events)**: Connection establishment is recorded
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-10 | Concurrent Session Control | Enforces session limits and tracks new connection |
+    /// | AU-2 | Audit Events | Connection establishment is recorded |
     pub async fn try_register_connection(
         &self,
         peer_addr: SocketAddr,
@@ -282,8 +300,11 @@ impl SessionRegistry {
     /// for limit-checked registration.
     ///
     /// # NIST Controls
-    /// - **AC-10**: Tracks new connection for session control
-    /// - **AU-2 (Audit Events)**: Connection establishment is recorded
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-10 | Concurrent Session Control | Tracks new connection for session control |
+    /// | AU-2 | Audit Events | Connection establishment is recorded |
     pub async fn register_connection(&self, peer_addr: SocketAddr) -> u64 {
         let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
         let record = SessionRecord::new(connection_id, peer_addr);
@@ -309,8 +330,11 @@ impl SessionRegistry {
     /// session ID for tracking and audit purposes.
     ///
     /// # NIST Controls
-    /// - **AU-3 (Content of Audit Records)**: Records authentication result
-    /// - **SC-23 (Session Authenticity)**: Associates session ID with connection
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AU-3 | Content of Audit Records | Records authentication result |
+    /// | SC-23 | Session Authenticity | Associates session ID with connection |
     pub async fn update_authentication(
         &self,
         connection_id: u64,
@@ -338,8 +362,11 @@ impl SessionRegistry {
     /// Used for idle timeout enforcement and audit trails.
     ///
     /// # NIST Controls
-    /// - **AC-12 (Session Termination)**: Tracks activity for idle timeout
-    /// - **AU-3 (Content of Audit Records)**: Records request count
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-12 | Session Termination | Tracks activity for idle timeout |
+    /// | AU-3 | Content of Audit Records | Records request count |
     pub async fn record_activity(&self, connection_id: u64) {
         let mut sessions = self.sessions.write().await;
         if let Some(record) = sessions.get_mut(&connection_id) {
@@ -351,7 +378,10 @@ impl SessionRegistry {
     /// Unregister a connection when it closes.
     ///
     /// # NIST Controls
-    /// - **AU-2 (Audit Events)**: Connection termination is recorded
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AU-2 | Audit Events | Connection termination is recorded |
     pub async fn unregister_connection(&self, connection_id: u64) {
         let mut sessions = self.sessions.write().await;
         if let Some(record) = sessions.remove(&connection_id) {
@@ -373,8 +403,11 @@ impl SessionRegistry {
     /// Returns a snapshot of all currently registered sessions.
     ///
     /// # NIST Controls
-    /// - **AC-10 (Concurrent Session Control)**: Visibility into active sessions
-    /// - **SI-4 (System Monitoring)**: Session enumeration for monitoring
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-10 | Concurrent Session Control | Visibility into active sessions |
+    /// | SI-4 | System Monitoring | Session enumeration for monitoring |
     pub async fn list_sessions(&self) -> Vec<SessionRecord> {
         let sessions = self.sessions.read().await;
         sessions.values().cloned().collect()
@@ -392,7 +425,10 @@ impl SessionRegistry {
     /// handled by the connection handler when it next checks this flag.
     ///
     /// # NIST Controls
-    /// - **AC-12 (Session Termination)**: Administrative session termination
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-12 | Session Termination | Administrative session termination |
     ///
     /// Returns `true` if the session was found and marked, `false` otherwise.
     pub async fn terminate_session(&self, connection_id: u64) -> bool {
@@ -416,7 +452,10 @@ impl SessionRegistry {
     /// for termination.
     ///
     /// # NIST Controls
-    /// - **AC-12 (Session Termination)**: Administrative session termination
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-12 | Session Termination | Administrative session termination |
     ///
     /// Returns `true` if a matching session was found and marked, `false` otherwise.
     pub async fn terminate_by_session_id(&self, session_id: u32) -> bool {
@@ -452,8 +491,11 @@ impl SessionRegistry {
     /// `idle_timeout` for termination. Returns the number of sessions marked.
     ///
     /// # NIST Controls
-    /// - **AC-12 (Session Termination)**: Automatic idle timeout enforcement
-    /// - **AU-2 (Audit Events)**: Logs idle timeout events
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-12 | Session Termination | Automatic idle timeout enforcement |
+    /// | AU-2 | Audit Events | Logs idle timeout events |
     pub async fn sweep_idle_sessions(&self, idle_timeout: Duration) -> usize {
         let mut sessions = self.sessions.write().await;
         let mut terminated = 0;
@@ -483,7 +525,10 @@ impl SessionRegistry {
     /// Used for enforcing per-IP session limits.
     ///
     /// # NIST Controls
-    /// - **AC-10 (Concurrent Session Control)**: Per-IP session counting
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-10 | Concurrent Session Control | Per-IP session counting |
     pub async fn count_sessions_from_ip(&self, ip: std::net::IpAddr) -> usize {
         let sessions = self.sessions.read().await;
         sessions.values().filter(|r| r.peer_addr.ip() == ip).count()
@@ -496,8 +541,11 @@ impl SessionRegistry {
 /// interval and marking those exceeding `idle_timeout` for termination.
 ///
 /// # NIST Controls
-/// - **AC-12 (Session Termination)**: Automatic idle timeout enforcement
-/// - **SI-4 (System Monitoring)**: Continuous session health monitoring
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-12 | Session Termination | Automatic idle timeout enforcement |
+/// | SI-4 | System Monitoring | Continuous session health monitoring |
 ///
 /// # Arguments
 /// * `registry` - The session registry to sweep

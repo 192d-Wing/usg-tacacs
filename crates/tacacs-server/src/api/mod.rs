@@ -40,14 +40,13 @@ use usg_tacacs_policy::PolicyEngine;
 /// Start the management API server.
 ///
 /// # NIST Controls
-/// - **SC-8 (Transmission Confidentiality)**: When `acceptor` is `Some`, TLS 1.3
-///   with mTLS is enforced for all connections.
-/// - **AC-3 (Access Enforcement)**: RBAC is enforced on all endpoints regardless
-///   of TLS mode.
-/// - **CM-3 (Configuration Change Control)**: Policy reload channel enables
-///   controlled configuration updates via API.
-/// - **AC-10/AC-12 (Session Control)**: Session registry enables session listing
-///   and termination via API.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | RBAC enforced on all endpoints |
+/// | AC-10/AC-12 | Session Control | Session listing and termination via API |
+/// | CM-3 | Configuration Change Control | Policy reload channel for controlled updates |
+/// | SC-8 | Transmission Confidentiality | TLS 1.3 with mTLS when acceptor is provided |
 ///
 /// # Security Warning
 /// When `acceptor` is `None`, the API runs in plaintext mode which should only

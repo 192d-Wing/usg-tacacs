@@ -39,8 +39,10 @@ const AUTHEN_CONT_ABORT: u8 = 0x01;
 /// Configuration for ASCII authentication brute-force protection.
 ///
 /// # NIST Controls
-/// - **AC-7 (Unsuccessful Logon Attempts)**: All fields support configurable
-///   limits and delays to prevent brute-force attacks.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-7 | Unsuccessful Logon Attempts | Configurable limits and delays to prevent brute-force attacks |
 #[derive(Clone)]
 pub struct AsciiConfig {
     /// Maximum total attempts per session (NIST AC-7)
@@ -60,9 +62,10 @@ pub struct AsciiConfig {
 /// Calculate exponential backoff delay with random jitter.
 ///
 /// # NIST Controls
-/// - **AC-7 (Unsuccessful Logon Attempts)**: Implements exponential backoff
-///   (base * 2^(attempt-1)) with random jitter to prevent timing attacks
-///   and slow down brute-force attempts.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-7 | Unsuccessful Logon Attempts | Exponential backoff with random jitter to slow brute-force attempts |
 ///
 /// The jitter uses cryptographically secure random bytes from OpenSSL
 /// to prevent attackers from predicting delay patterns.
@@ -146,12 +149,13 @@ fn build_ascii_prompts(
 /// Handle ASCII authentication continuation packets.
 ///
 /// # NIST Controls
-/// - **AC-7 (Unsuccessful Logon Attempts)**: Enforces attempt limits, backoff delays,
-///   and lockout thresholds to prevent brute-force attacks.
-/// - **IA-2 (Identification and Authentication)**: Processes interactive authentication
-///   with username/password prompts.
-/// - **IA-6 (Authenticator Feedback)**: Uses NOECHO flag for password entry.
-/// - **AU-12 (Audit Generation)**: All attempts logged via tracing.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-7 | Unsuccessful Logon Attempts | Enforces attempt limits, backoff delays, and lockout thresholds |
+/// | AU-12 | Audit Generation | All attempts logged via tracing |
+/// | IA-2 | Identification and Authentication | Processes interactive authentication with username/password prompts |
+/// | IA-6 | Authenticator Feedback | Uses NOECHO flag for password entry |
 pub async fn handle_ascii_continue(
     cont_user_msg: &[u8],
     cont_data: &[u8],

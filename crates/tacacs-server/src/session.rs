@@ -45,10 +45,11 @@ impl SingleConnectState {
 /// a stop record for that task_id."
 ///
 /// # NIST Controls
-/// - **AU-2/AU-3 (Audit Events)**: Enables correlation of start/stop/watchdog
-///   accounting records for complete audit trails
-/// - **SI-7 (Information Integrity)**: Detects protocol violations that may
-///   indicate misconfiguration or attack attempts
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-2/AU-3 | Audit Events | Enables correlation of start/stop/watchdog accounting records |
+/// | SI-7 | Information Integrity | Detects protocol violations indicating misconfiguration or attack |
 #[derive(Debug, Default)]
 pub struct TaskIdTracker {
     /// Set of task_ids that have received a START but not yet a STOP.

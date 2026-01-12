@@ -27,8 +27,11 @@ pub struct ServerStats {
 /// Active session information.
 ///
 /// # NIST Controls
-/// - **AU-3 (Content of Audit Records)**: Contains session metadata for audit
-/// - **AC-10 (Concurrent Session Control)**: Provides session visibility
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-3 | Content of Audit Records | Contains session metadata for audit |
+/// | AC-10 | Concurrent Session Control | Provides session visibility |
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionInfo {
     /// Unique connection/session identifier

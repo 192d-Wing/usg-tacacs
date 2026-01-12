@@ -40,8 +40,11 @@ pub enum LogFormat {
 /// Command-line arguments for the TACACS+ server.
 ///
 /// # NIST Controls
-/// - **CM-2/CM-6**: All parameters support secure baseline configuration
-/// - **SI-10**: Input validation via clap argument parsing
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | CM-2/CM-6 | Baseline Configuration | All parameters support secure baseline configuration |
+/// | SI-10 | Input Validation | Input validation via clap argument parsing |
 #[derive(Parser, Debug)]
 #[command(name = "usg-tacacs", version, about = "Rust TACACS+ server")]
 pub struct Args {
@@ -356,8 +359,10 @@ pub struct StaticCreds {
 /// Read a secret from a file, trimming whitespace.
 ///
 /// # NIST Controls
-/// - **SC-28 (Protection of Information at Rest)**: Secrets stored in files with
-///   restrictive permissions (0600 recommended) instead of CLI arguments.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-28 | Protection of Information at Rest | Secrets stored in files with restrictive permissions (0600 recommended) |
 ///
 /// # Errors
 /// Returns an error if the file cannot be read or is empty.
@@ -380,8 +385,10 @@ pub fn read_secret_file(path: &PathBuf) -> std::io::Result<String> {
 /// 2. --secret or TACACS_SECRET environment variable
 ///
 /// # NIST Controls
-/// - **SC-12 (Cryptographic Key Establishment)**: Supports secure secret provisioning
-///   via files with restrictive permissions, avoiding exposure in process listings.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-12 | Cryptographic Key Establishment | Secure secret provisioning via files with restrictive permissions |
 pub fn resolve_tacacs_secret(args: &Args) -> std::result::Result<Option<String>, String> {
     // File-based secret takes precedence
     if let Some(path) = &args.secret_file {
@@ -400,8 +407,10 @@ pub fn resolve_tacacs_secret(args: &Args) -> std::result::Result<Option<String>,
 /// 2. --ldap-bind-password or LDAP_BIND_PASSWORD environment variable
 ///
 /// # NIST Controls
-/// - **SC-12 (Cryptographic Key Establishment)**: Supports secure secret provisioning
-///   via files with restrictive permissions, avoiding exposure in process listings.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-12 | Cryptographic Key Establishment | Secure secret provisioning via files with restrictive permissions |
 pub fn resolve_ldap_bind_password(args: &Args) -> std::result::Result<Option<String>, String> {
     // File-based password takes precedence
     if let Some(path) = &args.ldap_bind_password_file {
@@ -509,8 +518,10 @@ fn parse_user_password(s: &str) -> std::result::Result<(String, String), String>
 /// - IPv6 (bracketed): `[2001:db8::1]:secret`
 ///
 /// # NIST Controls
-/// - **SI-10 (Information Input Validation)**: Validates IP address format
-///   and ensures secrets are non-empty.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SI-10 | Information Input Validation | Validates IP address format and ensures secrets are non-empty |
 fn parse_nad_secret(s: &str) -> std::result::Result<(IpAddr, String), String> {
     // Check for bracketed IPv6 notation: [IPv6]:secret
     if s.starts_with('[') {

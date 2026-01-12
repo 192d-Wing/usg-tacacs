@@ -23,9 +23,11 @@ use usg_tacacs_proto::{AUTHEN_STATUS_FAIL, AuthSessionState, AuthenReply};
 /// Enforce server_msg_raw policy; clears/denies reply if blocked.
 ///
 /// # NIST Controls
-/// - **AC-4 (Information Flow Enforcement)**: Controls server message content
-///   based on user-specific allowlists and denylists
-/// - **AU-12 (Audit Generation)**: Policy decisions logged via tracing
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-4 | Information Flow Enforcement | Controls server message content based on allowlists/denylists |
+/// | AU-12 | Audit Generation | Policy decisions logged via tracing |
 #[tracing::instrument(skip(policy, state, reply), fields(username = ?state.username))]
 pub async fn enforce_server_msg(
     policy: &Arc<RwLock<PolicyEngine>>,

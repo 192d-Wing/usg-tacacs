@@ -24,8 +24,11 @@ use tracing::warn;
 /// RBAC configuration.
 ///
 /// # NIST Controls
-/// - **AC-2 (Account Management)**: User-to-role mapping
-/// - **AC-6 (Least Privilege)**: Granular permission definitions
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-2 | Account Management | User-to-role mapping |
+/// | AC-6 | Least Privilege | Granular permission definitions |
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RbacConfig {
     /// Role definitions: role_name -> list of permissions (NIST AC-6)
@@ -61,8 +64,11 @@ impl RbacConfig {
     /// Check if a user has a specific permission.
     ///
     /// # NIST Controls
-    /// - **AC-3 (Access Enforcement)**: Enforces permission checks
-    /// - **AU-12 (Audit Generation)**: Logs permission denials
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Enforces permission checks |
+    /// | AU-12 | Audit Generation | Logs permission denials |
     pub fn has_permission(&self, user: &str, permission: &str) -> bool {
         // NIST AC-2: Get user's role from mapping
         let role = match self.users.get(user) {
@@ -148,7 +154,10 @@ impl RbacMiddleware {
 /// Helper to create RBAC middleware for a specific permission.
 ///
 /// # NIST Controls
-/// - **AC-3 (Access Enforcement)**: Creates middleware that enforces permission checks
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Creates middleware that enforces permission checks |
 ///
 /// # Arguments
 /// * `config` - RBAC configuration (cloned for 'static lifetime)

@@ -66,13 +66,19 @@ pub struct ApiState {
     /// Channel sender for policy reload requests
     ///
     /// # NIST Controls
-    /// - **CM-3 (Configuration Change Control)**: Enables API-triggered policy updates
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | CM-3 | Configuration Change Control | Enables API-triggered policy updates |
     pub reload_tx: mpsc::Sender<PolicyReloadRequest>,
     /// Session registry for tracking active connections
     ///
     /// # NIST Controls
-    /// - **AC-10 (Concurrent Session Control)**: Session visibility
-    /// - **AC-12 (Session Termination)**: Session termination support
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-10 | Concurrent Session Control | Session visibility |
+    /// | AC-12 | Session Termination | Session termination support |
     pub registry: Arc<SessionRegistry>,
     /// Runtime configuration snapshot
     pub config: RuntimeConfig,
@@ -81,12 +87,12 @@ pub struct ApiState {
 /// Build the API router with all endpoints.
 ///
 /// # NIST Controls
-/// - **AC-3 (Access Enforcement)**: Each endpoint is protected by RBAC middleware
-///   that enforces the required permission before allowing access.
-/// - **CM-3 (Configuration Change Control)**: Policy reload channel enables
-///   controlled configuration updates via API.
-/// - **AC-10/AC-12 (Session Control)**: Session registry enables session listing
-///   and termination via API.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Each endpoint protected by RBAC middleware |
+/// | AC-10/AC-12 | Session Control | Session listing and termination via API |
+/// | CM-3 | Configuration Change Control | Policy reload channel for controlled updates |
 ///
 /// # Security Note
 /// All endpoints require authentication. User identity is extracted from:
@@ -236,8 +242,11 @@ async fn get_status(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 /// Requires permission: `read:sessions`
 ///
 /// # NIST Controls
-/// - **AC-10 (Concurrent Session Control)**: Provides visibility into active sessions
-/// - **SI-4 (System Monitoring)**: Enables session enumeration for monitoring
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Provides visibility into active sessions |
+/// | SI-4 | System Monitoring | Enables session enumeration for monitoring |
 async fn get_sessions(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     let records = state.registry.list_sessions().await;
     let total = records.len();
@@ -268,8 +277,11 @@ async fn get_sessions(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 /// Requires permission: `write:sessions`
 ///
 /// # NIST Controls
-/// - **AC-12 (Session Termination)**: Administrative session termination
-/// - **AU-12 (Audit Generation)**: Logs termination request
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-12 | Session Termination | Administrative session termination |
+/// | AU-12 | Audit Generation | Logs termination request |
 async fn delete_session(
     State(state): State<Arc<ApiState>>,
     Path(session_id): Path<u64>,
@@ -320,10 +332,12 @@ async fn get_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 /// Requires permission: `write:policy`
 ///
 /// # NIST Controls
-/// - **CM-3 (Configuration Change Control)**: API-triggered policy reload with
-///   audit logging of the request and result.
-/// - **AC-3 (Access Enforcement)**: Requires `write:policy` permission.
-/// - **AU-12 (Audit Generation)**: Logs reload request initiation.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Requires `write:policy` permission |
+/// | AU-12 | Audit Generation | Logs reload request initiation |
+/// | CM-3 | Configuration Change Control | API-triggered policy reload with audit logging |
 async fn reload_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     info!("API request to reload policy");
 

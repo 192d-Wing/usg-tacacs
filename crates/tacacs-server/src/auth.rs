@@ -41,8 +41,10 @@ use usg_tacacs_proto::{
 /// Escape special characters in LDAP filter values per RFC 4515.
 ///
 /// # NIST Controls
-/// - **SI-10 (Information Input Validation)**: Sanitizes user input to prevent
-///   LDAP injection attacks by escaping metacharacters.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SI-10 | Information Input Validation | Sanitizes user input to prevent LDAP injection attacks |
 ///
 /// Characters escaped: `*` `(` `)` `\` NUL
 ///
@@ -94,9 +96,12 @@ impl LdapConfig {
 /// Performs LDAP authentication in a blocking context.
 ///
 /// # NIST Controls
-/// - **SC-8**: Enforces LDAPS-only (rejects plain LDAP/StartTLS) for transmission confidentiality
-/// - **IA-2**: Authenticates users against enterprise directory
-/// - **AC-2**: Validates group membership for account management
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-2 | Account Management | Validates group membership |
+/// | IA-2 | Identification and Authentication | Authenticates users against enterprise directory |
+/// | SC-8 | Transmission Confidentiality | Enforces LDAPS-only (rejects plain LDAP/StartTLS) |
 fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -> bool {
     // NIST SC-8: Reject non-LDAPS URLs to ensure encrypted transmission
     if !cfg.url.to_lowercase().starts_with("ldaps://") {
@@ -209,11 +214,14 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
 /// Verify PAP authentication credentials.
 ///
 /// # NIST Controls
-/// - **IA-2**: Authenticates users via Password Authentication Protocol
-/// - **IA-5**: Supports Argon2id hashed passwords for secure storage
-/// - **IA-6**: Prevents username enumeration via constant-time operations
-/// - **SC-13**: Mitigates timing side-channels (CWE-208)
-/// - **AU-12**: Instrumented for audit logging via tracing
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Instrumented for audit logging via tracing |
+/// | IA-2 | Identification and Authentication | Authenticates users via PAP |
+/// | IA-5 | Authenticator Management | Supports Argon2id hashed passwords |
+/// | IA-6 | Authenticator Feedback | Prevents username enumeration via constant-time operations |
+/// | SC-13 | Cryptographic Protection | Mitigates timing side-channels (CWE-208) |
 ///
 /// # Security - Timing Attack Protection
 ///
@@ -271,8 +279,10 @@ pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
 /// Constant-time string comparison to prevent timing side-channel attacks.
 ///
 /// # NIST Controls
-/// - **SC-13 (Cryptographic Protection)**: Uses constant-time comparison to prevent
-///   timing-based information disclosure about password values (CWE-208).
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-13 | Cryptographic Protection | Constant-time comparison prevents timing-based disclosure (CWE-208) |
 #[inline]
 fn constant_time_eq_str(a: &str, b: &str) -> bool {
     constant_time_eq_bytes(a.as_bytes(), b.as_bytes())
@@ -290,8 +300,10 @@ fn constant_time_eq_bytes(a: &[u8], b: &[u8]) -> bool {
 /// Verify password against Argon2id hash.
 ///
 /// # NIST Controls
-/// - **IA-5 (Authenticator Management)**: Uses Argon2id, a memory-hard key derivation
-///   function resistant to GPU/ASIC brute-force attacks. Provides timing-safe comparison.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5 | Authenticator Management | Argon2id memory-hard KDF resistant to GPU/ASIC brute-force |
 fn verify_argon_hash(hash: &str, password: &[u8]) -> bool {
     let Ok(parsed) = PasswordHash::new(hash) else {
         return false;
@@ -386,8 +398,10 @@ pub async fn verify_password_sources(
 /// Compute CHAP response for challenge-response authentication.
 ///
 /// # NIST Controls
-/// - **IA-2 (Identification and Authentication)**: Implements CHAP challenge-response
-///   authentication as specified in RFC 1994.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | CHAP challenge-response per RFC 1994 |
 ///
 /// # Security Notice: MD5 Usage (CWE-327)
 ///
@@ -437,9 +451,10 @@ pub fn compute_chap_response(
 /// Handle CHAP authentication continue message.
 ///
 /// # NIST Controls
-/// - **IA-6 (Authenticator Feedback)**: Returns generic error messages that do not
-///   reveal whether a username exists, the specific reason for failure, or internal
-///   state information (CWE-209). Detailed errors are logged internally.
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-6 | Authenticator Feedback | Generic error messages prevent username/state disclosure (CWE-209) |
 pub fn handle_chap_continue(
     user: &str,
     cont_data: &[u8],

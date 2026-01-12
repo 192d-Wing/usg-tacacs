@@ -36,12 +36,15 @@ use tokio_rustls::rustls::{
 /// Build TLS server configuration with mTLS enforcement.
 ///
 /// # NIST Controls
-/// - **SC-8 (Transmission Confidentiality)**: TLS 1.3 only, no protocol fallback
-/// - **SC-13 (Cryptographic Protection)**: Modern cipher suites with forward secrecy
-/// - **SC-17 (PKI Certificates)**: X.509 certificate chain validation
-/// - **SC-23 (Session Authenticity)**: Mutual TLS required for all connections
-/// - **IA-3 (Device Identification)**: Client certificate validation against CA chain
-/// - **SC-12 (Key Establishment)**: Supports multiple trust roots
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-8 | Transmission Confidentiality | TLS 1.3 only, no protocol fallback |
+/// | SC-12 | Key Establishment | Supports multiple trust roots |
+/// | SC-13 | Cryptographic Protection | Modern cipher suites with forward secrecy |
+/// | SC-17 | PKI Certificates | X.509 certificate chain validation |
+/// | SC-23 | Session Authenticity | Mutual TLS required for all connections |
+/// | IA-3 | Device Identification | Client certificate validation against CA chain |
 pub fn build_tls_config(
     cert: &PathBuf,
     key: &PathBuf,
