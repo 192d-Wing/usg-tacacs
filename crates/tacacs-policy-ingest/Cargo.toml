@@ -18,7 +18,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 
 rustls.workspace = true
-rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
 
 flate2.workspace = true
 tar.workspace = true

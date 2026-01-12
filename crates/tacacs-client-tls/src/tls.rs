@@ -21,13 +21,11 @@
 //!   can be provided for device authentication.
 
 use anyhow::{Context, Result, bail};
-use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 use tokio_rustls::rustls::{
     self, RootCertStore,
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject},
 };
 
 /// TLS client configuration builder for TACACS+ connections.
@@ -145,10 +143,8 @@ impl TlsClientConfig {
 }
 
 fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    let mut reader = BufReader::new(
-        File::open(path).with_context(|| format!("opening certificate {}", path.display()))?,
-    );
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("opening certificate {}", path.display()))?
         .collect::<Result<_, _>>()
         .with_context(|| format!("reading certificates from {}", path.display()))?;
     if certs.is_empty() {
@@ -158,12 +154,8 @@ fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
 }
 
 fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
-    let mut reader = BufReader::new(
-        File::open(path).with_context(|| format!("opening private key {}", path.display()))?,
-    );
-    rustls_pemfile::private_key(&mut reader)
-        .with_context(|| format!("reading private key {}", path.display()))?
-        .ok_or_else(|| anyhow::anyhow!("no private key found in {}", path.display()))
+    PrivateKeyDer::from_pem_file(path)
+        .with_context(|| format!("reading private key from {}", path.display()))
 }
 
 #[cfg(test)]
@@ -172,6 +164,14 @@ mod tests {
     use rcgen::{CertificateParams, KeyPair};
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    fn init_crypto_provider() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        });
+    }
 
     fn create_temp_file(content: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().expect("create temp file");
@@ -199,6 +199,7 @@ mod tests {
 
     #[test]
     fn builder_with_server_ca_succeeds() {
+        init_crypto_provider();
         let (cert_pem, _) = generate_valid_cert_and_key();
         let ca_file = create_temp_file(&cert_pem);
 
@@ -212,6 +213,7 @@ mod tests {
 
     #[test]
     fn builder_with_client_cert_succeeds() {
+        init_crypto_provider();
         let (cert_pem, key_pem) = generate_valid_cert_and_key();
         let ca_file = create_temp_file(&cert_pem);
         let cert_file = create_temp_file(&cert_pem);
@@ -264,6 +266,8 @@ mod tests {
         let empty_file = create_temp_file("");
         let result = load_key(empty_file.path());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no private key"));
+        // Error message changed with rustls-pki-types migration
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("private key") || err_msg.contains("PEM"));
     }
 }

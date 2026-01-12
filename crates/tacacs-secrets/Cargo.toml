@@ -28,7 +28,7 @@ tracing.workspace = true
 
 # TLS
 rustls.workspace = true
-rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
 
 # Async trait
 async-trait.workspace = true

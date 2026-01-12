@@ -3,8 +3,8 @@ use anyhow::{Context, Result};
 use axum_server::tls_rustls::RustlsConfig;
 use rustls::RootCertStore;
 use rustls::server::WebPkiClientVerifier;
-use rustls_pemfile::{certs, pkcs8_private_keys};
-use std::{fs::File, io::BufReader, sync::Arc};
+use rustls::pki_types::{CertificateDer, pem::PemObject};
+use std::sync::Arc;
 
 /// Build a RustlsConfig that *requires* client certs (mTLS).
 /// Env:
@@ -47,27 +47,23 @@ pub async fn make_rustls_config_from_env() -> Result<RustlsConfig> {
     Ok(RustlsConfig::from_config(Arc::new(cfg)))
 }
 
-fn load_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
-    let f = File::open(path).with_context(|| format!("open cert: {path}"))?;
-    let mut r = BufReader::new(f);
-    let certs = certs(&mut r).collect::<std::result::Result<Vec<_>, _>>()?;
+fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
+    let certs = CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("open cert: {path}"))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(certs)
 }
 
 fn load_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
-    let f = File::open(path).with_context(|| format!("open key: {path}"))?;
-    let mut r = BufReader::new(f);
-    let keys = pkcs8_private_keys(&mut r).collect::<std::result::Result<Vec<_>, _>>()?;
-    let key = keys.into_iter().next().context("no PKCS#8 key found")?;
-    Ok(key.into())
+    rustls::pki_types::PrivateKeyDer::from_pem_file(path)
+        .with_context(|| format!("reading private key from {path}"))
 }
 
 fn load_ca_roots(path: &str) -> Result<RootCertStore> {
-    let f = File::open(path).with_context(|| format!("open client ca: {path}"))?;
-    let mut r = BufReader::new(f);
-
     let mut roots = RootCertStore::empty();
-    let ca = certs(&mut r).collect::<std::result::Result<Vec<_>, _>>()?;
+    let ca = CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("open client ca: {path}"))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     for c in ca {
         roots.add(c)?;
     }

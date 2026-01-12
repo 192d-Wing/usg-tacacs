@@ -2279,10 +2279,7 @@ pub enum CertificateReloadRequest {
 ///
 /// Reads certificate and updates Prometheus metrics for expiration tracking.
 fn update_certificate_metrics(cert_path: &PathBuf) {
-    use anyhow::bail;
-    use rustls_pemfile::Item;
-    use std::fs::File;
-    use std::io::BufReader;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, pem::PemObject};
     use x509_cert::Certificate;
     use x509_cert::der::Decode;
 
@@ -2290,15 +2287,12 @@ fn update_certificate_metrics(cert_path: &PathBuf) {
 
     // Try to read and parse certificate
     let cert_result = (|| -> Result<Certificate> {
-        let file = File::open(cert_path)
-            .with_context(|| format!("opening certificate file {}", cert_path.display()))?;
-        let mut reader = BufReader::new(file);
-
         // Read first certificate from PEM
-        let cert_der = match rustls_pemfile::read_one(&mut reader)? {
-            Some(Item::X509Certificate(der)) => der,
-            _ => bail!("no certificate found in PEM file"),
-        };
+        let mut certs = CertificateDer::pem_file_iter(cert_path)
+            .with_context(|| format!("opening certificate file {}", cert_path.display()))?;
+        let cert_der = certs
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no certificate found in PEM file"))??;
 
         // Parse DER to x509
         Certificate::from_der(&cert_der)

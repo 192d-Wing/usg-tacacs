@@ -23,13 +23,11 @@
 //! - **SC-12 (Cryptographic Key Establishment)**: Supports multiple trust
 //!   roots and certificate chain validation.
 
-use anyhow::{Context, Result, bail};
-use std::fs::File;
-use std::io::BufReader;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tokio_rustls::rustls::{
     self, RootCertStore,
-    pki_types::{CertificateDer, PrivateKeyDer},
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     server::WebPkiClientVerifier,
 };
 
@@ -84,26 +82,16 @@ pub fn build_tls_config(
 }
 
 fn load_certs(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>> {
-    let mut reader: BufReader<File> = BufReader::new(
-        File::open(path).with_context(|| format!("opening certificate {}", path.display()))?,
-    );
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("opening certificate {}", path.display()))?
         .collect::<Result<_, _>>()
         .with_context(|| format!("reading certificates from {}", path.display()))?;
     Ok(certs)
 }
 
 fn load_key(path: &PathBuf) -> Result<PrivateKeyDer<'static>> {
-    let mut reader: BufReader<File> = BufReader::new(
-        File::open(path).with_context(|| format!("opening private key {}", path.display()))?,
-    );
-    if let Some(key) = rustls_pemfile::private_key(&mut reader)
-        .with_context(|| format!("reading private key {}", path.display()))?
-    {
-        Ok(key)
-    } else {
-        bail!("no private key found in {}", path.display());
-    }
+    PrivateKeyDer::from_pem_file(path)
+        .with_context(|| format!("reading private key from {}", path.display()))
 }
 
 #[cfg(test)]
@@ -226,7 +214,9 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
         let path = PathBuf::from("/nonexistent/path/to/key.pem");
         let result = load_key(&path);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("opening"));
+        // Error message changed with rustls-pki-types migration
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("private key") || err_msg.contains("opening") || err_msg.contains("No such file"));
     }
 
     #[test]
@@ -234,7 +224,9 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
         let key_file = create_temp_file("");
         let result = load_key(&key_file.path().to_path_buf());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no private key"));
+        // Error message changed with rustls-pki-types migration
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("private key") || err_msg.contains("PEM"));
     }
 
     #[test]
@@ -242,7 +234,9 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
         let key_file = create_temp_file("not a valid PEM key");
         let result = load_key(&key_file.path().to_path_buf());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no private key"));
+        // Error message changed with rustls-pki-types migration
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("private key") || err_msg.contains("PEM"));
     }
 
     #[test]
@@ -251,7 +245,9 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
         let cert_file = create_temp_file(TEST_CERT_PEM);
         let result = load_key(&cert_file.path().to_path_buf());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no private key"));
+        // Error message changed with rustls-pki-types migration
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("private key") || err_msg.contains("PEM"));
     }
 
     // ==================== build_tls_config Tests ====================

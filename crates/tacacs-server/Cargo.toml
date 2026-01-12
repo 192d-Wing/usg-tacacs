@@ -17,7 +17,7 @@ tracing-subscriber = { workspace = true, features = [
 clap.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
 x509-cert = { version = "0.2", features = ["pem"] }
 usg-tacacs-policy.workspace = true
 usg-tacacs-proto.workspace = true

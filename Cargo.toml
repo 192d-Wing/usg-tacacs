@@ -48,7 +48,7 @@ opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 
 # TLS
 rustls = "0.23"
-rustls-pemfile = "2"
+rustls-pki-types = "1.9"
 tokio-rustls = "0.26"
 
 # Crypto

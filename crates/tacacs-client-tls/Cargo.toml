@@ -14,7 +14,7 @@ tokio = { workspace = true, features = ["net", "time", "io-util", "sync"] }
 
 # TLS
 rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
 
 # Error handling
