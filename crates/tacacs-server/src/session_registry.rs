@@ -255,9 +255,7 @@ impl SessionRegistry {
         let mut sessions = self.sessions.write().await;
 
         // Check total limit
-        if self.limits.max_total_sessions > 0
-            && sessions.len() >= self.limits.max_total_sessions
-        {
+        if self.limits.max_total_sessions > 0 && sessions.len() >= self.limits.max_total_sessions {
             return Err(SessionLimitExceeded::TotalLimit {
                 current: sessions.len(),
                 max: self.limits.max_total_sessions,
