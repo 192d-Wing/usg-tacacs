@@ -21,6 +21,7 @@
 
 use prometheus::{
     CounterVec, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
+    core::Collector,
 };
 use std::sync::OnceLock;
 
@@ -234,6 +235,103 @@ impl Metrics {
         encoder
             .encode_to_string(&metric_families)
             .unwrap_or_default()
+    }
+
+    /// Aggregate total connections across all labels.
+    pub fn total_connections(&self) -> u64 {
+        self.connections_total
+            .collect()
+            .first()
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .map(|m| m.get_counter().get_value() as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Aggregate total authentication requests across all labels.
+    pub fn total_authn_requests(&self) -> u64 {
+        self.authn_requests_total
+            .collect()
+            .first()
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .map(|m| m.get_counter().get_value() as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Count successful authentication requests.
+    pub fn authn_success_count(&self) -> u64 {
+        self.authn_requests_total
+            .collect()
+            .first()
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .filter(|m| {
+                        m.get_label()
+                            .iter()
+                            .any(|l| l.get_name() == "result" && l.get_value() == "pass")
+                    })
+                    .map(|m| m.get_counter().get_value() as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Aggregate total authorization requests across all labels.
+    pub fn total_authz_requests(&self) -> u64 {
+        self.authz_requests_total
+            .collect()
+            .first()
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .map(|m| m.get_counter().get_value() as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Count successful authorization requests (allow/pass_add/pass_repl).
+    pub fn authz_success_count(&self) -> u64 {
+        self.authz_requests_total
+            .collect()
+            .first()
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .filter(|m| {
+                        m.get_label().iter().any(|l| {
+                            l.get_name() == "result"
+                                && (l.get_value() == "allow"
+                                    || l.get_value() == "pass_add"
+                                    || l.get_value() == "pass_repl")
+                        })
+                    })
+                    .map(|m| m.get_counter().get_value() as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Aggregate total accounting records across all labels.
+    pub fn total_acct_requests(&self) -> u64 {
+        self.acct_records_total
+            .collect()
+            .first()
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .map(|m| m.get_counter().get_value() as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
     }
 }
 

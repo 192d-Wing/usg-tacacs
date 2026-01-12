@@ -34,6 +34,7 @@ use crate::auth::{
 use crate::config::StaticCreds;
 use crate::policy::enforce_server_msg;
 use crate::session::{SingleConnectState, TaskIdTracker};
+use crate::session_registry::SessionRegistry;
 use crate::tls::build_tls_config;
 use anyhow::{Context, Result};
 use openssl::nid::Nid;
@@ -696,12 +697,19 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
     Ok(())
 }
 
+/// Serve TACACS+ over TLS connections.
+///
+/// # NIST Controls
+/// - **AC-10 (Concurrent Session Control)**: Registers connections with session registry
+/// - **SC-8 (Transmission Confidentiality)**: TLS 1.3 encryption
+/// - **IA-3 (Device Identification)**: Client certificate validation
 pub async fn serve_tls(
     addr: SocketAddr,
     acceptor: TlsAcceptor,
     auth_ctx: AuthContext,
     conn_cfg: ConnectionConfig,
     tls_identity: TlsIdentityConfig,
+    registry: Arc<SessionRegistry>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -713,6 +721,7 @@ pub async fn serve_tls(
         let conn_auth_ctx = auth_ctx.clone();
         let conn_cfg = conn_cfg.clone();
         let conn_tls_identity = tls_identity.clone();
+        let conn_registry = registry.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
             let guard = match conn_cfg.conn_limiter.try_acquire(&peer_ip).await {
@@ -735,10 +744,11 @@ pub async fn serve_tls(
                     }
                     if let Err(err) = handle_connection(
                         stream,
-                        format!("{peer_addr}"),
+                        peer_addr,
                         conn_auth_ctx,
                         &conn_cfg,
                         guard,
+                        conn_registry,
                     )
                     .await
                     {
@@ -751,11 +761,17 @@ pub async fn serve_tls(
     }
 }
 
+/// Serve TACACS+ over legacy (non-TLS) connections.
+///
+/// # NIST Controls
+/// - **AC-10 (Concurrent Session Control)**: Registers connections with session registry
+/// - **SC-7 (Boundary Protection)**: Per-NAD secret enforcement
 pub async fn serve_legacy(
     addr: SocketAddr,
     auth_ctx: AuthContext,
     conn_cfg: ConnectionConfig,
     nad_secrets: Arc<HashMap<IpAddr, Arc<Vec<u8>>>>,
+    registry: Arc<SessionRegistry>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -766,6 +782,7 @@ pub async fn serve_legacy(
         let conn_auth_ctx = auth_ctx.clone();
         let conn_cfg = conn_cfg.clone();
         let conn_nad_secrets = nad_secrets.clone();
+        let conn_registry = registry.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
             let guard = match conn_cfg.conn_limiter.try_acquire(&peer_ip).await {
@@ -794,10 +811,11 @@ pub async fn serve_legacy(
             };
             if let Err(err) = handle_connection(
                 socket,
-                format!("{peer_addr}"),
+                peer_addr,
                 per_nad_auth_ctx,
                 &conn_cfg,
                 guard,
+                conn_registry,
             )
             .await
             {
@@ -807,16 +825,27 @@ pub async fn serve_legacy(
     }
 }
 
+/// Handle a single TACACS+ connection.
+///
+/// # NIST Controls
+/// - **AC-10 (Concurrent Session Control)**: Registers connection with session registry
+/// - **AC-12 (Session Termination)**: Checks for termination requests and unregisters on close
+/// - **AU-2/AU-12 (Audit Events)**: Connection lifecycle logging
 async fn handle_connection<S>(
     mut stream: S,
-    peer: String,
+    peer_addr: SocketAddr,
     auth_ctx: AuthContext,
     conn_cfg: &ConnectionConfig,
     _guard: ConnGuard,
+    registry: Arc<SessionRegistry>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // NIST AC-10: Register connection with session registry
+    let connection_id = registry.register_connection(peer_addr).await;
+    let peer = peer_addr.to_string();
+
     // Extract references for convenience
     let policy = &auth_ctx.policy;
     let secret = &auth_ctx.secret;
@@ -1784,6 +1813,10 @@ where
                     && let Some(user) = single_user
                 {
                     single_connect.activate(user.clone(), session_id);
+                    // NIST AC-10: Update session registry with authenticated user
+                    registry
+                        .update_authentication(connection_id, user.clone(), session_id)
+                        .await;
                     info!(peer = %peer, user = %user, session = session_id, "single-connect established");
                 }
             }
@@ -2116,30 +2149,141 @@ where
                 break;
             }
         }
+
+        // NIST AC-12: Check for API-initiated session termination
+        if registry.is_termination_requested(connection_id).await {
+            info!(peer = %peer, connection_id = connection_id, "session terminated via API");
+            audit_event(
+                "conn_close",
+                &peer,
+                "",
+                0,
+                "info",
+                "api-terminated",
+                "session terminated via management API",
+            );
+            break;
+        }
+
+        // Record activity for session tracking
+        registry.record_activity(connection_id).await;
     }
+    // NIST AC-10: Unregister connection from session registry
+    registry.unregister_connection(connection_id).await;
     audit_event("conn_close", &peer, "", 0, "info", "loop-exit", "");
     Ok(())
 }
 
+/// Policy reload request from API or SIGHUP.
+///
+/// # NIST Controls
+/// - **CM-3 (Configuration Change Control)**: Audit trail for policy changes
+/// - **AU-12 (Audit Generation)**: Log reload source and result
+#[derive(Debug)]
+pub enum PolicyReloadRequest {
+    /// Reload policy from disk
+    FromDisk {
+        path: PathBuf,
+        schema: Option<PathBuf>,
+    },
+}
+
+/// Watch for policy changes from SIGHUP or internal channel.
+///
+/// This function handles both traditional SIGHUP-based reloads and
+/// channel-based reloads from the Management API, providing a unified
+/// policy update mechanism.
+///
+/// # NIST Controls
+/// - **CM-3 (Configuration Change Control)**: Handles policy updates from
+///   multiple sources with audit logging
+/// - **AU-12 (Audit Generation)**: Logs all reload attempts with source
+pub async fn watch_policy_changes(
+    initial_path: PathBuf,
+    schema: Option<PathBuf>,
+    policy: Arc<RwLock<PolicyEngine>>,
+    mut reload_rx: tokio::sync::mpsc::Receiver<PolicyReloadRequest>,
+) {
+    // Helper to handle reload requests
+    async fn handle_reload(
+        request: &PolicyReloadRequest,
+        policy: &Arc<RwLock<PolicyEngine>>,
+        source: &str,
+    ) {
+        match request {
+            PolicyReloadRequest::FromDisk { path, schema } => {
+                match PolicyEngine::from_path(path, schema.as_ref()) {
+                    Ok(new_policy) => {
+                        let rule_count = new_policy.rule_count();
+                        *policy.write().await = new_policy;
+                        crate::metrics::metrics()
+                            .policy_rules_count
+                            .set(rule_count as f64);
+                        crate::metrics::metrics()
+                            .policy_reload_total
+                            .with_label_values(&["success"])
+                            .inc();
+                        info!(
+                            source = source,
+                            rules = rule_count,
+                            "policy reloaded successfully"
+                        );
+                    }
+                    Err(err) => {
+                        crate::metrics::metrics()
+                            .policy_reload_total
+                            .with_label_values(&["failure"])
+                            .inc();
+                        warn!(
+                            source = source,
+                            error = %err,
+                            "failed to reload policy"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    match signal(SignalKind::hangup()) {
+        Ok(mut sighup_stream) => {
+            info!("policy reload watcher started (SIGHUP + channel)");
+            loop {
+                tokio::select! {
+                    // Handle channel-based reload requests from API
+                    Some(request) = reload_rx.recv() => {
+                        handle_reload(&request, &policy, "api").await;
+                    }
+                    // Handle SIGHUP for backward compatibility
+                    Some(_) = sighup_stream.recv() => {
+                        let request = PolicyReloadRequest::FromDisk {
+                            path: initial_path.clone(),
+                            schema: schema.clone(),
+                        };
+                        handle_reload(&request, &policy, "sighup").await;
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to install SIGHUP handler, using channel-only mode");
+            // Fall back to channel-only mode
+            while let Some(request) = reload_rx.recv().await {
+                handle_reload(&request, &policy, "api").await;
+            }
+        }
+    }
+}
+
+/// Legacy SIGHUP-only watcher (deprecated, use watch_policy_changes instead).
+#[deprecated(note = "Use watch_policy_changes with channel support instead")]
 pub async fn watch_sighup(
     policy_path: PathBuf,
     schema: Option<PathBuf>,
     policy: Arc<RwLock<PolicyEngine>>,
 ) {
-    match signal(SignalKind::hangup()) {
-        Ok(mut stream) => {
-            while stream.recv().await.is_some() {
-                match PolicyEngine::from_path(&policy_path, schema.as_ref()) {
-                    Ok(new_policy) => {
-                        *policy.write().await = new_policy;
-                        info!("reloaded policy after SIGHUP");
-                    }
-                    Err(err) => warn!(error = %err, "failed to reload policy on SIGHUP"),
-                }
-            }
-        }
-        Err(err) => warn!(error = %err, "failed to install SIGHUP handler"),
-    }
+    let (_, rx) = tokio::sync::mpsc::channel(1);
+    watch_policy_changes(policy_path, schema, policy, rx).await;
 }
 
 pub fn validate_policy(path: &PathBuf, schema: Option<&PathBuf>) -> Result<()> {

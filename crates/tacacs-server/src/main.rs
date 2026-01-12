@@ -4,16 +4,18 @@ use crate::config::{Args, LogFormat, StaticCreds, credentials_map};
 use crate::http::{ServerState, serve_http};
 use crate::metrics::metrics;
 use crate::server::{
-    AuthContext, ConnLimiter, ConnectionConfig, TlsIdentityConfig, serve_legacy, serve_tls,
-    tls_acceptor, validate_policy, watch_sighup,
+    AuthContext, ConnLimiter, ConnectionConfig, PolicyReloadRequest, TlsIdentityConfig,
+    serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_policy_changes,
 };
+use crate::session_registry::SessionRegistry;
 use crate::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info, warn};
 use tracing_subscriber::fmt::time::UtcTime;
 use tracing_subscriber::layer::SubscriberExt;
@@ -156,6 +158,10 @@ async fn main() -> Result<()> {
 
     let mut handles = Vec::new();
 
+    // NIST AC-10/AC-12: Create session registry for tracking active connections
+    // This is shared with both connection handlers and the API for session visibility and termination
+    let session_registry = Arc::new(SessionRegistry::new());
+
     if let Some(addr) = args.listen_tls {
         // RFC 9887: TACACS+ over TLS 1.3 SHOULD use port 300
         const RFC9887_TLS_PORT: u16 = 300;
@@ -219,8 +225,18 @@ async fn main() -> Result<()> {
             allowed_cn: args.tls_allowed_client_cn.clone(),
             allowed_san: args.tls_allowed_client_san.clone(),
         };
+        let tls_registry = session_registry.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(err) = serve_tls(addr, acceptor, auth_ctx, conn_cfg, tls_identity).await {
+            if let Err(err) = serve_tls(
+                addr,
+                acceptor,
+                auth_ctx,
+                conn_cfg,
+                tls_identity,
+                tls_registry,
+            )
+            .await
+            {
                 error!(error = %err, "TLS listener stopped");
             }
         }));
@@ -258,8 +274,11 @@ async fn main() -> Result<()> {
             },
         };
         let nad_secrets = legacy_nad_secrets.clone();
+        let legacy_registry = session_registry.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(err) = serve_legacy(addr, auth_ctx, conn_cfg, nad_secrets).await {
+            if let Err(err) =
+                serve_legacy(addr, auth_ctx, conn_cfg, nad_secrets, legacy_registry).await
+            {
                 error!(error = %err, "legacy listener stopped");
             }
         }));
@@ -281,6 +300,10 @@ async fn main() -> Result<()> {
             }
         }));
     }
+
+    // NIST CM-3: Create policy reload channel for API and SIGHUP coordination
+    // Channel capacity of 10 allows buffering reload requests if needed
+    let (reload_tx, reload_rx) = mpsc::channel::<PolicyReloadRequest>(10);
 
     // Start Management API server if enabled
     // NIST AC-3/SC-8: Management API requires TLS with mTLS for security
@@ -323,8 +346,33 @@ async fn main() -> Result<()> {
             None
         };
 
+        // Build runtime config snapshot for API display (sanitized, no secrets)
+        let runtime_config = crate::api::RuntimeConfig {
+            listen_tls: args.listen_tls,
+            listen_legacy: args.listen_legacy,
+            tls_enabled: args.listen_tls.is_some(),
+            ldap_enabled: ldap_config.is_some(),
+            policy_source: policy_path.display().to_string(),
+        };
+        let api_policy = shared_policy.clone();
+        let api_policy_path = policy_path.display().to_string();
+        let api_schema_path = args.schema.clone();
+        let api_reload_tx = reload_tx.clone();
+        let api_registry = session_registry.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(err) = crate::api::serve_api(api_addr, api_tls_acceptor, rbac_config).await {
+            if let Err(err) = crate::api::serve_api(
+                api_addr,
+                api_tls_acceptor,
+                rbac_config,
+                api_policy,
+                api_policy_path,
+                api_schema_path,
+                api_reload_tx,
+                api_registry,
+                runtime_config,
+            )
+            .await
+            {
                 error!(error = %err, "Management API server stopped");
             }
         }));
@@ -340,11 +388,12 @@ async fn main() -> Result<()> {
     server_state.set_ready(true);
     info!("server ready");
 
+    // NIST CM-3: Unified policy change watcher for both SIGHUP and API channel
     let policy = shared_policy.clone();
     let schema_path = args.schema.clone();
-    let policy_path = policy_path.clone();
+    let policy_path_for_watcher: PathBuf = policy_path.clone();
     handles.push(tokio::spawn(async move {
-        watch_sighup(policy_path, schema_path, policy).await;
+        watch_policy_changes(policy_path_for_watcher, schema_path, policy, reload_rx).await;
     }));
 
     // Graceful shutdown handler for SIGTERM
@@ -408,5 +457,6 @@ mod metrics;
 mod policy;
 mod server;
 mod session;
+mod session_registry;
 mod telemetry;
 mod tls;

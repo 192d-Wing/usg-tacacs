@@ -20,16 +20,22 @@ mod handlers;
 mod models;
 mod rbac;
 
-pub use handlers::build_api_router;
+pub use handlers::{RuntimeConfig, build_api_router};
 pub use rbac::RbacConfig;
 
+use crate::server::PolicyReloadRequest;
+use crate::session_registry::SessionRegistry;
 use axum::body::Body;
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::{RwLock, mpsc};
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use tracing::{error, info, warn};
+use usg_tacacs_policy::PolicyEngine;
 
 /// Start the management API server.
 ///
@@ -38,6 +44,10 @@ use tracing::{error, info, warn};
 ///   with mTLS is enforced for all connections.
 /// - **AC-3 (Access Enforcement)**: RBAC is enforced on all endpoints regardless
 ///   of TLS mode.
+/// - **CM-3 (Configuration Change Control)**: Policy reload channel enables
+///   controlled configuration updates via API.
+/// - **AC-10/AC-12 (Session Control)**: Session registry enables session listing
+///   and termination via API.
 ///
 /// # Security Warning
 /// When `acceptor` is `None`, the API runs in plaintext mode which should only
@@ -46,8 +56,22 @@ pub async fn serve_api(
     addr: SocketAddr,
     acceptor: Option<TlsAcceptor>,
     rbac: RbacConfig,
+    policy: Arc<RwLock<PolicyEngine>>,
+    policy_path: String,
+    schema_path: Option<PathBuf>,
+    reload_tx: mpsc::Sender<PolicyReloadRequest>,
+    registry: Arc<SessionRegistry>,
+    config: RuntimeConfig,
 ) -> anyhow::Result<()> {
-    let app = build_api_router(rbac);
+    let app = build_api_router(
+        rbac,
+        policy,
+        policy_path,
+        schema_path,
+        reload_tx,
+        registry,
+        config,
+    );
     let listener = TcpListener::bind(addr).await?;
 
     if let Some(tls_acceptor) = acceptor {

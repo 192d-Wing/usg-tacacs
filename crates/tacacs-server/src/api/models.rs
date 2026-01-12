@@ -25,16 +25,24 @@ pub struct ServerStats {
 }
 
 /// Active session information.
+///
+/// # NIST Controls
+/// - **AU-3 (Content of Audit Records)**: Contains session metadata for audit
+/// - **AC-10 (Concurrent Session Control)**: Provides session visibility
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionInfo {
-    pub session_id: u32,
+    /// Unique connection/session identifier
+    pub id: u32,
+    /// Remote peer address (IP:port)
     pub peer_addr: String,
+    /// Authenticated username (if authentication completed)
     pub username: Option<String>,
-    pub port: Option<String>,
-    pub rem_addr: Option<String>,
-    pub started_at: String,
-    pub last_activity: String,
-    pub request_count: u32,
+    /// Unix timestamp when session started
+    pub start_time: u64,
+    /// Seconds since last activity
+    pub idle_seconds: u64,
+    /// Total requests processed on this session
+    pub request_count: u64,
 }
 
 /// List of active sessions.
