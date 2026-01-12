@@ -25,8 +25,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -40,10 +40,7 @@ use crate::metrics::metrics;
 #[derive(Debug, Clone)]
 pub enum SessionLimitExceeded {
     /// Total session limit across all IPs was exceeded
-    TotalLimit {
-        current: usize,
-        max: usize,
-    },
+    TotalLimit { current: usize, max: usize },
     /// Per-IP session limit was exceeded
     PerIpLimit {
         ip: std::net::IpAddr,
@@ -443,10 +440,7 @@ impl SessionRegistry {
     /// - **AC-10 (Concurrent Session Control)**: Per-IP session counting
     pub async fn count_sessions_from_ip(&self, ip: std::net::IpAddr) -> usize {
         let sessions = self.sessions.read().await;
-        sessions
-            .values()
-            .filter(|r| r.peer_addr.ip() == ip)
-            .count()
+        sessions.values().filter(|r| r.peer_addr.ip() == ip).count()
     }
 
     /// Get total session count (alias for session_count for consistency).
@@ -722,20 +716,14 @@ mod tests {
         let registry = SessionRegistry::with_limits(limits);
 
         // First two should succeed
-        let result1 = registry
-            .try_register_connection(test_addr(10001))
-            .await;
+        let result1 = registry.try_register_connection(test_addr(10001)).await;
         assert!(result1.is_ok());
 
-        let result2 = registry
-            .try_register_connection(test_addr(10002))
-            .await;
+        let result2 = registry.try_register_connection(test_addr(10002)).await;
         assert!(result2.is_ok());
 
         // Third should fail
-        let result3 = registry
-            .try_register_connection(test_addr(10003))
-            .await;
+        let result3 = registry.try_register_connection(test_addr(10003)).await;
         assert!(result3.is_err());
         assert!(matches!(
             result3.unwrap_err(),
@@ -744,9 +732,7 @@ mod tests {
 
         // After unregistering one, should succeed again
         registry.unregister_connection(result1.unwrap()).await;
-        let result4 = registry
-            .try_register_connection(test_addr(10004))
-            .await;
+        let result4 = registry.try_register_connection(test_addr(10004)).await;
         assert!(result4.is_ok());
     }
 
@@ -778,7 +764,11 @@ mod tests {
         assert!(result3.is_err());
         assert!(matches!(
             result3.unwrap_err(),
-            SessionLimitExceeded::PerIpLimit { current: 2, max: 2, .. }
+            SessionLimitExceeded::PerIpLimit {
+                current: 2,
+                max: 2,
+                ..
+            }
         ));
 
         // Different IP should still succeed
@@ -801,14 +791,18 @@ mod tests {
         let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
 
         // Two from IP1
-        assert!(registry
-            .try_register_connection(SocketAddr::new(ip1, 10001))
-            .await
-            .is_ok());
-        assert!(registry
-            .try_register_connection(SocketAddr::new(ip1, 10002))
-            .await
-            .is_ok());
+        assert!(
+            registry
+                .try_register_connection(SocketAddr::new(ip1, 10001))
+                .await
+                .is_ok()
+        );
+        assert!(
+            registry
+                .try_register_connection(SocketAddr::new(ip1, 10002))
+                .await
+                .is_ok()
+        );
 
         // Third from IP1 fails (per-IP limit)
         let result = registry
@@ -820,10 +814,12 @@ mod tests {
         ));
 
         // One from IP2 succeeds (total now 3)
-        assert!(registry
-            .try_register_connection(SocketAddr::new(ip2, 10001))
-            .await
-            .is_ok());
+        assert!(
+            registry
+                .try_register_connection(SocketAddr::new(ip2, 10001))
+                .await
+                .is_ok()
+        );
 
         // Second from IP2 fails (total limit)
         let result = registry
@@ -846,9 +842,7 @@ mod tests {
 
         // Should be able to register many sessions
         for i in 0..100 {
-            let result = registry
-                .try_register_connection(test_addr(10000 + i))
-                .await;
+            let result = registry.try_register_connection(test_addr(10000 + i)).await;
             assert!(result.is_ok());
         }
         assert_eq!(registry.session_count().await, 100);
