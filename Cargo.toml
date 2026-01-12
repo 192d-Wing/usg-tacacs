@@ -12,7 +12,7 @@ members = [
 exclude = ["crates/tacacs-proto/fuzz"]
 
 [workspace.package]
-version = "0.76.0"
+version = "0.77.0"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -106,5 +106,5 @@ reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "rustls",
 ] }
-backoff = { version = "0.4", features = ["tokio"] }
+backon = "1"
 async-trait = "0.1"

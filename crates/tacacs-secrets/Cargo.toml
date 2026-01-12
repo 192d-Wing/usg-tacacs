@@ -21,7 +21,7 @@ serde_json.workspace = true
 reqwest.workspace = true
 
 # Retry logic
-backoff.workspace = true
+backon.workspace = true
 
 # Logging
 tracing.workspace = true

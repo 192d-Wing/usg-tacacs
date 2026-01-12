@@ -3,8 +3,7 @@
 use crate::config::OpenBaoConfig;
 use crate::openbao::{AppRoleAuth, KvClient, PkiClient};
 use anyhow::{Context, Result};
-use backoff::ExponentialBackoff;
-use backoff::backoff::Backoff;
+use backon::{BackoffBuilder, ExponentialBuilder};
 use reqwest::{Client, ClientBuilder, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::Arc;
@@ -205,10 +204,10 @@ impl OpenBaoClient {
         path: &str,
         body: Option<B>,
     ) -> Result<Option<T>> {
-        let mut backoff = ExponentialBackoff {
-            max_elapsed_time: Some(Duration::from_secs(60)),
-            ..Default::default()
-        };
+        let mut backoff = ExponentialBuilder::default()
+            .with_max_times(self.max_retries as usize)
+            .with_max_delay(Duration::from_secs(60))
+            .build();
 
         let mut attempts = 0;
 
@@ -219,25 +218,21 @@ impl OpenBaoClient {
             match result {
                 Ok(response) => return Ok(response),
                 Err(e) => {
-                    if attempts >= self.max_retries {
-                        return Err(e);
-                    }
-
                     // Check if error is retryable
                     let is_retryable = e.to_string().contains("connection")
                         || e.to_string().contains("timeout")
                         || e.to_string().contains("503")
                         || e.to_string().contains("502");
 
-                    if !is_retryable {
+                    if !is_retryable || attempts >= self.max_retries {
                         return Err(e);
                     }
 
-                    if let Some(delay) = backoff.next_backoff() {
+                    if let Some(delay) = backoff.next() {
                         warn!(
                             error = %e,
                             attempt = attempts,
-                            delay_ms = delay.as_millis() as u64,
+                            delay_ms = delay.as_millis(),
                             "retrying request after transient failure"
                         );
                         tokio::time::sleep(delay).await;
