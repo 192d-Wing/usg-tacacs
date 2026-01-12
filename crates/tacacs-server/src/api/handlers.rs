@@ -156,8 +156,10 @@ pub fn build_api_router(
         )));
 
     // POST /api/v1/policy/reload - requires write:policy
+    // POST /api/v1/policy - requires write:policy
     let policy_write_router = Router::new()
         .route("/api/v1/policy/reload", post(reload_policy))
+        .route("/api/v1/policy", post(upload_policy))
         .route_layer(middleware::from_fn(require_permission(
             &rbac,
             "write:policy",
@@ -361,6 +363,98 @@ async fn reload_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse 
             let response = SuccessResponse {
                 success: false,
                 message: "Failed to queue policy reload - channel closed".to_string(),
+            };
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(response))
+        }
+    }
+}
+
+/// POST /api/v1/policy - Upload new policy from JSON.
+///
+/// Requires permission: `write:policy`
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Requires `write:policy` permission |
+/// | AU-12 | Audit Generation | Logs upload request and validation result |
+/// | CM-3 | Configuration Change Control | API-based policy upload with validation |
+async fn upload_policy(
+    State(state): State<Arc<ApiState>>,
+    Json(payload): Json<PolicyUploadRequest>,
+) -> impl IntoResponse {
+    info!(validate = payload.validate, "API request to upload policy");
+
+    // Parse the policy JSON to validate it's well-formed
+    let policy_doc: Result<usg_tacacs_policy::PolicyDocument, _> =
+        serde_json::from_str(&payload.policy);
+
+    let policy_doc = match policy_doc {
+        Ok(doc) => doc,
+        Err(e) => {
+            warn!(error = %e, "Invalid policy JSON in upload request");
+            let response = PolicyUploadResponse {
+                success: false,
+                message: format!("Invalid policy JSON: {}", e),
+                rule_count: None,
+            };
+            return (StatusCode::BAD_REQUEST, Json(response));
+        }
+    };
+
+    // If validation is requested, validate against schema
+    if payload.validate {
+        if let Some(schema_path) = &state.schema_path {
+            match usg_tacacs_policy::validate_policy_document(&policy_doc, schema_path) {
+                Ok(_) => {
+                    info!("Policy validated successfully against schema");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Policy validation failed");
+                    let response = PolicyUploadResponse {
+                        success: false,
+                        message: format!("Policy validation failed: {}", e),
+                        rule_count: None,
+                    };
+                    return (StatusCode::BAD_REQUEST, Json(response));
+                }
+            }
+        } else {
+            warn!("Validation requested but no schema configured");
+            let response = PolicyUploadResponse {
+                success: false,
+                message: "Validation requested but no schema configured".to_string(),
+                rule_count: None,
+            };
+            return (StatusCode::BAD_REQUEST, Json(response));
+        }
+    }
+
+    let rule_count = policy_doc.rules.len();
+
+    // NIST CM-3: Send upload request through internal channel
+    let request = PolicyReloadRequest::FromJson {
+        content: payload.policy,
+        schema: state.schema_path.clone(),
+    };
+
+    match state.reload_tx.send(request).await {
+        Ok(_) => {
+            info!(rules = rule_count, "Policy upload queued successfully");
+            let response = PolicyUploadResponse {
+                success: true,
+                message: "Policy upload triggered".to_string(),
+                rule_count: Some(rule_count),
+            };
+            (StatusCode::OK, Json(response))
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to queue policy upload");
+            let response = PolicyUploadResponse {
+                success: false,
+                message: "Failed to queue policy upload - channel closed".to_string(),
+                rule_count: None,
             };
             (StatusCode::INTERNAL_SERVER_ERROR, Json(response))
         }
@@ -712,6 +806,9 @@ mod tests {
             PolicyReloadRequest::FromDisk { path, schema } => {
                 assert_eq!(path.to_string_lossy(), "test-policy.json");
                 assert!(schema.is_none());
+            }
+            PolicyReloadRequest::FromJson { .. } => {
+                panic!("Expected FromDisk, got FromJson");
             }
         }
     }

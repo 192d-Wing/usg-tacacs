@@ -17,7 +17,7 @@
 use anyhow::{Context, Result, anyhow};
 use jsonschema::Draft;
 use regex::{Regex, RegexBuilder};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -36,14 +36,14 @@ const MAX_REGEX_SIZE: usize = 1024 * 1024; // 1MB
 /// Maximum regex nesting depth to prevent stack overflow.
 const MAX_REGEX_NEST_LEVEL: u32 = 100;
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Effect {
     Allow,
     Deny,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {
     pub id: String,
     pub priority: i32,
@@ -55,7 +55,7 @@ pub struct RuleConfig {
     pub groups: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyDocument {
     pub default_allow: bool,
     #[serde(default)]
@@ -84,20 +84,20 @@ pub struct PolicyDocument {
     pub rules: Vec<RuleConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsciiPrompts {
     pub username: Option<String>,
     pub password: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsciiMessages {
     pub success: Option<String>,
     pub failure: Option<String>,
     pub abort: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawServerMsgOverride {
     pub allow: Option<bool>,
     #[serde(default)]
@@ -162,6 +162,19 @@ impl PolicyEngine {
 
         let document: PolicyDocument = serde_json::from_value(value)
             .with_context(|| format!("deserializing policy {}", policy_path.display()))?;
+        Self::from_document(document)
+    }
+
+    pub fn from_json_str(policy_json: &str, schema: Option<impl AsRef<Path>>) -> Result<Self> {
+        let value: Value =
+            serde_json::from_str(policy_json).context("parsing JSON policy from string")?;
+
+        if let Some(schema_path) = schema {
+            validate_against_schema(&value, schema_path.as_ref())?;
+        }
+
+        let document: PolicyDocument =
+            serde_json::from_value(value).context("deserializing policy from JSON string")?;
         Self::from_document(document)
     }
 
@@ -447,6 +460,12 @@ pub fn validate_policy_file(
     let document: PolicyDocument = serde_json::from_value(value)
         .with_context(|| format!("deserializing policy {}", path.display()))?;
     Ok(document)
+}
+
+pub fn validate_policy_document(document: &PolicyDocument, schema: impl AsRef<Path>) -> Result<()> {
+    let value =
+        serde_json::to_value(document).context("serializing policy document for validation")?;
+    validate_against_schema(&value, schema.as_ref())
 }
 
 pub fn normalize_command(cmd: &str) -> String {

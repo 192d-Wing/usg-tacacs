@@ -97,3 +97,29 @@ pub enum MetricsFormat {
     Prometheus,
     Json,
 }
+
+/// Policy upload request.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | CM-3 | Configuration Change Control | API-based policy updates with validation |
+/// | AU-12 | Audit Generation | Policy upload attempts are logged |
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PolicyUploadRequest {
+    /// The policy JSON content as a string
+    pub policy: String,
+    /// Optional: validate against schema before applying
+    #[serde(default)]
+    pub validate: bool,
+}
+
+/// Policy upload response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PolicyUploadResponse {
+    pub success: bool,
+    pub message: String,
+    /// Number of rules in the uploaded policy
+    pub rule_count: Option<usize>,
+}

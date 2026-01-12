@@ -2230,6 +2230,11 @@ pub enum PolicyReloadRequest {
         path: PathBuf,
         schema: Option<PathBuf>,
     },
+    /// Load policy from JSON content (API upload)
+    FromJson {
+        content: String,
+        schema: Option<PathBuf>,
+    },
 }
 
 /// Watch for policy changes from SIGHUP or internal channel.
@@ -2284,6 +2289,37 @@ pub async fn watch_policy_changes(
                             source = source,
                             error = %err,
                             "failed to reload policy"
+                        );
+                    }
+                }
+            }
+            PolicyReloadRequest::FromJson { content, schema } => {
+                match PolicyEngine::from_json_str(content, schema.as_ref()) {
+                    Ok(new_policy) => {
+                        let rule_count = new_policy.rule_count();
+                        *policy.write().await = new_policy;
+                        crate::metrics::metrics()
+                            .policy_rules_count
+                            .set(rule_count as f64);
+                        crate::metrics::metrics()
+                            .policy_reload_total
+                            .with_label_values(&["success"])
+                            .inc();
+                        info!(
+                            source = source,
+                            rules = rule_count,
+                            "policy uploaded successfully from JSON"
+                        );
+                    }
+                    Err(err) => {
+                        crate::metrics::metrics()
+                            .policy_reload_total
+                            .with_label_values(&["failure"])
+                            .inc();
+                        warn!(
+                            source = source,
+                            error = %err,
+                            "failed to load policy from JSON"
                         );
                     }
                 }
