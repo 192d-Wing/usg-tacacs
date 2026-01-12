@@ -20,7 +20,7 @@ Rust TACACS+ server with:
 
 Run the daemon under a dedicated non-root user, with strict sandboxing/limits. Example systemd unit excerpt:
 
-```
+```shell
 [Service]
 User=tacacs
 Group=tacacs
@@ -77,7 +77,7 @@ cargo run -p tacacs-server -- \
 
 Enable LDAPS with a service account and optional required groups (match-any):
 
-```
+```shell
 cargo run -p tacacs-server -- \
   --listen-tls 0.0.0.0:300 \
   --tls-cert ./certs/server.pem \
@@ -95,6 +95,7 @@ cargo run -p tacacs-server -- \
 ```
 
 Notes:
+
 - Only LDAPS is permitted; StartTLS is rejected.
 - Group checks are match-any; group names are compared case-insensitively.
 - Policy rules can also declare `groups` to require group membership for authorization decisions.
