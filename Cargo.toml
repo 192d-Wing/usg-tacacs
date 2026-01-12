@@ -9,9 +9,7 @@ members = [
   "crates/tacacs-client-tls",
   "crates/tacacs-openssh",
 ]
-exclude = [
-  "crates/tacacs-proto/fuzz",
-]
+exclude = ["crates/tacacs-proto/fuzz"]
 
 [workspace.package]
 version = "0.76.0"
@@ -40,13 +38,13 @@ serde_json = "1"
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tracing-opentelemetry = "0.28"
+tracing-opentelemetry = "0.32"
 log = "0.4"
 
 # OpenTelemetry
-opentelemetry = "0.27"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["tonic"] }
 
 # TLS
 rustls = "0.23"
@@ -65,7 +63,7 @@ regex = "1"
 clap = { version = "4", features = ["derive", "env"] }
 
 # JSON Schema
-jsonschema = "0.28"
+jsonschema = "0.38"
 
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
@@ -73,12 +71,27 @@ axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 tower-http = { version = "0.6", features = ["trace"] }
 
 # LDAP
-ldap3 = { version = "0.12", default-features = false, features = ["tls-native", "sync"] }
+ldap3 = { version = "0.12", default-features = false, features = [
+  "tls-native",
+  "sync",
+] }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "json", "time", "macros"] }
+sqlx = { version = "0.8", features = [
+  "runtime-tokio-rustls",
+  "postgres",
+  "uuid",
+  "json",
+  "time",
+  "macros",
+] }
 uuid = { version = "1", features = ["v4", "serde"] }
-time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
+time = { version = "0.3", features = [
+  "serde",
+  "macros",
+  "formatting",
+  "parsing",
+] }
 
 # Archive handling
 flate2 = "1"
@@ -86,6 +99,9 @@ tar = "0.4"
 x509-parser = "0.18"
 
 # HTTP client (for OpenBao)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls",
+] }
 backoff = { version = "0.4", features = ["tokio"] }
 async-trait = "0.1"
