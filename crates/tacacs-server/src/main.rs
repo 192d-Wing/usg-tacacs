@@ -7,7 +7,7 @@ use crate::server::{
     AuthContext, ConnLimiter, ConnectionConfig, PolicyReloadRequest, TlsIdentityConfig,
     serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_policy_changes,
 };
-use crate::session_registry::SessionRegistry;
+use crate::session_registry::{SessionRegistry, run_idle_sweep_task};
 use crate::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -161,6 +161,17 @@ async fn main() -> Result<()> {
     // NIST AC-10/AC-12: Create session registry for tracking active connections
     // This is shared with both connection handlers and the API for session visibility and termination
     let session_registry = Arc::new(SessionRegistry::new());
+
+    // NIST AC-12: Spawn background idle sweep task if idle timeout is configured
+    if single_connect_idle_secs > 0 {
+        let sweep_registry = session_registry.clone();
+        let idle_timeout = Duration::from_secs(single_connect_idle_secs);
+        // Sweep at 1/4 of idle timeout for responsive termination
+        let sweep_interval = Duration::from_secs(single_connect_idle_secs.max(4) / 4);
+        tokio::spawn(async move {
+            run_idle_sweep_task(sweep_registry, idle_timeout, sweep_interval).await;
+        });
+    }
 
     if let Some(addr) = args.listen_tls {
         // RFC 9887: TACACS+ over TLS 1.3 SHOULD use port 300

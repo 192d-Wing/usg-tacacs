@@ -219,6 +219,7 @@ See the [Troubleshooting section](../operations.md#troubleshooting-checklist) fo
 
 ## Next Steps
 
+- [Management API](management-api.md) - REST API for runtime administration
 - [TLS Configuration](../tls.md) - Certificate setup and mTLS
 - [Authentication](../authentication.md) - LDAPS and static credentials
 - [Policy Guide](../policy.md) - Authorization rules

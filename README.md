@@ -13,6 +13,7 @@ Rust TACACS+ server with:
 - Hardened RFC 8907 semantics: authz protocol/service checks, explicit FOLLOW rejection, richer audit telemetry
 - LDAP authentication (LDAPS only) with service-account bind + match-any required groups, with group-aware policy matching
 - Client-certificate allowlists (CN/SAN), optional extra trust roots, and per-peer connection limits
+- Management API with RBAC for session visibility, session termination, policy reload, and runtime monitoring
 - Process hardening guidance: run as non-root, optionally chroot/jail, set RLIMITs, and drop ambient caps (see below)
 
 ## Process hardening (recommended)

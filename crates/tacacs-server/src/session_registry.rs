@@ -26,11 +26,50 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::metrics::metrics;
+
+/// Error returned when session limits are exceeded.
+///
+/// # NIST Controls
+/// - **AC-10 (Concurrent Session Control)**: Documents limit violations
+#[derive(Debug, Clone)]
+pub enum SessionLimitExceeded {
+    /// Total session limit across all IPs was exceeded
+    TotalLimit {
+        current: usize,
+        max: usize,
+    },
+    /// Per-IP session limit was exceeded
+    PerIpLimit {
+        ip: std::net::IpAddr,
+        current: usize,
+        max: usize,
+    },
+}
+
+impl std::fmt::Display for SessionLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TotalLimit { current, max } => {
+                write!(f, "total session limit exceeded ({}/{})", current, max)
+            }
+            Self::PerIpLimit { ip, current, max } => {
+                write!(
+                    f,
+                    "per-IP session limit exceeded for {} ({}/{})",
+                    ip, current, max
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SessionLimitExceeded {}
 
 /// Global connection ID counter for unique session identification.
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
@@ -86,6 +125,27 @@ impl SessionRecord {
     }
 }
 
+/// Configuration for session limits.
+///
+/// # NIST Controls
+/// - **AC-10 (Concurrent Session Control)**: Configures session limits
+#[derive(Debug, Clone)]
+pub struct SessionLimits {
+    /// Maximum total sessions across all IPs (0 = unlimited)
+    pub max_total_sessions: usize,
+    /// Maximum sessions per IP address (0 = unlimited)
+    pub max_sessions_per_ip: usize,
+}
+
+impl Default for SessionLimits {
+    fn default() -> Self {
+        Self {
+            max_total_sessions: 0,
+            max_sessions_per_ip: 0,
+        }
+    }
+}
+
 /// Thread-safe registry for tracking active sessions.
 ///
 /// # NIST Controls
@@ -95,17 +155,88 @@ impl SessionRecord {
 pub struct SessionRegistry {
     /// Map from connection ID to session record
     sessions: RwLock<HashMap<u64, SessionRecord>>,
+    /// Session limits configuration
+    limits: SessionLimits,
 }
 
 impl SessionRegistry {
-    /// Create a new empty session registry.
+    /// Create a new empty session registry with no limits.
     pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            limits: SessionLimits::default(),
         }
     }
 
+    /// Create a new session registry with configured limits.
+    ///
+    /// # NIST Controls
+    /// - **AC-10 (Concurrent Session Control)**: Configures session limits
+    pub fn with_limits(limits: SessionLimits) -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            limits,
+        }
+    }
+
+    /// Check if a new connection from the given address would be allowed.
+    ///
+    /// Returns `Ok(())` if allowed, or `Err` with reason if rejected.
+    ///
+    /// # NIST Controls
+    /// - **AC-10 (Concurrent Session Control)**: Enforces session limits
+    /// - **SC-7 (Boundary Protection)**: Prevents session exhaustion attacks
+    pub async fn check_limits(&self, peer_addr: SocketAddr) -> Result<(), SessionLimitExceeded> {
+        // Check global limit
+        if self.limits.max_total_sessions > 0 {
+            let sessions = self.sessions.read().await;
+            if sessions.len() >= self.limits.max_total_sessions {
+                return Err(SessionLimitExceeded::TotalLimit {
+                    current: sessions.len(),
+                    max: self.limits.max_total_sessions,
+                });
+            }
+        }
+
+        // Check per-IP limit
+        if self.limits.max_sessions_per_ip > 0 {
+            let sessions = self.sessions.read().await;
+            let ip = peer_addr.ip();
+            let count = sessions.values().filter(|r| r.peer_addr.ip() == ip).count();
+            if count >= self.limits.max_sessions_per_ip {
+                return Err(SessionLimitExceeded::PerIpLimit {
+                    ip,
+                    current: count,
+                    max: self.limits.max_sessions_per_ip,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Try to register a new connection, checking limits first.
+    ///
+    /// Returns `Ok(connection_id)` if successful, or `Err` if limits exceeded.
+    ///
+    /// # NIST Controls
+    /// - **AC-10**: Enforces session limits and tracks new connection
+    /// - **AU-2 (Audit Events)**: Connection establishment is recorded
+    pub async fn try_register_connection(
+        &self,
+        peer_addr: SocketAddr,
+    ) -> Result<u64, SessionLimitExceeded> {
+        // Check limits first (without holding write lock)
+        self.check_limits(peer_addr).await?;
+
+        // Now register (with write lock)
+        Ok(self.register_connection(peer_addr).await)
+    }
+
     /// Register a new connection and return its unique ID.
+    ///
+    /// Note: This method does not check limits. Use `try_register_connection`
+    /// for limit-checked registration.
     ///
     /// # NIST Controls
     /// - **AC-10**: Tracks new connection for session control
@@ -271,6 +402,93 @@ impl SessionRegistry {
             .map(|r| r.termination_requested)
             .unwrap_or(false)
     }
+
+    /// Mark sessions exceeding idle timeout for termination.
+    ///
+    /// Scans all sessions and marks those that have been idle longer than
+    /// `idle_timeout` for termination. Returns the number of sessions marked.
+    ///
+    /// # NIST Controls
+    /// - **AC-12 (Session Termination)**: Automatic idle timeout enforcement
+    /// - **AU-2 (Audit Events)**: Logs idle timeout events
+    pub async fn sweep_idle_sessions(&self, idle_timeout: Duration) -> usize {
+        let mut sessions = self.sessions.write().await;
+        let mut terminated = 0;
+
+        for record in sessions.values_mut() {
+            if !record.termination_requested && record.idle_duration() > idle_timeout {
+                record.termination_requested = true;
+                terminated += 1;
+                debug!(
+                    connection_id = record.connection_id,
+                    peer = %record.peer_addr,
+                    idle_secs = record.idle_duration().as_secs(),
+                    "session marked for idle timeout termination"
+                );
+            }
+        }
+
+        if terminated > 0 {
+            debug!(count = terminated, "idle session sweep completed");
+        }
+
+        terminated
+    }
+
+    /// Count sessions from a specific IP address.
+    ///
+    /// Used for enforcing per-IP session limits.
+    ///
+    /// # NIST Controls
+    /// - **AC-10 (Concurrent Session Control)**: Per-IP session counting
+    pub async fn count_sessions_from_ip(&self, ip: std::net::IpAddr) -> usize {
+        let sessions = self.sessions.read().await;
+        sessions
+            .values()
+            .filter(|r| r.peer_addr.ip() == ip)
+            .count()
+    }
+
+    /// Get total session count (alias for session_count for consistency).
+    pub async fn total_session_count(&self) -> usize {
+        self.session_count().await
+    }
+}
+
+/// Run a background task that periodically sweeps idle sessions.
+///
+/// This task runs indefinitely, checking for idle sessions at the specified
+/// interval and marking those exceeding `idle_timeout` for termination.
+///
+/// # NIST Controls
+/// - **AC-12 (Session Termination)**: Automatic idle timeout enforcement
+/// - **SI-4 (System Monitoring)**: Continuous session health monitoring
+///
+/// # Arguments
+/// * `registry` - The session registry to sweep
+/// * `idle_timeout` - Sessions idle longer than this will be terminated
+/// * `sweep_interval` - How often to run the sweep (typically idle_timeout / 2 or /4)
+pub async fn run_idle_sweep_task(
+    registry: Arc<SessionRegistry>,
+    idle_timeout: Duration,
+    sweep_interval: Duration,
+) {
+    info!(
+        idle_timeout_secs = idle_timeout.as_secs(),
+        sweep_interval_secs = sweep_interval.as_secs(),
+        "starting idle session sweep task"
+    );
+
+    loop {
+        tokio::time::sleep(sweep_interval).await;
+        let terminated = registry.sweep_idle_sessions(idle_timeout).await;
+        if terminated > 0 {
+            info!(
+                terminated = terminated,
+                "idle session sweep terminated sessions"
+            );
+        }
+    }
 }
 
 impl Default for SessionRegistry {
@@ -405,5 +623,234 @@ mod tests {
         assert!(sessions[0].duration().as_millis() >= 10);
 
         registry.unregister_connection(conn_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_sweep_idle_sessions() {
+        let registry = SessionRegistry::new();
+        let addr = test_addr(12351);
+
+        let conn_id = registry.register_connection(addr).await;
+
+        // Immediate sweep with short timeout shouldn't terminate (just registered)
+        let terminated = registry.sweep_idle_sessions(Duration::from_secs(1)).await;
+        assert_eq!(terminated, 0);
+        assert!(!registry.is_termination_requested(conn_id).await);
+
+        // Wait for session to become idle
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Sweep with very short timeout should mark for termination
+        let terminated = registry
+            .sweep_idle_sessions(Duration::from_millis(10))
+            .await;
+        assert_eq!(terminated, 1);
+        assert!(registry.is_termination_requested(conn_id).await);
+
+        // Subsequent sweep should not re-terminate
+        let terminated = registry
+            .sweep_idle_sessions(Duration::from_millis(10))
+            .await;
+        assert_eq!(terminated, 0);
+
+        registry.unregister_connection(conn_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_sweep_idle_preserves_active_sessions() {
+        let registry = SessionRegistry::new();
+
+        let idle_conn = registry.register_connection(test_addr(12352)).await;
+        let active_conn = registry.register_connection(test_addr(12353)).await;
+
+        // Wait for both to become "idle"
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Refresh activity on one connection
+        registry.record_activity(active_conn).await;
+
+        // Sweep should only terminate the idle one
+        let terminated = registry
+            .sweep_idle_sessions(Duration::from_millis(10))
+            .await;
+        assert_eq!(terminated, 1);
+        assert!(registry.is_termination_requested(idle_conn).await);
+        assert!(!registry.is_termination_requested(active_conn).await);
+
+        registry.unregister_connection(idle_conn).await;
+        registry.unregister_connection(active_conn).await;
+    }
+
+    #[tokio::test]
+    async fn test_count_sessions_from_ip() {
+        let registry = SessionRegistry::new();
+
+        // Register 3 sessions from same IP (different ports)
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let _conn1 = registry
+            .register_connection(SocketAddr::new(ip, 10001))
+            .await;
+        let _conn2 = registry
+            .register_connection(SocketAddr::new(ip, 10002))
+            .await;
+        let _conn3 = registry
+            .register_connection(SocketAddr::new(ip, 10003))
+            .await;
+
+        // Register 1 session from different IP
+        let other_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+        let _conn4 = registry
+            .register_connection(SocketAddr::new(other_ip, 10004))
+            .await;
+
+        assert_eq!(registry.count_sessions_from_ip(ip).await, 3);
+        assert_eq!(registry.count_sessions_from_ip(other_ip).await, 1);
+        assert_eq!(
+            registry
+                .count_sessions_from_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))
+                .await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_limits_total() {
+        let limits = SessionLimits {
+            max_total_sessions: 2,
+            max_sessions_per_ip: 0,
+        };
+        let registry = SessionRegistry::with_limits(limits);
+
+        // First two should succeed
+        let result1 = registry
+            .try_register_connection(test_addr(10001))
+            .await;
+        assert!(result1.is_ok());
+
+        let result2 = registry
+            .try_register_connection(test_addr(10002))
+            .await;
+        assert!(result2.is_ok());
+
+        // Third should fail
+        let result3 = registry
+            .try_register_connection(test_addr(10003))
+            .await;
+        assert!(result3.is_err());
+        assert!(matches!(
+            result3.unwrap_err(),
+            SessionLimitExceeded::TotalLimit { current: 2, max: 2 }
+        ));
+
+        // After unregistering one, should succeed again
+        registry.unregister_connection(result1.unwrap()).await;
+        let result4 = registry
+            .try_register_connection(test_addr(10004))
+            .await;
+        assert!(result4.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_session_limits_per_ip() {
+        let limits = SessionLimits {
+            max_total_sessions: 0,
+            max_sessions_per_ip: 2,
+        };
+        let registry = SessionRegistry::with_limits(limits);
+
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+
+        // First two from same IP should succeed
+        let result1 = registry
+            .try_register_connection(SocketAddr::new(ip, 10001))
+            .await;
+        assert!(result1.is_ok());
+
+        let result2 = registry
+            .try_register_connection(SocketAddr::new(ip, 10002))
+            .await;
+        assert!(result2.is_ok());
+
+        // Third from same IP should fail
+        let result3 = registry
+            .try_register_connection(SocketAddr::new(ip, 10003))
+            .await;
+        assert!(result3.is_err());
+        assert!(matches!(
+            result3.unwrap_err(),
+            SessionLimitExceeded::PerIpLimit { current: 2, max: 2, .. }
+        ));
+
+        // Different IP should still succeed
+        let other_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+        let result4 = registry
+            .try_register_connection(SocketAddr::new(other_ip, 10001))
+            .await;
+        assert!(result4.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_session_limits_combined() {
+        let limits = SessionLimits {
+            max_total_sessions: 3,
+            max_sessions_per_ip: 2,
+        };
+        let registry = SessionRegistry::with_limits(limits);
+
+        let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+
+        // Two from IP1
+        assert!(registry
+            .try_register_connection(SocketAddr::new(ip1, 10001))
+            .await
+            .is_ok());
+        assert!(registry
+            .try_register_connection(SocketAddr::new(ip1, 10002))
+            .await
+            .is_ok());
+
+        // Third from IP1 fails (per-IP limit)
+        let result = registry
+            .try_register_connection(SocketAddr::new(ip1, 10003))
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            SessionLimitExceeded::PerIpLimit { .. }
+        ));
+
+        // One from IP2 succeeds (total now 3)
+        assert!(registry
+            .try_register_connection(SocketAddr::new(ip2, 10001))
+            .await
+            .is_ok());
+
+        // Second from IP2 fails (total limit)
+        let result = registry
+            .try_register_connection(SocketAddr::new(ip2, 10002))
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            SessionLimitExceeded::TotalLimit { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_session_limits_disabled() {
+        // With zero limits, no restrictions apply
+        let limits = SessionLimits {
+            max_total_sessions: 0,
+            max_sessions_per_ip: 0,
+        };
+        let registry = SessionRegistry::with_limits(limits);
+
+        // Should be able to register many sessions
+        for i in 0..100 {
+            let result = registry
+                .try_register_connection(test_addr(10000 + i))
+                .await;
+            assert!(result.is_ok());
+        }
+        assert_eq!(registry.session_count().await, 100);
     }
 }
