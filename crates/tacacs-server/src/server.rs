@@ -2290,17 +2290,6 @@ pub async fn watch_policy_changes(
     }
 }
 
-/// Legacy SIGHUP-only watcher (deprecated, use watch_policy_changes instead).
-#[deprecated(note = "Use watch_policy_changes with channel support instead")]
-pub async fn watch_sighup(
-    policy_path: PathBuf,
-    schema: Option<PathBuf>,
-    policy: Arc<RwLock<PolicyEngine>>,
-) {
-    let (_, rx) = tokio::sync::mpsc::channel(1);
-    watch_policy_changes(policy_path, schema, policy, rx).await;
-}
-
 pub fn validate_policy(path: &PathBuf, schema: Option<&PathBuf>) -> Result<()> {
     let schema_path = schema.context("schema is required to validate policy")?;
     let document = validate_policy_file(path, schema_path)?;
