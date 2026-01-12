@@ -126,15 +126,13 @@ impl SessionRecord {
 ///
 /// # NIST Controls
 /// - **AC-10 (Concurrent Session Control)**: Configures session limits
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionLimits {
     /// Maximum total sessions across all IPs (0 = unlimited)
     pub max_total_sessions: usize,
     /// Maximum sessions per IP address (0 = unlimited)
     pub max_sessions_per_ip: usize,
 }
-
 
 /// Thread-safe registry for tracking active sessions.
 ///
@@ -434,11 +432,6 @@ impl SessionRegistry {
     pub async fn count_sessions_from_ip(&self, ip: std::net::IpAddr) -> usize {
         let sessions = self.sessions.read().await;
         sessions.values().filter(|r| r.peer_addr.ip() == ip).count()
-    }
-
-    /// Get total session count (alias for session_count for consistency).
-    pub async fn total_session_count(&self) -> usize {
-        self.session_count().await
     }
 }
 
