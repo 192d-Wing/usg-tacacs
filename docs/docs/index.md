@@ -12,6 +12,7 @@ icon: lucide/shield
 
 - TLS 1.3 + mTLS on TCP/300; optional legacy TACACS+ on TCP/49 with shared secret.
 - Client certificate allowlists (CN or SAN) and optional extra trust roots.
+- **EST (RFC 7030) zero-touch certificate provisioning** with automated enrollment and renewal.
 - Per-command authorization via JSON policy (priorities, last-match-wins), with user and group matching.
 - Authentication sources: static user/password map or LDAPS (service-account bind, match-any required groups, configurable group attribute).
 - Accounting/authz semantic checks aligned with RFC 8907; explicit rejection of deprecated FOLLOW/ARAP paths.
@@ -71,6 +72,8 @@ You can pass options via CLI flags or JSON (`config.example.json` / `config.sche
 - `forbid_unencrypted` (bool, default true) — drop requests with `TAC_PLUS_UNENCRYPTED_FLAG`.
 - `single_connect_idle_secs` / `single_connect_keepalive_secs` — timeouts for single-connection sessions.
 - `max_connections_per_ip` — simple connection limiter.
+
+For **automated certificate provisioning**, see [EST Certificate Provisioning](./est-provisioning.md).
 
 ### Authentication
 

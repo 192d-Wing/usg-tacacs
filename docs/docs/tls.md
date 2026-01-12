@@ -12,6 +12,8 @@ icon: lucide/shield-check
 - `client_ca`: CA bundle to validate client certificates (PEM).
 - `listen_tls`: host:port to bind (e.g., `0.0.0.0:300`).
 
+**Note**: Server certificates can be provisioned automatically using [EST (RFC 7030)](./est-provisioning.md) for zero-touch deployment.
+
 ## Optional controls
 
 - `tls_trust_root` (array): extra trust anchors for client auth.
@@ -49,6 +51,7 @@ Packets with `TAC_PLUS_UNENCRYPTED_FLAG` are dropped when `forbid_unencrypted` i
 - Prefer SANs over CNs; use CN allowlist only when SANs are absent.
 - Separate PKI for client certs vs server cert if possible.
 - Rotate certs/keys regularly; reload with SIGHUP to pick up new files.
+- For automated certificate lifecycle management, see [EST Certificate Provisioning](./est-provisioning.md).
 
 ## Troubleshooting
 

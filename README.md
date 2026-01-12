@@ -4,6 +4,7 @@ Rust TACACS+ server with:
 
 - RFC 9887 TACACS+ over TLS 1.3 (mTLS only) on TCP/300
 - Optional legacy TACACS+ (TCP/49)
+- **EST (RFC 7030) zero-touch certificate provisioning** with automated enrollment and renewal
 - Per-command authorization
 - JSON policy with priorities + last-match-wins
 - JSON Schema validation + validate-only mode
@@ -72,6 +73,24 @@ cargo run -p tacacs-server -- \
   --tls-key ./certs/server-key.pem \
   --client-ca ./certs/client-ca.pem \
   --policy ./policy/policy.example.json
+
+## EST zero-touch certificate provisioning
+
+Automatically enroll and renew certificates using RFC 7030 EST:
+
+```shell
+cargo run -p tacacs-server -- \
+  --est-enabled \
+  --est-server-url https://est.example.com/.well-known/est \
+  --est-username bootstrap-user \
+  --est-password secret123 \
+  --est-common-name tacacs-01.internal \
+  --listen-tls 0.0.0.0:300 \
+  --client-ca ./certs/client-ca.pem \
+  --policy ./policy/policy.example.json
+```
+
+Server starts degraded, auto-enrolls certificates, then becomes ready. See [docs/docs/est-provisioning.md](./docs/docs/est-provisioning.md) for complete configuration and deployment guides.
 
 ## LDAP authentication (LDAPS only)
 
