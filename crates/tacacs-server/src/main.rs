@@ -330,8 +330,11 @@ async fn main() -> Result<()> {
         // Wire up EST provider to certificate reload channel
         if let Some(ref est_prov) = est_provider {
             let reload_tx = cert_reload_tx.clone();
-            let est_cert_path = est_config_opt.as_ref().unwrap().cert_path.clone();
-            let est_key_path = est_config_opt.as_ref().unwrap().key_path.clone();
+            let est_config = est_config_opt
+                .as_ref()
+                .context("EST config missing when EST provider is active")?;
+            let est_cert_path = est_config.cert_path.clone();
+            let est_key_path = est_config.key_path.clone();
             let est_ca_path = ca.clone();
             let est_trust_roots = args.tls_trust_root.clone();
 

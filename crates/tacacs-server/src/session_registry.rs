@@ -171,12 +171,16 @@ impl SessionRecord {
 
     /// Calculate session duration.
     pub fn duration(&self) -> Duration {
-        self.connected_at.elapsed().unwrap_or_default()
+        SystemTime::now()
+            .duration_since(self.connected_at)
+            .unwrap_or_default()
     }
 
     /// Calculate time since last activity.
     pub fn idle_duration(&self) -> Duration {
-        self.last_activity.elapsed().unwrap_or_default()
+        SystemTime::now()
+            .duration_since(self.last_activity)
+            .unwrap_or_default()
     }
 }
 
