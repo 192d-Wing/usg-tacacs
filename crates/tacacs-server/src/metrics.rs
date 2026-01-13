@@ -391,7 +391,9 @@ impl AuthnTimer {
     }
 
     pub fn finish(self, result: &str) {
-        let duration = self.start.elapsed().as_secs_f64();
+        let duration = std::time::Instant::now()
+            .saturating_duration_since(self.start)
+            .as_secs_f64();
         metrics()
             .authn_duration_seconds
             .with_label_values(&[self.method])
@@ -418,7 +420,9 @@ impl AuthzTimer {
     }
 
     pub fn finish(self, result: &str) {
-        let duration = self.start.elapsed().as_secs_f64();
+        let duration = std::time::Instant::now()
+            .saturating_duration_since(self.start)
+            .as_secs_f64();
         metrics().authz_duration_seconds.observe(duration);
         metrics()
             .authz_requests_total
