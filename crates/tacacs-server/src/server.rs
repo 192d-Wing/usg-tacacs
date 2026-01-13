@@ -260,7 +260,10 @@ fn enforce_client_cert_policy(
                     }
                     _ => {
                         // Invalid IP address length, skip
-                        tracing::warn!(len = ip.len(), "invalid IP address length in certificate SAN");
+                        tracing::warn!(
+                            len = ip.len(),
+                            "invalid IP address length in certificate SAN"
+                        );
                     }
                 }
             }
