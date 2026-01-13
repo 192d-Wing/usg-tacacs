@@ -303,6 +303,17 @@ impl SessionRegistry {
     /// |---------|------|----------------|
     /// | AC-10 | Concurrent Session Control | Tracks new connection for session control |
     /// | AU-2 | Audit Events | Connection establishment is recorded |
+    ///
+    /// # Security Warning
+    ///
+    /// **DEPRECATED**: This method bypasses session limits and should not be used.
+    /// Use `try_register_connection` instead to enforce concurrent session limits.
+    ///
+    /// This method is kept for backwards compatibility but will be removed in a future version.
+    #[deprecated(
+        since = "0.77.0",
+        note = "Use try_register_connection() to enforce session limits"
+    )]
     pub async fn register_connection(&self, peer_addr: SocketAddr) -> u64 {
         let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
         let record = SessionRecord::new(connection_id, peer_addr);
@@ -496,12 +507,12 @@ impl SessionRegistry {
     /// | AU-2 | Audit Events | Logs idle timeout events |
     pub async fn sweep_idle_sessions(&self, idle_timeout: Duration) -> usize {
         let mut sessions = self.sessions.write().await;
-        let mut terminated = 0;
+        let mut terminated: usize = 0;
 
         for record in sessions.values_mut() {
             if !record.termination_requested && record.idle_duration() > idle_timeout {
                 record.termination_requested = true;
-                terminated += 1;
+                terminated = terminated.saturating_add(1);
                 debug!(
                     connection_id = record.connection_id,
                     peer = %record.peer_addr,

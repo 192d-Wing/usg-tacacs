@@ -474,10 +474,25 @@ pub fn handle_chap_continue(
             data: Vec::new(),
         };
     }
-    if state.chap_id.is_some() && cont_data[0] != state.chap_id.unwrap() {
+    // SECURITY: Require CHAP ID to be set in session state
+    let expected_chap_id = match state.chap_id {
+        Some(id) => id,
+        None => {
+            tracing::warn!("CHAP continue received but no CHAP ID in session state");
+            return AuthenReply {
+                status: AUTHEN_STATUS_ERROR,
+                flags: 0,
+                server_msg: GENERIC_AUTH_ERROR.into(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            };
+        }
+    };
+
+    if cont_data[0] != expected_chap_id {
         tracing::debug!(
-            "CHAP continue: identifier mismatch (expected {:?}, got {})",
-            state.chap_id,
+            "CHAP continue: identifier mismatch (expected {}, got {})",
+            expected_chap_id,
             cont_data[0]
         );
         return AuthenReply {
@@ -904,6 +919,7 @@ mod tests {
     fn handle_chap_continue_invalid_response() {
         let mut state = make_test_session_state();
         state.challenge = Some(vec![0x11; 16]);
+        state.chap_id = Some(0x42); // Must set CHAP ID for security
         let creds = make_creds();
 
         let mut cont_data = vec![0x42];
@@ -1274,10 +1290,10 @@ mod tests {
         let mut cont_data = vec![0x42]; // Any ID
         cont_data.extend_from_slice(&[0u8; 16]);
 
-        // Should proceed since chap_id is None (no mismatch check)
+        // SECURITY: Should error when CHAP ID is not set in session state
         let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
-        // Will fail due to wrong hash, but won't error on ID mismatch
-        assert_eq!(result.status, AUTHEN_STATUS_FAIL);
+        // Now correctly returns ERROR instead of allowing authentication to proceed
+        assert_eq!(result.status, AUTHEN_STATUS_ERROR);
     }
 
     #[test]

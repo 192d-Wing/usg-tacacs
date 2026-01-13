@@ -246,14 +246,22 @@ fn enforce_client_cert_policy(
                 names.push(uri.to_string());
             }
             if let Some(ip) = name.ipaddress() {
-                if ip.len() == 4 {
-                    let mut oct = [0u8; 4];
-                    oct.copy_from_slice(ip);
-                    names.push(std::net::Ipv4Addr::from(oct).to_string());
-                } else if ip.len() == 16 {
-                    let mut oct = [0u8; 16];
-                    oct.copy_from_slice(ip);
-                    names.push(std::net::Ipv6Addr::from(oct).to_string());
+                // Use try_from for safe conversion without panic
+                match ip.len() {
+                    4 => {
+                        if let Ok(oct) = <[u8; 4]>::try_from(ip) {
+                            names.push(std::net::Ipv4Addr::from(oct).to_string());
+                        }
+                    }
+                    16 => {
+                        if let Ok(oct) = <[u8; 16]>::try_from(ip) {
+                            names.push(std::net::Ipv6Addr::from(oct).to_string());
+                        }
+                    }
+                    _ => {
+                        // Invalid IP address length, skip
+                        tracing::warn!(len = ip.len(), "invalid IP address length in certificate SAN");
+                    }
                 }
             }
         }

@@ -134,7 +134,13 @@ impl OpenBaoClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("authentication failed: {} - {}", status, text);
+            // Log full error details for debugging, but return sanitized error
+            tracing::error!(
+                status = %status,
+                response_body = %text,
+                "OpenBao authentication failed"
+            );
+            anyhow::bail!("authentication failed: HTTP {}", status.as_u16());
         }
 
         let api_response: ApiResponse<()> = response
@@ -316,7 +322,14 @@ impl OpenBaoClient {
             }
             status => {
                 let text = response.text().await.unwrap_or_default();
-                anyhow::bail!("request failed: {} - {}", status, text)
+                // Log full error for debugging, return sanitized error
+                tracing::error!(
+                    status = %status,
+                    path = path,
+                    response_body = %text,
+                    "OpenBao API request failed"
+                );
+                anyhow::bail!("request failed: HTTP {}", status.as_u16())
             }
         }
     }
