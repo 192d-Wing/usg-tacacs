@@ -163,15 +163,33 @@ impl OpenBaoClient {
 
     /// Get a valid token, refreshing if necessary.
     pub async fn get_token(&self) -> Result<String> {
-        // Check if current token is valid
+        // Fast path: check with read lock
         {
             let state = self.token.read().await;
             if state.is_valid() {
-                return Ok(state.token.clone().unwrap());
+                return state
+                    .token
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("token is None despite valid state"));
             }
         }
 
-        // Token is expired or missing, re-authenticate
+        // Slow path: use write lock to ensure only one thread re-authenticates
+        {
+            let mut state = self.token.write().await;
+            // Double-check after acquiring write lock (another thread may have refreshed)
+            if state.is_valid() {
+                return state
+                    .token
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("token is None despite valid state"));
+            }
+            // Mark token as invalid to prevent other threads from using it
+            state.token = None;
+            state.expires_at = None;
+        } // Release write lock before network call
+
+        // Re-authenticate outside the lock
         self.authenticate().await?;
 
         let state = self.token.read().await;
@@ -209,22 +227,18 @@ impl OpenBaoClient {
             .with_max_delay(Duration::from_secs(60))
             .build();
 
-        let mut attempts = 0;
+        let mut attempts = 1;
 
         loop {
-            attempts += 1;
             let result = self.do_request(&method, path, &body).await;
 
             match result {
                 Ok(response) => return Ok(response),
                 Err(e) => {
                     // Check if error is retryable
-                    let is_retryable = e.to_string().contains("connection")
-                        || e.to_string().contains("timeout")
-                        || e.to_string().contains("503")
-                        || e.to_string().contains("502");
+                    let is_retryable = Self::is_retryable_error(&e);
 
-                    if !is_retryable || attempts >= self.max_retries {
+                    if !is_retryable || attempts > self.max_retries {
                         return Err(e);
                     }
 
@@ -232,16 +246,36 @@ impl OpenBaoClient {
                         warn!(
                             error = %e,
                             attempt = attempts,
+                            max_retries = self.max_retries,
                             delay_ms = delay.as_millis(),
                             "retrying request after transient failure"
                         );
+                        attempts += 1;
                         tokio::time::sleep(delay).await;
                     } else {
+                        // Backoff exhausted
                         return Err(e);
                     }
                 }
             }
         }
+    }
+
+    /// Check if an error is retryable (transient failure).
+    fn is_retryable_error(e: &anyhow::Error) -> bool {
+        // Check for specific reqwest error types
+        if let Some(reqwest_err) = e.downcast_ref::<reqwest::Error>() {
+            return reqwest_err.is_timeout()
+                || reqwest_err.is_connect()
+                || reqwest_err
+                    .status()
+                    .map(|s| matches!(s.as_u16(), 429 | 502 | 503 | 504))
+                    .unwrap_or(false);
+        }
+
+        // Fallback to string matching for other error types
+        let err_str = e.to_string().to_lowercase();
+        err_str.contains("connection") || err_str.contains("timeout")
     }
 
     /// Execute a single request.

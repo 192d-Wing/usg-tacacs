@@ -86,6 +86,10 @@ fn load_certs(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>> {
         .with_context(|| format!("opening certificate {}", path.display()))?
         .collect::<Result<_, _>>()
         .with_context(|| format!("reading certificates from {}", path.display()))?;
+
+    if certs.is_empty() {
+        anyhow::bail!("no certificates found in {}", path.display());
+    }
     Ok(certs)
 }
 
@@ -186,18 +190,17 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
     fn load_certs_empty_file() {
         let cert_file = create_temp_file("");
         let result = load_certs(&cert_file.path().to_path_buf());
-        assert!(result.is_ok());
-        let certs = result.unwrap();
-        assert!(certs.is_empty());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no certificates"));
     }
 
     #[test]
     fn load_certs_invalid_pem() {
         let cert_file = create_temp_file("not a valid PEM file");
         let result = load_certs(&cert_file.path().to_path_buf());
-        // Invalid PEM returns empty vec, not an error
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        // Invalid PEM returns empty vec, which is now rejected
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no certificates"));
     }
 
     // ==================== load_key Tests ====================
