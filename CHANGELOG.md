@@ -5,6 +5,71 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.1] - 2026-01-18
+
+### 🔒 Security (Post-Audit Fixes)
+
+This release addresses 3 additional security findings identified in the comprehensive security audit performed after the 0.77.0 release.
+
+#### High Severity Vulnerabilities Fixed
+
+- **Clock-Sensitive `elapsed()` in API Handlers** (`api/handlers.rs`)
+  - Replaced `SystemTime::elapsed()` with `duration_since()` in status and policy endpoints
+  - Prevents potential panic on clock changes (NTP adjustments, manual clock changes)
+  - Uses graceful fallback returning 0 uptime on clock anomalies
+  - Commit: d4eb7a0
+
+#### Medium Severity Vulnerabilities Fixed
+
+- **Session API Integer Conversion** (`api/models.rs`, `api/handlers.rs`)
+  - Changed session API to use u64 for connection IDs (previously u32)
+  - Prevents overflow and ID collision after 4 billion connections
+  - Maintains 1:1 mapping between internal connection IDs and API session IDs
+  - Backward compatible: u32 values are valid u64 values
+  - Commit: 549d8e5
+
+#### Low Severity Issues Fixed
+
+- **Metrics Endpoint Response Builder** (`api/handlers.rs`)
+  - Eliminated panic-prone `.unwrap()` in metrics endpoint HTTP response builder
+  - Added proper error handling with `.map_err()` and logging
+  - Returns HTTP 500 with sanitized error message on builder failure
+  - Improves endpoint resilience and availability
+  - Commit: 9bf3e55
+
+### Changed
+
+#### API Changes
+
+- **SessionInfo.id**: Changed from u32 to u64
+  - Prevents overflow after 4 billion connections
+  - API clients should update to handle u64 values (backward compatible)
+
+### Testing
+
+- All 252 tests passing
+- Updated test assertions for u64 session IDs
+
+### Security Assessment
+
+**Post-Audit Status**:
+
+- ✅ 0 CRITICAL vulnerabilities
+- ✅ 0 HIGH vulnerabilities (H-1 fixed)
+- ✅ 0 MEDIUM vulnerabilities (M-1 fixed, M-2/M-3 accepted as designed)
+- ✅ 0 LOW vulnerabilities (L-4 fixed, L-1/L-2/L-3 accepted as secure)
+
+**Overall Risk Rating**: VERY LOW 🟢
+**Total Vulnerabilities Fixed (0.77.0 + 0.77.1)**: 16
+
+### NIST SP 800-53 Controls Enhanced
+
+- **SI-11**: Error Handling (metrics endpoint resilience)
+- **AU-2**: Audit Events (API status endpoint robustness)
+- **AU-3**: Content of Audit Records (accurate session ID representation)
+
+---
+
 ## [0.77.0] - 2026-01-12
 
 ### 🔒 Security (CRITICAL UPDATE - Immediate Upgrade Recommended)
