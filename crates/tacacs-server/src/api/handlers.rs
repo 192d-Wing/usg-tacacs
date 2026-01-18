@@ -259,7 +259,7 @@ async fn get_sessions(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     let sessions: Vec<SessionInfo> = records
         .iter()
         .map(|r| SessionInfo {
-            id: r.connection_id as u32, // Use connection_id as the session identifier
+            id: r.connection_id, // Use connection_id as the session identifier (u64)
             peer_addr: r.peer_addr.to_string(),
             username: r.username.clone(),
             start_time: r
@@ -852,7 +852,7 @@ mod tests {
 
         assert_eq!(sessions_response.total, 1);
         assert_eq!(sessions_response.sessions.len(), 1);
-        assert_eq!(sessions_response.sessions[0].id, conn_id as u32);
+        assert_eq!(sessions_response.sessions[0].id, conn_id);
         assert_eq!(
             sessions_response.sessions[0].peer_addr,
             "192.168.1.100:54321"
@@ -1046,10 +1046,10 @@ mod tests {
         assert_eq!(sessions_response.sessions.len(), 3);
 
         // Verify session details
-        let conn_ids: Vec<u32> = sessions_response.sessions.iter().map(|s| s.id).collect();
-        assert!(conn_ids.contains(&(conn1 as u32)));
-        assert!(conn_ids.contains(&(conn2 as u32)));
-        assert!(conn_ids.contains(&(conn3 as u32)));
+        let conn_ids: Vec<u64> = sessions_response.sessions.iter().map(|s| s.id).collect();
+        assert!(conn_ids.contains(&conn1));
+        assert!(conn_ids.contains(&conn2));
+        assert!(conn_ids.contains(&conn3));
 
         // Cleanup
         registry.unregister_connection(conn1).await;

@@ -34,8 +34,8 @@ pub struct ServerStats {
 /// | AC-10 | Concurrent Session Control | Provides session visibility |
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionInfo {
-    /// Unique connection/session identifier
-    pub id: u32,
+    /// Unique connection/session identifier (u64 to prevent overflow after 4B connections)
+    pub id: u64,
     /// Remote peer address (IP:port)
     pub peer_addr: String,
     /// Authenticated username (if authentication completed)
