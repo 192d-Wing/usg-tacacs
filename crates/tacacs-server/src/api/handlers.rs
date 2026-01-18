@@ -197,7 +197,10 @@ pub fn build_api_router(
 ///
 /// Requires permission: `read:status`
 async fn get_status(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
-    let uptime = state.start_time.elapsed().unwrap_or_default().as_secs();
+    let uptime = SystemTime::now()
+        .duration_since(state.start_time)
+        .unwrap_or_default()
+        .as_secs();
 
     // Collect aggregated metrics from Prometheus registry
     let m = metrics();
@@ -317,7 +320,10 @@ async fn get_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 
     // Calculate time since server start as a proxy for last policy load
     // A proper implementation would track the actual reload timestamp
-    let uptime = state.start_time.elapsed().unwrap_or_default().as_secs();
+    let uptime = SystemTime::now()
+        .duration_since(state.start_time)
+        .unwrap_or_default()
+        .as_secs();
     let last_loaded = format!("{}s since server start", uptime);
 
     let response = PolicyResponse {
