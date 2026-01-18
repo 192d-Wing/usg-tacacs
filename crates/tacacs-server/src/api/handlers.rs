@@ -18,6 +18,7 @@ use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Path, State},
     http::StatusCode,
     middleware,
@@ -494,13 +495,16 @@ async fn get_config(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 /// GET /api/v1/metrics - Get Prometheus metrics.
 ///
 /// Requires permission: `read:metrics`
-async fn get_metrics() -> impl IntoResponse {
-    let body = metrics().encode();
+async fn get_metrics() -> Result<Response<Body>, (StatusCode, &'static str)> {
+    let body_text = metrics().encode();
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-        .body(body)
-        .unwrap()
+        .body(Body::from(body_text))
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to build metrics response");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build metrics response")
+        })
 }
 
 #[cfg(test)]
