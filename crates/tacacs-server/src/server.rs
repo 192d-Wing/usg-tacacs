@@ -1089,6 +1089,53 @@ fn validate_acct_single_connect(
     None
 }
 
+/// Handle capability exchange packet.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Logs capability exchange |
+async fn handle_capability_packet<S>(
+    stream: &mut S,
+    cap: &Capability,
+    peer: &str,
+    secret: Option<&[u8]>,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    audit_event(
+        "capability_rx",
+        peer,
+        "",
+        cap.header.session_id,
+        "info",
+        if cap.flags & CAPABILITY_FLAG_REQUEST != 0 {
+            "request"
+        } else if cap.flags & CAPABILITY_FLAG_RESPONSE != 0 {
+            "response"
+        } else {
+            "unknown"
+        },
+        &format!("vendor=0x{:04x};caps=0x{:08x}", cap.vendor, cap.capabilities.0),
+    );
+
+    if cap.flags & CAPABILITY_FLAG_REQUEST != 0 {
+        let resp = Capability {
+            header: cap.header.clone(),
+            version: cap.version,
+            flags: CAPABILITY_FLAG_RESPONSE,
+            vendor: cap.vendor,
+            capabilities: cap.capabilities,
+            tlvs: Vec::new(),
+        };
+        usg_tacacs_proto::write_capability(stream, &cap.header, &resp, secret).await?;
+    }
+
+    Ok(())
+}
+
 /// Handle a single TACACS+ connection.
 ///
 /// # NIST Controls
@@ -1976,41 +2023,13 @@ where
                 }
             }
             Ok(Some(Packet::Capability(cap))) => {
-                audit_event(
-                    "capability_rx",
+                let _ = handle_capability_packet(
+                    &mut stream,
+                    &cap,
                     &peer,
-                    "",
-                    cap.header.session_id,
-                    "info",
-                    if cap.flags & CAPABILITY_FLAG_REQUEST != 0 {
-                        "request"
-                    } else if cap.flags & CAPABILITY_FLAG_RESPONSE != 0 {
-                        "response"
-                    } else {
-                        "unknown"
-                    },
-                    &format!(
-                        "vendor=0x{:04x};caps=0x{:08x}",
-                        cap.vendor, cap.capabilities.0
-                    ),
-                );
-                if cap.flags & CAPABILITY_FLAG_REQUEST != 0 {
-                    let resp = Capability {
-                        header: cap.header.clone(),
-                        version: cap.version,
-                        flags: CAPABILITY_FLAG_RESPONSE,
-                        vendor: cap.vendor,
-                        capabilities: cap.capabilities,
-                        tlvs: Vec::new(),
-                    };
-                    let _ = usg_tacacs_proto::write_capability(
-                        &mut stream,
-                        &cap.header,
-                        &resp,
-                        secret.as_deref().map(|s| s.as_slice()),
-                    )
-                    .await;
-                }
+                    secret.as_deref().map(|s| s.as_slice()),
+                )
+                .await;
             }
             Ok(Some(Packet::Accounting(request))) => {
                 if let Err(err) = usg_tacacs_proto::validate_accounting_request(&request) {
