@@ -126,6 +126,32 @@ impl ConnLimiter {
     }
 }
 
+/// Connection state container for packet processing.
+///
+/// Encapsulates mutable state that is shared across the packet processing loop
+/// within a single connection. This allows extracted handler functions to have
+/// clean signatures while maintaining access to necessary state.
+struct ConnectionContext<'a, S> {
+    stream: &'a mut S,
+    auth_states: &'a mut HashMap<u32, AuthSessionState>,
+    single_connect: &'a mut SingleConnectState,
+    task_tracker: &'a mut TaskIdTracker,
+    peer: &'a str,
+    peer_addr: SocketAddr,
+    connection_id: u64,
+}
+
+/// Loop control flow result for packet processing.
+///
+/// Used by packet handlers to signal whether the connection loop should
+/// continue processing packets or break (close the connection).
+enum LoopControl {
+    /// Continue processing packets
+    Continue,
+    /// Break the loop and close the connection
+    Break,
+}
+
 struct ConnGuard {
     ip: String,
     limiter: ConnLimiter,
@@ -859,6 +885,70 @@ pub async fn serve_legacy(
     }
 }
 
+/// Initialize a connection by registering with the session registry.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Registers connection with session registry |
+/// | AU-2 | Audit Events | Logs connection acceptance and rejection |
+///
+/// Returns the connection ID on success, or returns early if session limit exceeded.
+async fn initialize_connection(
+    peer_addr: SocketAddr,
+    registry: &Arc<SessionRegistry>,
+) -> Result<u64> {
+    // NIST AC-10: Register connection with session registry (enforces session limits)
+    let connection_id = match registry.try_register_connection(peer_addr).await {
+        Ok(id) => id,
+        Err(e) => {
+            warn!(peer = %peer_addr, error = %e, "connection rejected: session limit exceeded");
+            audit_event(
+                "conn_reject",
+                &peer_addr.to_string(),
+                "",
+                0,
+                "error",
+                "session-limit",
+                &e.to_string(),
+            );
+            return Ok(0); // Return 0 as sentinel for rejection
+        }
+    };
+
+    let peer = peer_addr.to_string();
+    audit_event(
+        "conn_open",
+        &peer,
+        "",
+        0,
+        "info",
+        "open",
+        "connection started",
+    );
+
+    Ok(connection_id)
+}
+
+/// Clean up connection by unregistering from the session registry.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Unregisters connection from session registry |
+/// | AU-2 | Audit Events | Logs connection close |
+async fn cleanup_connection(
+    connection_id: u64,
+    peer: &str,
+    registry: &Arc<SessionRegistry>,
+) {
+    // NIST AC-10: Unregister connection from session registry
+    registry.unregister_connection(connection_id).await;
+    audit_event("conn_close", peer, "", 0, "info", "loop-exit", "");
+}
+
 /// Handle a single TACACS+ connection.
 ///
 /// # NIST Controls
@@ -879,23 +969,10 @@ async fn handle_connection<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    // NIST AC-10: Register connection with session registry (enforces session limits)
-    let connection_id = match registry.try_register_connection(peer_addr).await {
-        Ok(id) => id,
-        Err(e) => {
-            warn!(peer = %peer_addr, error = %e, "connection rejected: session limit exceeded");
-            audit_event(
-                "conn_reject",
-                &peer_addr.to_string(),
-                "",
-                0,
-                "error",
-                "session-limit",
-                &e.to_string(),
-            );
-            return Ok(()); // Return Ok to not log as connection error
-        }
-    };
+    let connection_id = initialize_connection(peer_addr, &registry).await?;
+    if connection_id == 0 {
+        return Ok(()); // Session limit exceeded, already logged
+    }
     let peer = peer_addr.to_string();
 
     // Extract references for convenience
@@ -911,15 +988,7 @@ where
     let mut auth_states: HashMap<u32, AuthSessionState> = HashMap::new();
     let mut single_connect = SingleConnectState::default();
     let mut task_tracker = TaskIdTracker::default();
-    audit_event(
-        "conn_open",
-        &peer,
-        "",
-        0,
-        "info",
-        "open",
-        "connection started",
-    );
+
     loop {
         let read_future = read_packet(&mut stream, secret.as_deref().map(|s| s.as_slice()));
         let keepalive_deadline = if single_connect_keepalive_secs > 0 {
@@ -2220,9 +2289,8 @@ where
         // Record activity for session tracking
         registry.record_activity(connection_id).await;
     }
-    // NIST AC-10: Unregister connection from session registry
-    registry.unregister_connection(connection_id).await;
-    audit_event("conn_close", &peer, "", 0, "info", "loop-exit", "");
+
+    cleanup_connection(connection_id, &peer, &registry).await;
     Ok(())
 }
 
