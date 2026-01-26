@@ -949,6 +949,146 @@ async fn cleanup_connection(
     audit_event("conn_close", peer, "", 0, "info", "loop-exit", "");
 }
 
+/// Validate single-connect constraints for authorization requests.
+///
+/// Returns error message if validation fails, None if validation passes.
+fn validate_authz_single_connect(
+    single_connect: &SingleConnectState,
+    request: &AuthorizationRequest,
+    peer: &str,
+) -> Option<String> {
+    let authz_single = request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
+
+    if single_connect.active && !authz_single {
+        warn!(peer = %peer, user = %request.user, session = request.header.session_id,
+            "single-connect violation: flag missing on authorization");
+        return Some("single-connection flag required after authentication".into());
+    }
+
+    if !authz_single {
+        return None;
+    }
+
+    if let Some(bound) = single_connect.session {
+        if bound != request.header.session_id {
+            warn!(peer = %peer, user = %request.user, session = request.header.session_id,
+                bound_session = bound, "single-connect violation: session-id mismatch on authorization");
+            return Some("session-id mismatch".into());
+        }
+    }
+
+    if let Some(ref bound_user) = single_connect.user {
+        if bound_user != &request.user {
+            warn!(peer = %peer, user = %request.user, bound_user = %bound_user,
+                session = request.header.session_id, "single-connect violation: user mismatch on authorization");
+            return Some("single-connection user mismatch".into());
+        }
+    } else {
+        warn!(peer = %peer, user = %request.user, session = request.header.session_id,
+            "single-connect violation: authorization before authentication");
+        return Some("single-connection not authenticated".into());
+    }
+
+    None
+}
+
+/// Validate single-connect constraints for authentication requests.
+///
+/// Returns error message if validation fails, None if validation passes.
+fn validate_authen_single_connect(
+    single_connect: &SingleConnectState,
+    packet: &AuthenPacket,
+    session_id: u32,
+    peer: &str,
+) -> Option<String> {
+    let authen_single = match packet {
+        AuthenPacket::Start(s) => s.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0,
+        AuthenPacket::Continue(c) => c.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0,
+    };
+
+    if single_connect.active && !authen_single {
+        warn!(peer = %peer, session = session_id, "single-connect violation: flag missing on authentication");
+        return Some("single-connection flag required after authentication".into());
+    }
+
+    if let AuthenPacket::Start(start) = packet {
+        if !single_connect.active {
+            return None;
+        }
+
+        if let Some(ref bound_user) = single_connect.user {
+            if bound_user != &start.user {
+                warn!(peer = %peer, user = %start.user, bound_user = %bound_user,
+                    session = session_id, "single-connect violation: user mismatch on authentication");
+                return Some("single-connection user mismatch".into());
+            }
+        } else {
+            warn!(peer = %peer, user = %start.user, session = session_id,
+                "single-connect violation: authentication with missing bound user");
+            return Some("single-connection not authenticated".into());
+        }
+
+        if single_connect.locked {
+            warn!(peer = %peer, user = %start.user, session = session_id,
+                "single-connect violation: repeated authentication after lock");
+            return Some("single-connection already authenticated".into());
+        }
+
+        if let Some(bound) = single_connect.session {
+            if bound != start.header.session_id {
+                warn!(peer = %peer, user = %start.user, session = session_id,
+                    bound_session = bound, "single-connect violation: session-id mismatch on authentication");
+                return Some("session-id mismatch".into());
+            }
+        }
+    }
+
+    None
+}
+
+/// Validate single-connect constraints for accounting requests.
+///
+/// Returns error message if validation fails, None if validation passes.
+fn validate_acct_single_connect(
+    single_connect: &SingleConnectState,
+    request: &AccountingRequest,
+    peer: &str,
+) -> Option<String> {
+    let acct_single = request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
+
+    if single_connect.active && !acct_single {
+        warn!(peer = %peer, user = %request.user, session = request.header.session_id,
+            "single-connect violation: flag missing on accounting");
+        return Some("single-connection flag required after authentication".into());
+    }
+
+    if !acct_single {
+        return None;
+    }
+
+    if let Some(bound) = single_connect.session {
+        if bound != request.header.session_id {
+            warn!(peer = %peer, user = %request.user, session = request.header.session_id,
+                bound_session = bound, "single-connect violation: session-id mismatch on accounting");
+            return Some("session-id mismatch".into());
+        }
+    }
+
+    if let Some(ref bound_user) = single_connect.user {
+        if bound_user != &request.user {
+            warn!(peer = %peer, user = %request.user, bound_user = %bound_user,
+                session = request.header.session_id, "single-connect violation: user mismatch on accounting");
+            return Some("single-connection user mismatch".into());
+        }
+    } else {
+        warn!(peer = %peer, user = %request.user, session = request.header.session_id,
+            "single-connect violation: accounting before authentication");
+        return Some("single-connection not authenticated".into());
+    }
+
+    None
+}
+
 /// Handle a single TACACS+ connection.
 ///
 /// # NIST Controls
@@ -1048,16 +1188,14 @@ where
                     .await;
                     break;
                 }
-                let authz_single =
-                    request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
-                if single_connect.active && !authz_single {
-                    warn!(peer = %peer, "single-connect violation: flag missing on authorization");
-                    warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: flag missing on authorization");
+
+                // Validate single-connect constraints
+                if let Some(err_msg) = validate_authz_single_connect(&single_connect, &request, &peer) {
                     let response = authz_reason_response(
                         AUTHOR_STATUS_ERROR,
-                        "single-connection flag required after authentication",
+                        err_msg,
                         "single-connect",
-                        Some("flag-missing".into()),
+                        Some("violation".into()),
                     );
                     let _ = write_author_response(
                         &mut stream,
@@ -1068,49 +1206,7 @@ where
                     .await;
                     break;
                 }
-                if authz_single {
-                    if let Some(bound) = single_connect.session
-                        && bound != request.header.session_id
-                    {
-                        warn!(peer = %peer, user = %request.user, session = request.header.session_id, bound_session = bound, "single-connect violation: session-id mismatch on authorization");
-                        break;
-                    }
-                    if let Some(ref bound_user) = single_connect.user {
-                        if bound_user != &request.user {
-                            warn!(peer = %peer, user = %request.user, bound_user = %bound_user, session = request.header.session_id, "single-connect violation: user mismatch on authorization");
-                            let response = authz_reason_response(
-                                AUTHOR_STATUS_ERROR,
-                                "single-connection user mismatch",
-                                "single-connect",
-                                Some("user-mismatch".into()),
-                            );
-                            let _ = write_author_response(
-                                &mut stream,
-                                &request.header,
-                                &response,
-                                secret.as_deref().map(|s| s.as_slice()),
-                            )
-                            .await;
-                            break;
-                        }
-                    } else {
-                        warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: authorization before authentication");
-                        let response = authz_reason_response(
-                            AUTHOR_STATUS_ERROR,
-                            "single-connection not authenticated",
-                            "single-connect",
-                            Some("missing-auth".into()),
-                        );
-                        let _ = write_author_response(
-                            &mut stream,
-                            &request.header,
-                            &response,
-                            secret.as_deref().map(|s| s.as_slice()),
-                        )
-                        .await;
-                        break;
-                    }
-                }
+
                 let decision = match validate_authorization_semantics(&request) {
                     Ok(()) => {
                         let policy = policy.read().await;
@@ -1328,24 +1424,17 @@ where
                         }
                     }
                 }
-                let single_connect_flag = match &packet {
-                    AuthenPacket::Start(start) => {
-                        start.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
-                    }
-                    AuthenPacket::Continue(cont) => {
-                        cont.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
-                    }
-                };
-                if single_connect.active && !single_connect_flag {
+
+                // Validate single-connect constraints
+                if let Some(err_msg) = validate_authen_single_connect(&single_connect, &packet, session_id, &peer) {
                     let header = match &packet {
                         AuthenPacket::Start(start) => &start.header,
                         AuthenPacket::Continue(cont) => &cont.header,
                     };
-                    warn!(peer = %peer, session = session_id, "single-connect violation: flag missing on authentication");
                     let reply = AuthenReply {
                         status: AUTHEN_STATUS_ERROR,
                         flags: 0,
-                        server_msg: "single-connection flag required after authentication".into(),
+                        server_msg: err_msg,
                         server_msg_raw: Vec::new(),
                         data: Vec::new(),
                     };
@@ -1358,71 +1447,16 @@ where
                     .await;
                     break;
                 }
-                if let AuthenPacket::Start(start) = &packet
-                    && single_connect.active
-                {
-                    if let Some(ref bound_user) = single_connect.user {
-                        if bound_user != &start.user {
-                            warn!(peer = %peer, user = %start.user, bound_user = %bound_user, session = session_id, "single-connect violation: user mismatch on authentication");
-                            let reply = AuthenReply {
-                                status: AUTHEN_STATUS_ERROR,
-                                flags: 0,
-                                server_msg: "single-connection user mismatch".into(),
-                                server_msg_raw: Vec::new(),
-                                data: Vec::new(),
-                            };
-                            let _ = write_authen_reply(
-                                &mut stream,
-                                &start.header,
-                                &reply,
-                                secret.as_deref().map(|s| s.as_slice()),
-                            )
-                            .await;
-                            break;
-                        }
-                    } else {
-                        warn!(peer = %peer, user = %start.user, session = session_id, "single-connect violation: authentication with missing bound user");
-                        let reply = AuthenReply {
-                            status: AUTHEN_STATUS_ERROR,
-                            flags: 0,
-                            server_msg: "single-connection not authenticated".into(),
-                            server_msg_raw: Vec::new(),
-                            data: Vec::new(),
-                        };
-                        let _ = write_authen_reply(
-                            &mut stream,
-                            &start.header,
-                            &reply,
-                            secret.as_deref().map(|s| s.as_slice()),
-                        )
-                        .await;
-                        break;
+
+                let single_connect_flag = match &packet {
+                    AuthenPacket::Start(start) => {
+                        start.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
                     }
-                    if single_connect.locked {
-                        warn!(peer = %peer, user = %start.user, session = session_id, "single-connect violation: repeated authentication after lock");
-                        let reply = AuthenReply {
-                            status: AUTHEN_STATUS_ERROR,
-                            flags: 0,
-                            server_msg: "single-connection already authenticated".into(),
-                            server_msg_raw: Vec::new(),
-                            data: Vec::new(),
-                        };
-                        let _ = write_authen_reply(
-                            &mut stream,
-                            &start.header,
-                            &reply,
-                            secret.as_deref().map(|s| s.as_slice()),
-                        )
-                        .await;
-                        break;
+                    AuthenPacket::Continue(cont) => {
+                        cont.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
                     }
-                    if let Some(bound) = single_connect.session
-                        && bound != start.header.session_id
-                    {
-                        warn!(peer = %peer, user = %start.user, session = session_id, bound_session = bound, "single-connect violation: session-id mismatch on authentication");
-                        break;
-                    }
-                }
+                };
+
                 let state = auth_states
                     .entry(session_id)
                     .or_insert_with(|| match &packet {
@@ -2007,13 +2041,12 @@ where
                     .await;
                     break;
                 }
-                let acct_single = request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
-                if single_connect.active && !acct_single {
-                    warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: flag missing on accounting");
+
+                // Validate single-connect constraints
+                if let Some(err_msg) = validate_acct_single_connect(&single_connect, &request, &peer) {
                     let response = AccountingResponse {
                         status: ACCT_STATUS_ERROR,
-                        server_msg: "single-connection flag required after authentication"
-                            .to_string(),
+                        server_msg: err_msg,
                         data: String::new(),
                         args: Vec::new(),
                     };
@@ -2026,49 +2059,7 @@ where
                     .await;
                     break;
                 }
-                if acct_single {
-                    if let Some(bound) = single_connect.session
-                        && bound != request.header.session_id
-                    {
-                        warn!(peer = %peer, user = %request.user, session = request.header.session_id, bound_session = bound, "single-connect violation: session-id mismatch on accounting");
-                        break;
-                    }
-                    if let Some(ref bound_user) = single_connect.user {
-                        if bound_user != &request.user {
-                            warn!(peer = %peer, user = %request.user, bound_user = %bound_user, session = request.header.session_id, "single-connect violation: user mismatch on accounting");
-                            let response = AccountingResponse {
-                                status: ACCT_STATUS_ERROR,
-                                server_msg: "single-connection user mismatch".to_string(),
-                                data: String::new(),
-                                args: Vec::new(),
-                            };
-                            let _ = write_accounting_response(
-                                &mut stream,
-                                &request.header,
-                                &response,
-                                secret.as_deref().map(|s| s.as_slice()),
-                            )
-                            .await;
-                            break;
-                        }
-                    } else {
-                        warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: accounting before authentication");
-                        let response = AccountingResponse {
-                            status: ACCT_STATUS_ERROR,
-                            server_msg: "single-connection not authenticated".to_string(),
-                            data: String::new(),
-                            args: Vec::new(),
-                        };
-                        let _ = write_accounting_response(
-                            &mut stream,
-                            &request.header,
-                            &response,
-                            secret.as_deref().map(|s| s.as_slice()),
-                        )
-                        .await;
-                        break;
-                    }
-                }
+
                 if let Err(err) = validate_accounting_response_header(&request.header.response(0)) {
                     warn!(error = %err, peer = %peer, "accounting header invalid");
                 }
