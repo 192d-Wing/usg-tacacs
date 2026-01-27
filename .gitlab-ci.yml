@@ -143,42 +143,30 @@ nasa-power-of-10-rule4:
   stage: compliance
   image: rust:1.92
   script:
-    - echo "=== NASA Power of 10 Rule #4: Function Length Validation ==="
-    - echo "Rule: All functions must be ≤60 lines"
-    - echo ""
-    - echo "=== Checking handle_connection function ==="
     - |
-      # Count lines in handle_connection function
+      echo "=== NASA Power of 10 Rule #4: Function Length Validation ==="
+      echo "Rule: All functions must be ≤60 lines"
+      echo ""
+      echo "=== Checking handle_connection function ==="
       START_LINE=$(grep -n "^async fn handle_connection" crates/tacacs-server/src/server.rs | cut -d: -f1)
       if [ -z "$START_LINE" ]; then
         echo "❌ ERROR: Could not find handle_connection function"
         exit 1
       fi
-
-      # Count lines from function start to closing brace
       LINE_COUNT=0
       BRACE_COUNT=0
       FOUND_OPEN=false
-
       tail -n +$START_LINE crates/tacacs-server/src/server.rs | while IFS= read -r line; do
         LINE_COUNT=$((LINE_COUNT + 1))
-
-        # Count opening braces
         OPEN=$(echo "$line" | grep -o '{' | wc -l | tr -d ' ')
         BRACE_COUNT=$((BRACE_COUNT + OPEN))
-
         if [ $BRACE_COUNT -gt 0 ]; then
           FOUND_OPEN=true
         fi
-
-        # Count closing braces
         CLOSE=$(echo "$line" | grep -o '}' | wc -l | tr -d ' ')
         BRACE_COUNT=$((BRACE_COUNT - CLOSE))
-
-        # When we return to 0 braces and we've seen the opening, we're done
         if [ "$FOUND_OPEN" = true ] && [ $BRACE_COUNT -eq 0 ]; then
           echo "handle_connection function length: $LINE_COUNT lines"
-
           if [ $LINE_COUNT -le 60 ]; then
             echo "✅ PASS: handle_connection is $LINE_COUNT lines (≤60 line target)"
             exit 0
@@ -188,8 +176,8 @@ nasa-power-of-10-rule4:
           fi
         fi
       done
-    - echo ""
-    - echo "✅ PASS: Function length validation complete"
+      echo ""
+      echo "✅ PASS: Function length validation complete"
   allow_failure: true
   only:
     - merge_requests
