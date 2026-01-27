@@ -146,6 +146,266 @@ fn build_ascii_prompts(
     (uname_prompt, pwd_prompt)
 }
 
+/// Handle ABORT flag - reset authentication state and return failure.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Logs authentication abort event |
+async fn handle_abort(state: &mut AuthSessionState, policy: &Arc<RwLock<PolicyEngine>>) -> AuthenReply {
+    // Reset authentication state
+    state.ascii_need_user = true;
+    state.ascii_need_pass = false;
+    state.username = None;
+    state.username_raw = None;
+    state.ascii_attempts = 0;
+    state.ascii_user_attempts = 0;
+    state.ascii_pass_attempts = 0;
+
+    // Get policy abort message
+    let policy_abort = {
+        let policy = policy.read().await;
+        policy.message_abort().map(|m| m.to_string())
+    };
+
+    AuthenReply {
+        status: AUTHEN_STATUS_FAIL,
+        flags: 0,
+        server_msg: policy_abort.unwrap_or_else(|| "authentication aborted".into()),
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    }
+}
+
+/// Reset authentication state and request restart.
+fn reset_authentication_state(state: &mut AuthSessionState) -> AuthenReply {
+    state.ascii_need_user = true;
+    state.ascii_need_pass = false;
+    state.username = None;
+    state.username_raw = None;
+    state.ascii_attempts = 0;
+    state.ascii_user_attempts = 0;
+    state.ascii_pass_attempts = 0;
+
+    AuthenReply {
+        status: AUTHEN_STATUS_RESTART,
+        flags: 0,
+        server_msg: "restart authentication".into(),
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    }
+}
+
+/// Handle password input phase of ASCII authentication.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | Verifies password against static credentials or LDAP |
+/// | AC-7 | Unsuccessful Logon Attempts | Applies exponential backoff on empty or invalid password |
+/// | IA-6 | Authenticator Feedback | Returns NOECHO flag for password prompts |
+#[allow(clippy::too_many_arguments)]
+async fn handle_password_phase(
+    cont_data: &[u8],
+    state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &crate::config::StaticCreds,
+    config: &AsciiConfig,
+    ldap: Option<&Arc<LdapConfig>>,
+    pwd_prompt: Vec<u8>,
+) -> AuthenReply {
+    state.ascii_pass_attempts = state.ascii_pass_attempts.saturating_add(1);
+
+    if cont_data.is_empty() {
+        // Empty password - apply backoff and re-prompt
+        if let Some(delay) = calc_ascii_backoff_capped(
+            config.backoff_ms,
+            state.ascii_attempts,
+            config.backoff_max_ms,
+        ) {
+            sleep(delay).await;
+        }
+        return AuthenReply {
+            status: AUTHEN_STATUS_GETPASS,
+            flags: AUTHEN_FLAG_NOECHO,
+            server_msg: String::new(),
+            server_msg_raw: Vec::new(),
+            data: pwd_prompt,
+        };
+    }
+
+    // Password provided - attempt authentication
+    state.ascii_need_pass = false;
+
+    // Try static credentials first
+    let mut ok = if let Some(raw_user) = state.username_raw.as_ref() {
+        verify_pap_bytes_username(raw_user, cont_data, credentials)
+    } else {
+        let user = state.username.clone().unwrap_or_default();
+        verify_pap_bytes(&user, cont_data, credentials)
+    };
+
+    // Try LDAP if static credentials failed
+    if !ok
+        && let (Some(user), Some(ldap_cfg)) = (state.username.as_deref(), ldap)
+        && let Ok(pwd) = std::str::from_utf8(cont_data)
+    {
+        ok = ldap_cfg.authenticate(user, pwd).await;
+    }
+
+    // Apply backoff on authentication failure
+    if !ok
+        && let Some(delay) = calc_ascii_backoff_capped(
+            config.backoff_ms,
+            state.ascii_attempts,
+            config.backoff_max_ms,
+        )
+    {
+        sleep(delay).await;
+    }
+
+    // Build context for success/failure messages
+    let svc_str = state
+        .service
+        .map(|svc| format!(" (service {svc})"))
+        .unwrap_or_default();
+    let act_str = state
+        .action
+        .map(|act| format!(" action {act}"))
+        .unwrap_or_default();
+
+    // Get policy messages and build final reply
+    let policy = policy.read().await;
+    AuthenReply {
+        status: if ok {
+            AUTHEN_STATUS_PASS
+        } else {
+            AUTHEN_STATUS_FAIL
+        },
+        flags: 0,
+        server_msg: if ok {
+            policy
+                .message_success()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("authentication succeeded{svc_str}{act_str}"))
+        } else {
+            policy
+                .message_failure()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("invalid credentials{svc_str}{act_str}"))
+        },
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    }
+}
+
+/// Handle username input phase of ASCII authentication.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | Processes username input and transitions to password phase |
+/// | AC-7 | Unsuccessful Logon Attempts | Applies exponential backoff on empty username |
+async fn handle_username_phase(
+    cont_data: &[u8],
+    state: &mut AuthSessionState,
+    config: &AsciiConfig,
+    uname_prompt: Vec<u8>,
+    pwd_prompt: Vec<u8>,
+) -> AuthenReply {
+    state.ascii_user_attempts = state.ascii_user_attempts.saturating_add(1);
+    let username_raw = cont_data.to_vec();
+
+    if !username_raw.is_empty() {
+        // Valid username provided - store and transition to password phase
+        state.username_raw = Some(username_raw.clone());
+        state.username = String::from_utf8(username_raw).ok();
+        state.ascii_need_user = false;
+        state.ascii_need_pass = true;
+        AuthenReply {
+            status: AUTHEN_STATUS_GETPASS,
+            flags: AUTHEN_FLAG_NOECHO,
+            server_msg: String::new(),
+            server_msg_raw: Vec::new(),
+            data: pwd_prompt,
+        }
+    } else {
+        // Empty username - apply backoff and re-prompt
+        if let Some(delay) = calc_ascii_backoff_capped(
+            config.backoff_ms,
+            state.ascii_attempts,
+            config.backoff_max_ms,
+        ) {
+            sleep(delay).await;
+        }
+        AuthenReply {
+            status: AUTHEN_STATUS_GETUSER,
+            flags: 0,
+            server_msg: String::new(),
+            server_msg_raw: Vec::new(),
+            data: uname_prompt,
+        }
+    }
+}
+
+/// Check if authentication should be blocked due to attempt limits.
+///
+/// Returns Some(AuthenReply) if blocked, None if allowed to proceed.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-7 | Unsuccessful Logon Attempts | Enforces global, username, and password attempt limits plus lockout threshold |
+fn check_attempt_limits(
+    state: &AuthSessionState,
+    config: &AsciiConfig,
+) -> Option<AuthenReply> {
+    // Check global attempt limit
+    if config.attempt_limit > 0 && state.ascii_attempts >= config.attempt_limit {
+        return Some(AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: "too many authentication attempts".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        });
+    }
+
+    // Check username phase attempt limit
+    if state.ascii_need_user
+        && config.user_attempt_limit > 0
+        && state.ascii_user_attempts >= config.user_attempt_limit
+    {
+        return Some(AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: "too many username attempts".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        });
+    }
+
+    // Check password phase attempt limit
+    if state.ascii_need_pass
+        && config.pass_attempt_limit > 0
+        && state.ascii_pass_attempts >= config.pass_attempt_limit
+    {
+        return Some(AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: "too many password attempts".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        });
+    }
+
+    None
+}
+
 /// Handle ASCII authentication continuation packets.
 ///
 /// # NIST Controls
@@ -182,59 +442,14 @@ pub async fn handle_ascii_continue(
         )
     };
 
+    // Handle ABORT flag - reset and fail authentication
     if cont_flags & AUTHEN_CONT_ABORT != 0 {
-        state.ascii_need_user = true;
-        state.ascii_need_pass = false;
-        state.username = None;
-        state.username_raw = None;
-        state.ascii_attempts = 0;
-        state.ascii_user_attempts = 0;
-        state.ascii_pass_attempts = 0;
-        let policy_abort = {
-            let policy = policy.read().await;
-            policy.message_abort().map(|m| m.to_string())
-        };
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: policy_abort.unwrap_or_else(|| "authentication aborted".into()),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
+        return handle_abort(state, policy).await;
     }
 
-    if config.attempt_limit > 0 && state.ascii_attempts >= config.attempt_limit {
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: "too many authentication attempts".into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
-    }
-    if state.ascii_need_user
-        && config.user_attempt_limit > 0
-        && state.ascii_user_attempts >= config.user_attempt_limit
-    {
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: "too many username attempts".into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
-    }
-    if state.ascii_need_pass
-        && config.pass_attempt_limit > 0
-        && state.ascii_pass_attempts >= config.pass_attempt_limit
-    {
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: "too many password attempts".into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
+    // NIST AC-7: Check if authentication blocked due to attempt limits
+    if let Some(reply) = check_attempt_limits(state, config) {
+        return reply;
     }
 
     if config.attempt_limit > 0 {
@@ -251,122 +466,12 @@ pub async fn handle_ascii_continue(
     }
 
     if state.ascii_need_user {
-        state.ascii_user_attempts = state.ascii_user_attempts.saturating_add(1);
-        let username_raw = cont_data.to_vec();
-        if !username_raw.is_empty() {
-            state.username_raw = Some(username_raw.clone());
-            state.username = String::from_utf8(username_raw).ok();
-            state.ascii_need_user = false;
-            state.ascii_need_pass = true;
-            AuthenReply {
-                status: AUTHEN_STATUS_GETPASS,
-                flags: AUTHEN_FLAG_NOECHO,
-                server_msg: String::new(),
-                server_msg_raw: Vec::new(),
-                data: pwd_prompt,
-            }
-        } else {
-            if let Some(delay) = calc_ascii_backoff_capped(
-                config.backoff_ms,
-                state.ascii_attempts,
-                config.backoff_max_ms,
-            ) {
-                sleep(delay).await;
-            }
-            AuthenReply {
-                status: AUTHEN_STATUS_GETUSER,
-                flags: 0,
-                server_msg: String::new(),
-                server_msg_raw: Vec::new(),
-                data: uname_prompt,
-            }
-        }
+        handle_username_phase(cont_data, state, config, uname_prompt, pwd_prompt).await
     } else if state.ascii_need_pass {
-        state.ascii_pass_attempts = state.ascii_pass_attempts.saturating_add(1);
-        if cont_data.is_empty() {
-            if let Some(delay) = calc_ascii_backoff_capped(
-                config.backoff_ms,
-                state.ascii_attempts,
-                config.backoff_max_ms,
-            ) {
-                sleep(delay).await;
-            }
-            AuthenReply {
-                status: AUTHEN_STATUS_GETPASS,
-                flags: AUTHEN_FLAG_NOECHO,
-                server_msg: String::new(),
-                server_msg_raw: Vec::new(),
-                data: pwd_prompt,
-            }
-        } else {
-            state.ascii_need_pass = false;
-            let mut ok = if let Some(raw_user) = state.username_raw.as_ref() {
-                verify_pap_bytes_username(raw_user, cont_data, credentials)
-            } else {
-                let user = state.username.clone().unwrap_or_default();
-                verify_pap_bytes(&user, cont_data, credentials)
-            };
-            if !ok
-                && let (Some(user), Some(ldap_cfg)) = (state.username.as_deref(), ldap)
-                && let Ok(pwd) = std::str::from_utf8(cont_data)
-            {
-                ok = ldap_cfg.authenticate(user, pwd).await;
-            }
-            if !ok
-                && let Some(delay) = calc_ascii_backoff_capped(
-                    config.backoff_ms,
-                    state.ascii_attempts,
-                    config.backoff_max_ms,
-                )
-            {
-                sleep(delay).await;
-            }
-            let svc_str = state
-                .service
-                .map(|svc| format!(" (service {svc})"))
-                .unwrap_or_default();
-            let act_str = state
-                .action
-                .map(|act| format!(" action {act}"))
-                .unwrap_or_default();
-            let policy = policy.read().await;
-            AuthenReply {
-                status: if ok {
-                    AUTHEN_STATUS_PASS
-                } else {
-                    AUTHEN_STATUS_FAIL
-                },
-                flags: 0,
-                server_msg: if ok {
-                    policy
-                        .message_success()
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| format!("authentication succeeded{svc_str}{act_str}"))
-                } else {
-                    policy
-                        .message_failure()
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| format!("invalid credentials{svc_str}{act_str}"))
-                },
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            }
-        }
+        handle_password_phase(cont_data, state, policy, credentials, config, ldap, pwd_prompt).await
     } else {
-        state.ascii_need_user = true;
-        state.ascii_need_pass = false;
-        state.username = None;
-        state.username_raw = None;
-        state.ascii_attempts = 0;
-        state.ascii_user_attempts = 0;
-        state.ascii_pass_attempts = 0;
-        AuthenReply {
-            status: AUTHEN_STATUS_RESTART,
-            flags: 0,
-            server_msg: "restart authentication".into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        }
+        // Neither username nor password phase - reset and restart
+        reset_authentication_state(state)
     }
 }
 
