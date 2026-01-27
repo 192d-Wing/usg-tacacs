@@ -334,7 +334,7 @@ benchmark:
 
 full-compliance-report:
   stage: compliance
-  image: python:3.11
+  image: python:3.14
   script:
     - echo "=== Generating Comprehensive Compliance Report ==="
     - python3 scripts/analyze-nist-controls.py
