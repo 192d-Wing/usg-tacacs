@@ -2253,15 +2253,85 @@ where
                 handle_authen_start_ascii(start, state, policy, credentials, ldap, ascii_cfg).await
             }
             AUTHEN_TYPE_PAP => {
-                match handle_authen_start_pap(start, state, policy, credentials, ldap, peer).await {
-                    Ok(reply) => reply,
-                    Err(_) => return Ok(LoopControl::Break),
+                state.authen_type = Some(AUTHEN_TYPE_PAP);
+                let password = match start.parsed_data() {
+                    AuthenData::Pap { password } => password,
+                    _ => {
+                        warn!(peer = %peer, user = %start.user, "invalid PAP authentication payload");
+                        return Ok(LoopControl::Continue);
+                    }
+                };
+                let ok = verify_pap(&start.user, &password, credentials)
+                    || verify_password_sources(
+                        Some(&start.user),
+                        password.as_bytes(),
+                        credentials,
+                        ldap.as_ref(),
+                    )
+                    .await;
+                let policy = policy.read().await;
+                let svc_str = start.service.to_string();
+                let act_str = start.action.to_string();
+                AuthenReply {
+                    status: if ok {
+                        AUTHEN_STATUS_PASS
+                    } else {
+                        AUTHEN_STATUS_FAIL
+                    },
+                    flags: 0,
+                    server_msg: if ok {
+                        policy
+                            .message_success()
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| {
+                                format!("authentication succeeded (service {svc_str} action {act_str})")
+                            })
+                    } else {
+                        policy
+                            .message_failure()
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| {
+                                format!("invalid credentials (service {svc_str} action {act_str})")
+                            })
+                    },
+                    server_msg_raw: Vec::new(),
+                    data: Vec::new(),
                 }
             }
             AUTHEN_TYPE_CHAP => {
-                match handle_authen_start_chap(start, state, peer).await {
-                    Ok(reply) => reply,
-                    Err(_) => return Ok(LoopControl::Break),
+                if start.data.len() != 1 {
+                    warn!(peer = %peer, user = %start.user, "invalid CHAP start length");
+                    return Ok(LoopControl::Continue);
+                }
+                let chap_id = &start.data;
+                let mut chal = [0u8; 16];
+                let mut chap_id_bytes = [0u8; 1];
+                chap_id_bytes.copy_from_slice(chap_id);
+                if rand_bytes(&mut chal).is_err()
+                    || rand_bytes(&mut chap_id_bytes).is_err()
+                {
+                    AuthenReply {
+                        status: AUTHEN_STATUS_ERROR,
+                        flags: 0,
+                        server_msg: "failed to generate challenge".into(),
+                        server_msg_raw: Vec::new(),
+                        data: Vec::new(),
+                    }
+                } else {
+                    state.challenge = Some(chal.clone().to_vec());
+                    state.chap_id = Some(chap_id_bytes[0]);
+                    AuthenReply {
+                        status: AUTHEN_STATUS_GETDATA,
+                        flags: 0,
+                        server_msg: String::new(),
+                        server_msg_raw: Vec::new(),
+                        data: {
+                            let mut payload = Vec::with_capacity(1 + chal.len());
+                            payload.extend_from_slice(&chap_id_bytes);
+                            payload.extend_from_slice(&chal);
+                            payload
+                        },
+                    }
                 }
             }
             _ => AuthenReply {

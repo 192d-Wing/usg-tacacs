@@ -2258,12 +2258,6 @@ where
                     Err(_) => return Ok(LoopControl::Break),
                 }
             }
-            AUTHEN_TYPE_CHAP => {
-                match handle_authen_start_chap(start, state, peer).await {
-                    Ok(reply) => reply,
-                    Err(_) => return Ok(LoopControl::Break),
-                }
-            }
             _ => AuthenReply {
                 status: AUTHEN_STATUS_FOLLOW,
                 flags: 0,
