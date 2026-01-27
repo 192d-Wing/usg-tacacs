@@ -60,7 +60,7 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
     AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
     AccountingRequest, AccountingResponse, AuthSessionState, AuthenData,
-    AuthenPacket, AuthenReply, AuthenStart, AuthorizationRequest, AuthorizationResponse,
+    AuthenPacket, AuthenReply, AuthorizationRequest, AuthorizationResponse,
     CAPABILITY_FLAG_REQUEST, CAPABILITY_FLAG_RESPONSE, Capability, Packet, read_packet,
     validate_accounting_response_header, validate_author_response_header,
     write_accounting_response, write_authen_reply, write_author_response,
@@ -2140,7 +2140,166 @@ where
     let mut reply = match packet {
         AuthenPacket::Start(ref start) => match start.authen_type {
             AUTHEN_TYPE_ASCII => {
-                handle_authen_start_ascii(start, state, policy, credentials, ldap, ascii_cfg).await
+                state.authen_type = Some(AUTHEN_TYPE_ASCII);
+                state.service = Some(start.service);
+                state.action = Some(start.action);
+                let decoded_username =
+                    if start.user_raw.is_empty() || start.user.is_empty() {
+                        None
+                    } else {
+                        Some(start.user.clone())
+                    };
+                state.username = decoded_username;
+                state.username_raw = if start.user_raw.is_empty() {
+                    None
+                } else {
+                    Some(start.user_raw.clone())
+                };
+                let (policy_user_prompt, policy_pass_prompt) = {
+                    let policy = policy.read().await;
+                    let policy_user = username_for_policy(
+                        state.username.as_deref(),
+                        state.username_raw.as_ref(),
+                    );
+                    let policy_port = field_for_policy(
+                        state.port.as_deref(),
+                        state.port_raw.as_ref(),
+                    );
+                    let policy_rem = field_for_policy(
+                        state.rem_addr.as_deref(),
+                        state.rem_addr_raw.as_ref(),
+                    );
+                    (
+                        policy
+                            .prompt_username(
+                                policy_user.as_deref(),
+                                policy_port.as_deref(),
+                                policy_rem.as_deref(),
+                            )
+                            .map(|s| s.as_bytes().to_vec()),
+                        policy
+                            .prompt_password(policy_user.as_deref())
+                            .map(|s| s.as_bytes().to_vec()),
+                    )
+                };
+                let username_prompt = |client_msg: Option<&[u8]>,
+                                       service: Option<u8>|
+                 -> Vec<u8> {
+                    if let Some(msg) = client_msg {
+                        if !msg.is_empty() {
+                            return msg.to_vec();
+                        }
+                    }
+                    if let Some(custom) = policy_user_prompt.as_ref() {
+                        return custom.clone();
+                    }
+                    match service {
+                        Some(svc) => format!("Username (service {svc}):").into_bytes(),
+                        None => b"Username:".to_vec(),
+                    }
+                };
+                let password_prompt = |client_msg: Option<&[u8]>,
+                                       service: Option<u8>|
+                 -> Vec<u8> {
+                    if let Some(msg) = client_msg {
+                        if !msg.is_empty() {
+                            return msg.to_vec();
+                        }
+                    }
+                    if let Some(custom) = policy_pass_prompt.as_ref() {
+                        return custom.clone();
+                    }
+                    match service {
+                        Some(svc) => format!("Password (service {svc}):").into_bytes(),
+                        None => b"Password:".to_vec(),
+                    }
+                };
+                state.ascii_need_user = state.username.is_none();
+                if state.ascii_need_user {
+                    AuthenReply {
+                        status: AUTHEN_STATUS_GETUSER,
+                        flags: 0,
+                        server_msg: String::new(),
+                        server_msg_raw: Vec::new(),
+                        data: username_prompt(None, state.service),
+                    }
+                } else if !start.data.is_empty() {
+                    let ok = if let Some(raw) = state.username_raw.as_ref() {
+                        verify_pap_bytes_username(raw, &start.data, credentials)
+                    } else {
+                        verify_pap_bytes(
+                            state.username.as_deref().unwrap_or_default(),
+                            &start.data,
+                            credentials,
+                        )
+                    } || {
+                        if let Some(user) = state.username.as_deref() {
+                            verify_password_sources(
+                                Some(user),
+                                &start.data,
+                                credentials,
+                                ldap.as_ref(),
+                            )
+                            .await
+                        } else {
+                            false
+                        }
+                    };
+                    if !ok {
+                        if let Some(delay) = calc_ascii_backoff_capped(
+                            ascii_cfg.backoff_ms,
+                            state.ascii_attempts,
+                            ascii_cfg.backoff_max_ms,
+                        ) {
+                            sleep(delay).await;
+                        }
+                    }
+                    let svc_str = state
+                        .service
+                        .map(|svc| format!(" (service {svc})"))
+                        .unwrap_or_default();
+                    let act_str = state
+                        .action
+                        .map(|act| format!(" action {act}"))
+                        .unwrap_or_default();
+                    let policy = policy.read().await;
+                    AuthenReply {
+                        status: if ok {
+                            AUTHEN_STATUS_PASS
+                        } else {
+                            AUTHEN_STATUS_FAIL
+                        },
+                        flags: 0,
+                        server_msg: if ok {
+                            policy
+                                .message_success()
+                                .map(|m| m.to_string())
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "authentication succeeded{svc_str}{act_str}"
+                                    )
+                                })
+                        } else {
+                            policy
+                                .message_failure()
+                                .map(|m| m.to_string())
+                                .unwrap_or_else(|| {
+                                    format!("invalid credentials{svc_str}{act_str}")
+                                })
+                        },
+                        server_msg_raw: Vec::new(),
+                        data: Vec::new(),
+                    }
+                } else {
+                    state.ascii_need_pass = true;
+                    AuthenReply {
+                        status: AUTHEN_STATUS_GETPASS,
+                        flags: AUTHEN_FLAG_NOECHO,
+                        server_msg: String::new(),
+                        server_msg_raw: Vec::new(),
+                        data: password_prompt(None, state.service),
+                    }
+                }
             }
             AUTHEN_TYPE_PAP => {
                 state.authen_type = Some(AUTHEN_TYPE_PAP);

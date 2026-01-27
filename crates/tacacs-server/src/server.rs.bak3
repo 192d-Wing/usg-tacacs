@@ -60,7 +60,7 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
     AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
     AccountingRequest, AccountingResponse, AuthSessionState, AuthenData,
-    AuthenPacket, AuthenReply, AuthenStart, AuthorizationRequest, AuthorizationResponse,
+    AuthenPacket, AuthenReply, AuthorizationRequest, AuthorizationResponse,
     CAPABILITY_FLAG_REQUEST, CAPABILITY_FLAG_RESPONSE, Capability, Packet, read_packet,
     validate_accounting_response_header, validate_author_response_header,
     write_accounting_response, write_authen_reply, write_author_response,
@@ -2139,9 +2139,6 @@ where
 
     let mut reply = match packet {
         AuthenPacket::Start(ref start) => match start.authen_type {
-            AUTHEN_TYPE_ASCII => {
-                handle_authen_start_ascii(start, state, policy, credentials, ldap, ascii_cfg).await
-            }
             AUTHEN_TYPE_PAP => {
                 state.authen_type = Some(AUTHEN_TYPE_PAP);
                 let password = match start.parsed_data() {
