@@ -102,63 +102,68 @@ impl LdapConfig {
 /// | AC-2 | Account Management | Validates group membership |
 /// | IA-2 | Identification and Authentication | Authenticates users against enterprise directory |
 /// | SC-8 | Transmission Confidentiality | Enforces LDAPS-only (rejects plain LDAP/StartTLS) |
-fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -> bool {
+/// Connect and bind to LDAP server with service account.
+fn ldap_connect_and_bind(cfg: &LdapConfig) -> Option<LdapConn> {
     // NIST SC-8: Reject non-LDAPS URLs to ensure encrypted transmission
     if !cfg.url.to_lowercase().starts_with("ldaps://") {
-        return false;
+        return None;
     }
     let settings = LdapConnSettings::new().set_conn_timeout(cfg.timeout);
     if cfg.ca_file.is_some() {
         // ldap3 with tls-native uses system roots; custom CA not supported in this build.
     }
-    let Ok(mut ldap) = LdapConn::with_settings(settings, &cfg.url) else {
-        return false;
-    };
-    if ldap
-        .simple_bind(&cfg.bind_dn, &cfg.bind_password)
+    let mut ldap = LdapConn::with_settings(settings, &cfg.url).ok()?;
+    ldap.simple_bind(&cfg.bind_dn, &cfg.bind_password)
         .and_then(|r| r.success())
-        .is_err()
-    {
-        return false;
-    }
+        .ok()?;
+    Some(ldap)
+}
+
+/// Find user DN by username attribute.
+fn ldap_find_user_dn(ldap: &mut LdapConn, cfg: &LdapConfig, username: &str) -> Option<String> {
     // NIST SI-10: Escape username to prevent LDAP injection attacks
     let escaped_username = ldap_escape_filter_value(username);
     let filter = format!("({}={})", cfg.username_attr, escaped_username);
-    let search = ldap.search(
-        &cfg.search_base,
-        Scope::Subtree,
-        &filter,
-        vec!["dn", &cfg.group_attr],
-    );
-    let Ok((results, _res)) = search.and_then(|r| r.success()) else {
+    let search = ldap.search(&cfg.search_base, Scope::Subtree, &filter, vec!["dn", &cfg.group_attr]);
+    let (results, _res) = search.and_then(|r| r.success()).ok()?;
+    let entry = results.into_iter().next()?;
+    Some(SearchEntry::construct(entry).dn)
+}
+
+/// Verify user has required group membership.
+fn ldap_verify_group_membership(ldap: &mut LdapConn, cfg: &LdapConfig, username: &str) -> bool {
+    if cfg.required_group.is_empty() {
+        return true;
+    }
+    let escaped_username = ldap_escape_filter_value(username);
+    let filter = format!("({}={})", cfg.username_attr, escaped_username);
+    let search = ldap
+        .search(&cfg.search_base, Scope::Subtree, &filter, vec![&cfg.group_attr])
+        .and_then(|r| r.success());
+    if let Ok((entries, _)) = search
+        && let Some(entry) = entries.into_iter().next()
+    {
+        let se = SearchEntry::construct(entry);
+        let groups = se.attrs.get(&cfg.group_attr).cloned().unwrap_or_default();
+        groups.iter().any(|g| {
+            cfg.required_group
+                .iter()
+                .any(|req| g.eq_ignore_ascii_case(req))
+        })
+    } else {
+        false
+    }
+}
+
+fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -> bool {
+    let Some(mut ldap) = ldap_connect_and_bind(&cfg) else {
         return false;
     };
-    let Some(entry) = results.into_iter().next() else {
+    let Some(user_dn) = ldap_find_user_dn(&mut ldap, &cfg, username) else {
         return false;
     };
-    let user_dn = SearchEntry::construct(entry).dn;
-    if !cfg.required_group.is_empty() {
-        let search = ldap
-            .search(
-                &cfg.search_base,
-                Scope::Subtree,
-                &filter,
-                vec![&cfg.group_attr],
-            )
-            .and_then(|r| r.success());
-        if let Ok((entries, _)) = search
-            && let Some(entry) = entries.into_iter().next()
-        {
-            let se = SearchEntry::construct(entry);
-            let groups = se.attrs.get(&cfg.group_attr).cloned().unwrap_or_default();
-            if !groups.iter().any(|g| {
-                cfg.required_group
-                    .iter()
-                    .any(|req| g.eq_ignore_ascii_case(req))
-            }) {
-                return false;
-            }
-        }
+    if !ldap_verify_group_membership(&mut ldap, &cfg, username) {
+        return false;
     }
     ldap.simple_bind(&user_dn, password)
         .and_then(|r| r.success())
@@ -450,6 +455,31 @@ pub fn compute_chap_response(
 
 /// Handle CHAP authentication continue message.
 ///
+// NIST IA-6: Generic authentication error message
+const GENERIC_AUTH_ERROR: &str = "authentication failed";
+
+/// Create generic authentication error reply.
+fn authen_error_reply(status: u8, msg: &str) -> AuthenReply {
+    AuthenReply {
+        status,
+        flags: 0,
+        server_msg: msg.into(),
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    }
+}
+
+/// Create authentication success reply.
+fn authen_success_reply() -> AuthenReply {
+    AuthenReply {
+        status: AUTHEN_STATUS_PASS,
+        flags: 0,
+        server_msg: String::new(),
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    }
+}
+
 /// # NIST Controls
 ///
 /// | Control | Name | Implementation |
@@ -461,32 +491,14 @@ pub fn handle_chap_continue(
     state: &mut AuthSessionState,
     credentials: &StaticCreds,
 ) -> AuthenReply {
-    // NIST IA-6: Use generic error message for external response
-    const GENERIC_AUTH_ERROR: &str = "authentication failed";
-
     if cont_data.len() != 1 + 16 {
         tracing::debug!("CHAP continue: invalid data length {}", cont_data.len());
-        return AuthenReply {
-            status: AUTHEN_STATUS_ERROR,
-            flags: 0,
-            server_msg: GENERIC_AUTH_ERROR.into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
+        return authen_error_reply(AUTHEN_STATUS_ERROR, GENERIC_AUTH_ERROR);
     }
     // SECURITY: Require CHAP ID to be set in session state
-    let expected_chap_id = match state.chap_id {
-        Some(id) => id,
-        None => {
-            tracing::warn!("CHAP continue received but no CHAP ID in session state");
-            return AuthenReply {
-                status: AUTHEN_STATUS_ERROR,
-                flags: 0,
-                server_msg: GENERIC_AUTH_ERROR.into(),
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            };
-        }
+    let Some(expected_chap_id) = state.chap_id else {
+        tracing::warn!("CHAP continue received but no CHAP ID in session state");
+        return authen_error_reply(AUTHEN_STATUS_ERROR, GENERIC_AUTH_ERROR);
     };
 
     if cont_data[0] != expected_chap_id {
@@ -495,13 +507,7 @@ pub fn handle_chap_continue(
             expected_chap_id,
             cont_data[0]
         );
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: GENERIC_AUTH_ERROR.into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
+        return authen_error_reply(AUTHEN_STATUS_FAIL, GENERIC_AUTH_ERROR);
     }
     if let Some(expected) = compute_chap_response(
         user,
@@ -512,32 +518,14 @@ pub fn handle_chap_continue(
         state.challenge = None;
         state.chap_id = None;
         if expected {
-            AuthenReply {
-                status: AUTHEN_STATUS_PASS,
-                flags: 0,
-                server_msg: String::new(),
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            }
+            authen_success_reply()
         } else {
             tracing::debug!("CHAP continue: invalid response hash");
-            AuthenReply {
-                status: AUTHEN_STATUS_FAIL,
-                flags: 0,
-                server_msg: GENERIC_AUTH_ERROR.into(),
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            }
+            authen_error_reply(AUTHEN_STATUS_FAIL, GENERIC_AUTH_ERROR)
         }
     } else {
         tracing::debug!("CHAP continue: user '{}' not found in credentials", user);
-        AuthenReply {
-            status: AUTHEN_STATUS_ERROR,
-            flags: 0,
-            server_msg: GENERIC_AUTH_ERROR.into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        }
+        authen_error_reply(AUTHEN_STATUS_ERROR, GENERIC_AUTH_ERROR)
     }
 }
 

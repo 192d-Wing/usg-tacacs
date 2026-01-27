@@ -159,41 +159,8 @@ nasa-power-of-10-rule4:
   stage: compliance
   image: rust:1.92
   script:
-    - |
-      echo "=== NASA Power of 10 Rule #4: Function Length Validation ==="
-      echo "Rule: All functions must be ≤60 lines"
-      echo ""
-      echo "=== Checking handle_connection function ==="
-      START_LINE=$(grep -n "^async fn handle_connection" crates/tacacs-server/src/server.rs | cut -d: -f1)
-      if [ -z "$START_LINE" ]; then
-        echo "❌ ERROR: Could not find handle_connection function"
-        exit 1
-      fi
-      LINE_COUNT=0
-      BRACE_COUNT=0
-      FOUND_OPEN=false
-      tail -n +$START_LINE crates/tacacs-server/src/server.rs | while IFS= read -r line; do
-        LINE_COUNT=$((LINE_COUNT + 1))
-        OPEN=$(echo "$line" | grep -o '{' | wc -l | tr -d ' ')
-        BRACE_COUNT=$((BRACE_COUNT + OPEN))
-        if [ $BRACE_COUNT -gt 0 ]; then
-          FOUND_OPEN=true
-        fi
-        CLOSE=$(echo "$line" | grep -o '}' | wc -l | tr -d ' ')
-        BRACE_COUNT=$((BRACE_COUNT - CLOSE))
-        if [ "$FOUND_OPEN" = true ] && [ $BRACE_COUNT -eq 0 ]; then
-          echo "handle_connection function length: $LINE_COUNT lines"
-          if [ $LINE_COUNT -le 60 ]; then
-            echo "✅ PASS: handle_connection is $LINE_COUNT lines (≤60 line target)"
-            exit 0
-          else
-            echo "❌ FAIL: handle_connection is $LINE_COUNT lines (exceeds 60 line limit)"
-            exit 1
-          fi
-        fi
-      done
-      echo ""
-      echo "✅ PASS: Function length validation complete"
+    - chmod +x scripts/ci/validate-function-length.sh
+    - ./scripts/ci/validate-function-length.sh --all 60 crates
   allow_failure: true
   only:
     - merge_requests
@@ -205,38 +172,8 @@ runtime-unwrap-check:
   stage: compliance
   image: rust:1.92
   script:
-    - echo "=== NASA Power of 10 Rules #5 & #7: Runtime unwrap() Validation ==="
-    - echo "Rule - No .unwrap() or .expect() in production request handling paths"
-    - echo ""
-    - echo "=== Checking critical runtime files ==="
-    - |
-      CRITICAL_FILES="crates/tacacs-server/src/auth.rs crates/tacacs-server/src/server.rs crates/tacacs-server/src/policy.rs"
-      TOTAL_VIOLATIONS=0
-      for file in $CRITICAL_FILES; do
-        echo "Checking $file..."
-        # Check for unwraps before the #[cfg(test)] line
-        LINE_NUM=$(grep -n "^#\[cfg(test)\]" "$file" | head -1 | cut -d: -f1)
-        if [ -z "$LINE_NUM" ]; then
-          LINE_NUM=9999999
-        fi
-        UNWRAPS=$(head -$LINE_NUM "$file" | grep -c "\.unwrap()" || echo "0")
-        if [ "$UNWRAPS" -gt 0 ]; then
-          echo "  ❌ Found $UNWRAPS .unwrap() calls in runtime code"
-          TOTAL_VIOLATIONS=$((TOTAL_VIOLATIONS + UNWRAPS))
-        else
-          echo "  ✅ No .unwrap() in runtime code"
-        fi
-      done
-    - |
-      if [ "$TOTAL_VIOLATIONS" -gt 0 ]; then
-        echo ""
-        echo "❌ FAIL: Found $TOTAL_VIOLATIONS .unwrap() calls in critical runtime paths"
-        echo "Fix by using .ok()?, .map_err()?, or proper error handling"
-        exit 1
-      else
-        echo ""
-        echo "✅ PASS: No .unwrap() calls in critical runtime paths"
-      fi
+    - chmod +x scripts/ci/validate-runtime-unwraps.sh
+    - ./scripts/ci/validate-runtime-unwraps.sh crates/tacacs-server/src/auth.rs crates/tacacs-server/src/server.rs crates/tacacs-server/src/policy.rs
   only:
     - merge_requests
     - master

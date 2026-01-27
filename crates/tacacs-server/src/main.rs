@@ -389,18 +389,7 @@ async fn setup_tls_listener(
 
     setup_est_cert_reload(args, state, ca, cert_reload_tx, handles)?;
 
-    let auth_ctx = AuthContext {
-        policy: state.shared_policy.clone(),
-        secret: state.shared_secret.clone(),
-        credentials: state.credentials.clone(),
-        ldap: state.ldap_config.clone(),
-    };
-    let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
-    let tls_identity = TlsIdentityConfig {
-        allowed_cn: args.tls_allowed_client_cn.clone(),
-        allowed_san: args.tls_allowed_client_san.clone(),
-    };
-    let tls_registry = state.session_registry.clone();
+    let (auth_ctx, conn_cfg, tls_identity, tls_registry) = build_tls_contexts(args, state);
 
     handles.push(tokio::spawn(async move {
         if let Err(err) = serve_tls(
@@ -456,6 +445,26 @@ fn resolve_tls_certificates<'a>(
             .context("--tls-key is required when --listen-tls is set (or use --est-enabled)")?;
         Ok((cert_ref, key_ref))
     }
+}
+
+/// Build TLS authentication and connection contexts.
+fn build_tls_contexts(
+    args: &Args,
+    state: &AppState,
+) -> (AuthContext, ConnectionConfig, TlsIdentityConfig, Arc<SessionRegistry>) {
+    let auth_ctx = AuthContext {
+        policy: state.shared_policy.clone(),
+        secret: state.shared_secret.clone(),
+        credentials: state.credentials.clone(),
+        ldap: state.ldap_config.clone(),
+    };
+    let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
+    let tls_identity = TlsIdentityConfig {
+        allowed_cn: args.tls_allowed_client_cn.clone(),
+        allowed_san: args.tls_allowed_client_san.clone(),
+    };
+    let tls_registry = state.session_registry.clone();
+    (auth_ctx, conn_cfg, tls_identity, tls_registry)
 }
 
 /// Setup EST certificate reload watcher if EST is enabled.

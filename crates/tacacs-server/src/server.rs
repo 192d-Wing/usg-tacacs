@@ -2733,7 +2733,7 @@ fn update_certificate_metrics(cert_path: &PathBuf) {
             // Calculate days until expiration
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
 
             let days_remaining = if expiry_secs > now {
