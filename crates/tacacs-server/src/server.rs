@@ -2389,6 +2389,108 @@ where
     .await
 }
 
+/// Main packet processing loop for a TACACS+ connection.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-12 | Session Termination | Checks for API-initiated termination |
+/// | AU-12 | Audit Generation | Connection close events logged |
+#[allow(clippy::too_many_arguments)]
+async fn connection_loop<S>(
+    stream: &mut S,
+    connection_id: u64,
+    auth_states: &mut HashMap<u32, AuthSessionState>,
+    single_connect: &mut SingleConnectState,
+    task_tracker: &mut TaskIdTracker,
+    registry: &Arc<SessionRegistry>,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>,
+    ldap: &Option<Arc<LdapConfig>>,
+    ascii_cfg: &AsciiConfig,
+    secret: Option<&[u8]>,
+    peer: &str,
+    single_connect_idle_secs: u64,
+    single_connect_keepalive_secs: u64,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    loop {
+        let read_future = read_packet(stream, secret);
+        let keepalive_deadline = if single_connect_keepalive_secs > 0 {
+            single_connect_keepalive_secs
+        } else {
+            single_connect_idle_secs
+        };
+
+        let packet_result = if single_connect.active && keepalive_deadline > 0 {
+            match timeout(Duration::from_secs(keepalive_deadline), read_future).await {
+                Ok(res) => res,
+                Err(_) => {
+                    warn!(peer = %peer, idle_secs = keepalive_deadline,
+                        "single-connect keepalive/idle timeout reached; closing");
+                    audit_event("conn_close", peer, "", 0, "error", "keepalive-timeout",
+                        &format!("idle_secs={keepalive_deadline}"));
+                    break;
+                }
+            }
+        } else {
+            read_future.await
+        };
+
+        match packet_result {
+            Ok(Some(Packet::Authorization(request))) => {
+                match handle_authorization_packet(stream, &request, single_connect, policy, ldap, secret, peer).await {
+                    Ok(LoopControl::Continue) => {}
+                    Ok(LoopControl::Break) | Err(_) => break,
+                }
+            }
+            Ok(Some(Packet::Authentication(packet))) => {
+                match handle_authentication_packet(
+                    stream, packet, auth_states, single_connect, connection_id,
+                    registry, policy, credentials, ldap, ascii_cfg, secret, peer,
+                ).await {
+                    Ok(LoopControl::Continue) => {}
+                    Ok(LoopControl::Break) | Err(_) => break,
+                }
+            }
+            Ok(Some(Packet::Capability(cap))) => {
+                let _ = handle_capability_packet(stream, &cap, peer, secret).await;
+            }
+            Ok(Some(Packet::Accounting(request))) => {
+                match handle_accounting_packet(stream, &request, single_connect, task_tracker, secret, peer).await {
+                    Ok(LoopControl::Continue) => {}
+                    Ok(LoopControl::Break) | Err(_) => break,
+                }
+            }
+            Ok(None) => {
+                debug!(peer = %peer, "client closed connection");
+                audit_event("conn_close", peer, "", 0, "info", "client-close", "");
+                break;
+            }
+            Err(err) => {
+                warn!(error = %err, peer = %peer, "failed to read TACACS+ packet");
+                audit_event("conn_close", peer, "", 0, "error", "read-error", &err.to_string());
+                break;
+            }
+        }
+
+        // NIST AC-12: Check for API-initiated session termination
+        if registry.is_termination_requested(connection_id).await {
+            info!(peer = %peer, connection_id = connection_id, "session terminated via API");
+            audit_event("conn_close", peer, "", 0, "info", "api-terminated",
+                "session terminated via management API");
+            break;
+        }
+
+        registry.record_activity(connection_id).await;
+    }
+
+    Ok(())
+}
+
 /// Handle a single TACACS+ connection.
 ///
 /// # NIST Controls
@@ -2429,137 +2531,23 @@ where
     let mut single_connect = SingleConnectState::default();
     let mut task_tracker = TaskIdTracker::default();
 
-    loop {
-        let read_future = read_packet(&mut stream, secret.as_deref().map(|s| s.as_slice()));
-        let keepalive_deadline = if single_connect_keepalive_secs > 0 {
-            single_connect_keepalive_secs
-        } else {
-            single_connect_idle_secs
-        };
-        let packet_result = if single_connect.active && keepalive_deadline > 0 {
-            match timeout(Duration::from_secs(keepalive_deadline), read_future).await {
-                Ok(res) => res,
-                Err(_) => {
-                    warn!(
-                        peer = %peer,
-                        idle_secs = keepalive_deadline,
-                        "single-connect keepalive/idle timeout reached; closing"
-                    );
-                    audit_event(
-                        "conn_close",
-                        &peer,
-                        "",
-                        0,
-                        "error",
-                        "keepalive-timeout",
-                        &format!("idle_secs={keepalive_deadline}"),
-                    );
-                    break;
-                }
-            }
-        } else {
-            read_future.await
-        };
-        match packet_result {
-            Ok(Some(Packet::Authorization(request))) => {
-                match handle_authorization_packet(
-                    &mut stream,
-                    &request,
-                    &single_connect,
-                    &policy,
-                    &ldap,
-                    secret.as_deref().map(|s| s.as_slice()),
-                    &peer,
-                )
-                .await
-                {
-                    Ok(LoopControl::Continue) => {}
-                    Ok(LoopControl::Break) | Err(_) => break,
-                }
-            }
-            Ok(Some(Packet::Authentication(packet))) => {
-                match handle_authentication_packet(
-                    &mut stream,
-                    packet,
-                    &mut auth_states,
-                    &mut single_connect,
-                    connection_id,
-                    &registry,
-                    &policy,
-                    &credentials,
-                    &ldap,
-                    &ascii_cfg,
-                    secret.as_deref().map(|s| s.as_slice()),
-                    &peer,
-                )
-                .await
-                {
-                    Ok(LoopControl::Continue) => {}
-                    Ok(LoopControl::Break) | Err(_) => break,
-                }
-            }
-            Ok(Some(Packet::Capability(cap))) => {
-                let _ = handle_capability_packet(
-                    &mut stream,
-                    &cap,
-                    &peer,
-                    secret.as_deref().map(|s| s.as_slice()),
-                )
-                .await;
-            }
-            Ok(Some(Packet::Accounting(request))) => {
-                match handle_accounting_packet(
-                    &mut stream,
-                    &request,
-                    &single_connect,
-                    &mut task_tracker,
-                    secret.as_deref().map(|s| s.as_slice()),
-                    &peer,
-                )
-                .await
-                {
-                    Ok(LoopControl::Continue) => {}
-                    Ok(LoopControl::Break) | Err(_) => break,
-                }
-            }
-            Ok(None) => {
-                debug!(peer = %peer, "client closed connection");
-                audit_event("conn_close", &peer, "", 0, "info", "client-close", "");
-                break;
-            }
-            Err(err) => {
-                warn!(error = %err, peer = %peer, "failed to read TACACS+ packet");
-                audit_event(
-                    "conn_close",
-                    &peer,
-                    "",
-                    0,
-                    "error",
-                    "read-error",
-                    &err.to_string(),
-                );
-                break;
-            }
-        }
-
-        // NIST AC-12: Check for API-initiated session termination
-        if registry.is_termination_requested(connection_id).await {
-            info!(peer = %peer, connection_id = connection_id, "session terminated via API");
-            audit_event(
-                "conn_close",
-                &peer,
-                "",
-                0,
-                "info",
-                "api-terminated",
-                "session terminated via management API",
-            );
-            break;
-        }
-
-        // Record activity for session tracking
-        registry.record_activity(connection_id).await;
-    }
+    connection_loop(
+        &mut stream,
+        connection_id,
+        &mut auth_states,
+        &mut single_connect,
+        &mut task_tracker,
+        &registry,
+        policy,
+        credentials,
+        ldap,
+        ascii_cfg,
+        secret.as_deref().map(|s| s.as_slice()),
+        &peer,
+        single_connect_idle_secs,
+        single_connect_keepalive_secs,
+    )
+    .await?;
 
     cleanup_connection(connection_id, &peer, &registry).await;
     Ok(())
