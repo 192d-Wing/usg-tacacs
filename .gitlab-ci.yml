@@ -59,6 +59,8 @@ build-debug:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 build-release:
   stage: build
@@ -72,6 +74,8 @@ build-release:
   only:
     - master
     - tags
+  tags:
+    - saas-linux-large-arm64
 
 # ============================================================================
 # Stage 3: Testing
@@ -86,6 +90,8 @@ unit-tests:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 integration-tests:
   stage: test
@@ -95,6 +101,8 @@ integration-tests:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 doc-tests:
   stage: test
@@ -104,6 +112,8 @@ doc-tests:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 # ============================================================================
 # Stage 4: NASA Power of 10 & NIST Compliance Validation
@@ -138,6 +148,8 @@ nist-control-coverage:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 nasa-power-of-10-rule4:
   stage: compliance
@@ -182,6 +194,8 @@ nasa-power-of-10-rule4:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 runtime-unwrap-check:
   stage: compliance
@@ -222,6 +236,8 @@ runtime-unwrap-check:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 # ============================================================================
 # Stage 5: Security Audits
@@ -240,6 +256,8 @@ cargo-audit:
     - merge_requests
     - master
     - schedules
+  tags:
+    - saas-linux-large-arm64
 
 cargo-deny:
   stage: security
@@ -253,6 +271,8 @@ cargo-deny:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 # ============================================================================
 # Documentation Generation
@@ -283,6 +303,8 @@ rustdoc-build:
     expire_in: 1 week
   only:
     - master
+  tags:
+    - saas-linux-large-arm64
 
 # ============================================================================
 # Scheduled Jobs (Nightly/Weekly)
@@ -296,6 +318,8 @@ nightly-full-suite:
     - cargo audit
   only:
     - schedules
+  tags:
+    - saas-linux-large-arm64
 
 # ============================================================================
 # Manual Jobs (Run on Demand)
@@ -311,6 +335,8 @@ benchmark:
     paths:
       - target/criterion/
     expire_in: 1 week
+  tags:
+    - saas-linux-large-arm64
 
 full-compliance-report:
   stage: compliance
@@ -333,3 +359,5 @@ full-compliance-report:
       - docs/nist-control-analysis.md
       - docs/nist-control-analysis.json
     expire_in: 30 days
+  tags:
+    - saas-linux-large-arm64
