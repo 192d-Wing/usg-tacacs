@@ -2259,9 +2259,55 @@ where
         AuthenPacket::Start(start) => start.header.session_id,
         AuthenPacket::Continue(cont) => cont.header.session_id,
     };
-    if !validate_authen_rfc(stream, &packet, session_id, secret, peer).await? {
-        return Ok(LoopControl::Break);
+    match &packet {
+        AuthenPacket::Start(start) => {
+            if let Err(err) = usg_tacacs_proto::validate_authen_start(start) {
+                warn!(peer = %peer, user = %start.user, session = session_id, error = %err, "authentication start failed RFC validation");
+                let reply = AuthenReply {
+                    status: AUTHEN_STATUS_ERROR,
+                    flags: 0,
+                    server_msg: err.to_string(),
+                    server_msg_raw: Vec::new(),
+                    data: Vec::new(),
+                };
+                audit_event(
+                    "authn_rfc_invalid",
+                    peer,
+                    &start.user,
+                    session_id,
+                    "error",
+                    "rfc-validate",
+                    &err.to_string(),
+                );
+                let _ = write_authen_reply(stream, &start.header, &reply, secret).await;
+                return Ok(LoopControl::Break);
+            }
+        }
+        AuthenPacket::Continue(cont) => {
+            if let Err(err) = usg_tacacs_proto::validate_authen_continue(cont) {
+                warn!(peer = %peer, session = session_id, error = %err, "authentication continue failed RFC validation");
+                let reply = AuthenReply {
+                    status: AUTHEN_STATUS_ERROR,
+                    flags: 0,
+                    server_msg: err.to_string(),
+                    server_msg_raw: Vec::new(),
+                    data: Vec::new(),
+                };
+                audit_event(
+                    "authn_rfc_invalid",
+                    peer,
+                    "",
+                    session_id,
+                    "error",
+                    "rfc-validate",
+                    &err.to_string(),
+                );
+                let _ = write_authen_reply(stream, &cont.header, &reply, secret).await;
+                return Ok(LoopControl::Break);
+            }
+        }
     }
+
     if let Some(err_msg) = validate_authen_single_connect(single_connect, &packet, session_id, peer) {
         let header = match &packet {
             AuthenPacket::Start(start) => &start.header,

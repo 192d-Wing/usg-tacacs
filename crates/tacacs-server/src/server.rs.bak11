@@ -2259,9 +2259,6 @@ where
         AuthenPacket::Start(start) => start.header.session_id,
         AuthenPacket::Continue(cont) => cont.header.session_id,
     };
-    if !validate_authen_rfc(stream, &packet, session_id, secret, peer).await? {
-        return Ok(LoopControl::Break);
-    }
     if let Some(err_msg) = validate_authen_single_connect(single_connect, &packet, session_id, peer) {
         let header = match &packet {
             AuthenPacket::Start(start) => &start.header,
