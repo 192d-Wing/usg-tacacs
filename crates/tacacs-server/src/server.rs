@@ -1136,6 +1136,1117 @@ where
     Ok(())
 }
 
+/// Authorize shell start command.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Shell attribute retrieval from policy |
+/// | AU-12 | Audit Generation | Logs authorization decision |
+fn authorize_shell_command(
+    request: &AuthorizationRequest,
+    policy: &PolicyEngine,
+    peer: &str,
+) -> AuthorizationResponse {
+    let ctx = authz_context(request);
+    let attrs = policy
+        .shell_attributes_for(&request.user)
+        .unwrap_or_else(|| {
+            vec![
+                "service=shell".to_string(),
+                "protocol=shell".to_string(),
+            ]
+        });
+    let attrs = ensure_priv_attr(attrs, request.priv_lvl);
+    let resp = AuthorizationResponse {
+        status: AUTHOR_STATUS_PASS_ADD,
+        server_msg: String::new(),
+        data: format!("reason=policy-shell;ctx={ctx}"),
+        args: attrs,
+    };
+    audit_event(
+        "authz_policy_allow",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "pass",
+        "policy-shell",
+        &resp.data,
+    );
+    resp
+}
+
+/// Authorize user command with policy and LDAP group evaluation.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Policy-based command authorization |
+/// | AU-12 | Audit Generation | Logs allow/deny decisions |
+fn authorize_user_command(
+    request: &AuthorizationRequest,
+    policy: &PolicyEngine,
+    ldap_groups: &[String],
+    cmd: &str,
+    peer: &str,
+) -> AuthorizationResponse {
+    let ctx = authz_context(request);
+    let decision = policy.authorize_with_groups(&request.user, ldap_groups, cmd);
+    if decision.allowed {
+        let mut data = String::from("reason=policy-allow");
+        if let Some(rule) = decision.matched_rule.clone() {
+            data.push_str(";rule=");
+            data.push_str(&rule);
+        }
+        data.push_str(";ctx=");
+        data.push_str(&ctx);
+        let ldap_data = if !ldap_groups.is_empty() {
+            format!(";groups={}", ldap_groups.join(","))
+        } else {
+            String::new()
+        };
+        let resp = AuthorizationResponse {
+            status: AUTHOR_STATUS_PASS_REPL,
+            server_msg: String::new(),
+            data: format!("{data}{ldap_data}"),
+            args: authz_allow_attrs(request),
+        };
+        audit_event(
+            "authz_policy_allow",
+            peer,
+            &request.user,
+            request.header.session_id,
+            "pass",
+            "policy-allow",
+            &resp.data,
+        );
+        resp
+    } else {
+        let mut resp = authz_reason_response(
+            AUTHOR_STATUS_FAIL,
+            format!("command '{cmd}' denied by policy"),
+            "policy-deny",
+            Some(cmd.to_string()),
+        );
+        if let Some(rule) = decision.matched_rule {
+            resp.data.push_str(";rule=");
+            resp.data.push_str(&rule);
+        }
+        resp.data.push_str(";ctx=");
+        resp.data.push_str(&ctx);
+        audit_event(
+            "authz_policy_deny",
+            peer,
+            &request.user,
+            request.header.session_id,
+            "fail",
+            &resp.server_msg,
+            &resp.data,
+        );
+        resp
+    }
+}
+
+/// Handle authorization packet processing.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Authorization request validation and processing |
+/// | AU-12 | Audit Generation | Logs all authorization events |
+/// | SC-23 | Session Authenticity | Single-connect validation |
+async fn handle_authorization_packet<S>(
+    stream: &mut S,
+    request: &AuthorizationRequest,
+    single_connect: &SingleConnectState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    ldap: &Option<Arc<LdapConfig>>,
+    secret: Option<&[u8]>,
+    peer: &str,
+) -> Result<LoopControl>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if let Err(err) = usg_tacacs_proto::validate_author_request(request) {
+        warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
+        let response = authz_reason_response(
+            AUTHOR_STATUS_ERROR,
+            err.to_string(),
+            "rfc-validate",
+            Some(err.to_string()),
+        );
+        audit_event(
+            "authz_rfc_invalid",
+            peer,
+            &request.user,
+            request.header.session_id,
+            "error",
+            "rfc-validate",
+            &response.data,
+        );
+        let _ = write_author_response(stream, &request.header, &response, secret).await;
+        return Ok(LoopControl::Break);
+    }
+
+    if let Some(err_msg) = validate_authz_single_connect(single_connect, request, peer) {
+        let response = authz_reason_response(
+            AUTHOR_STATUS_ERROR,
+            err_msg,
+            "single-connect",
+            Some("violation".into()),
+        );
+        let _ = write_author_response(stream, &request.header, &response, secret).await;
+        return Ok(LoopControl::Break);
+    }
+
+    let decision = match validate_authorization_semantics(request) {
+        Ok(()) => {
+            let policy_guard = policy.read().await;
+            let ldap_groups = if let Some(ldap_cfg) = ldap.as_ref() {
+                ldap_fetch_groups(ldap_cfg, &request.user).await
+            } else {
+                Vec::new()
+            };
+            if request.is_shell_start() {
+                authorize_shell_command(request, &policy_guard, peer)
+            } else if let Some(cmd) = request.command_string() {
+                authorize_user_command(request, &policy_guard, &ldap_groups, &cmd, peer)
+            } else {
+                authz_reason_response(
+                    AUTHOR_STATUS_ERROR,
+                    "unsupported request",
+                    "unsupported",
+                    None,
+                )
+            }
+        }
+        Err(msg) => {
+            warn!(
+                peer = %peer,
+                user = %request.user,
+                session = request.header.session_id,
+                reason = %msg.msg,
+                "authorization request rejected by semantic checks"
+            );
+            let (code, detail) = authz_semantic_detail(&msg);
+            let ctx = authz_context(request);
+            let resp = authz_reason_response(
+                AUTHOR_STATUS_ERROR,
+                authz_server_msg_with_detail(code, msg.msg, &detail),
+                code,
+                Some(detail.clone()),
+            );
+            let meta = format!("{};ctx={ctx}", resp.data);
+            audit_event(
+                "authz_semantic_reject",
+                peer,
+                &request.user,
+                request.header.session_id,
+                "error",
+                code,
+                &meta,
+            );
+            audit_event(
+                "authz_error",
+                peer,
+                &request.user,
+                request.header.session_id,
+                "error",
+                "authz-error",
+                &resp.data,
+            );
+            resp
+        }
+    };
+
+    if let Err(err) = validate_author_response_header(&request.header.response(0)) {
+        warn!(error = %err, peer = %peer, "authorization header invalid");
+    }
+
+    write_author_response(stream, &request.header, &decision, secret)
+        .await
+        .with_context(|| "sending TACACS+ response")?;
+
+    Ok(LoopControl::Continue)
+}
+
+/// Track task_id for accounting START/STOP/WATCHDOG records per RFC 8907.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Validates task_id sequence integrity |
+fn track_task_id(
+    task_tracker: &mut TaskIdTracker,
+    request: &AccountingRequest,
+    peer: &str,
+) -> Result<(), &'static str> {
+    let attrs = request.attributes();
+    let task_id: Option<u32> = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("task_id"))
+        .and_then(|a| a.value.as_deref())
+        .and_then(|v| v.parse().ok());
+    if let Some(tid) = task_id {
+        if request.flags & ACCT_FLAG_START != 0 {
+            task_tracker.start(tid)?;
+        } else if request.flags & ACCT_FLAG_STOP != 0 {
+            if let Err(e) = task_tracker.stop(tid) {
+                warn!(peer = %peer, task_id = tid, error = %e, "task_id tracking warning");
+            }
+        } else if request.flags & ACCT_FLAG_WATCHDOG != 0 {
+            if let Err(e) = task_tracker.watchdog(tid) {
+                warn!(peer = %peer, task_id = tid, error = %e, "task_id tracking warning");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Log successful accounting record with extracted attributes.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Extracts and logs accounting attributes |
+fn log_accounting_success(request: &AccountingRequest, peer: &str) {
+    let acct_type = if request.flags & ACCT_FLAG_START != 0 {
+        "start"
+    } else if request.flags & ACCT_FLAG_STOP != 0 {
+        "stop"
+    } else if request.flags & ACCT_FLAG_WATCHDOG != 0 {
+        "watchdog"
+    } else {
+        "unknown"
+    };
+    let attrs = request.attributes();
+    let service = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("service"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-");
+    let cmd = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("cmd"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-");
+    let task = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("task_id"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-");
+    let status_attr = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("status"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-");
+    let bytes_in = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("bytes_in"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-");
+    let bytes_out = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("bytes_out"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-");
+    let data = format!(
+        "type={};flags=0x{:02x};attrs={};service={};cmd={};task_id={};status={};bytes_in={};bytes_out={}",
+        acct_type,
+        request.flags,
+        request.args.len(),
+        service,
+        cmd,
+        task,
+        status_attr,
+        bytes_in,
+        bytes_out
+    );
+    audit_event(
+        "acct_accept",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "success",
+        "semantic-ok",
+        &data,
+    );
+}
+
+/// Handle accounting packet processing.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Accounting record validation and logging |
+/// | SC-23 | Session Authenticity | Single-connect validation |
+async fn handle_accounting_packet<S>(
+    stream: &mut S,
+    request: &AccountingRequest,
+    single_connect: &SingleConnectState,
+    task_tracker: &mut TaskIdTracker,
+    secret: Option<&[u8]>,
+    peer: &str,
+) -> Result<LoopControl>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if let Err(err) = usg_tacacs_proto::validate_accounting_request(request) {
+        warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "accounting request failed RFC validation");
+        let response = AccountingResponse {
+            status: ACCT_STATUS_ERROR,
+            server_msg: err.to_string(),
+            data: format!("reason=rfc-validate;detail={err}"),
+            args: Vec::new(),
+        };
+        let meta = format!("flags=0x{:02x};attrs={}", request.flags, request.args.len());
+        audit_event(
+            "acct_rfc_invalid",
+            peer,
+            &request.user,
+            request.header.session_id,
+            "error",
+            "rfc-validate",
+            &meta,
+        );
+        let _ = write_accounting_response(stream, &request.header, &response, secret).await;
+        return Ok(LoopControl::Break);
+    }
+
+    if let Some(err_msg) = validate_acct_single_connect(single_connect, request, peer) {
+        let response = AccountingResponse {
+            status: ACCT_STATUS_ERROR,
+            server_msg: err_msg,
+            data: String::new(),
+            args: Vec::new(),
+        };
+        let _ = write_accounting_response(stream, &request.header, &response, secret).await;
+        return Ok(LoopControl::Break);
+    }
+
+    if let Err(err) = validate_accounting_response_header(&request.header.response(0)) {
+        warn!(error = %err, peer = %peer, "accounting header invalid");
+    }
+
+    let task_tracking_result = track_task_id(task_tracker, request, peer);
+
+    let response = match validate_accounting_semantics(request) {
+        Ok(()) if task_tracking_result.is_ok() => accounting_success_response(request),
+        Ok(()) => {
+            let msg = task_tracking_result.unwrap_err();
+            warn!(
+                peer = %peer,
+                user = %request.user,
+                session = request.header.session_id,
+                reason = %msg,
+                "accounting request rejected by task_id tracking (RFC 8907)"
+            );
+            let resp = AccountingResponse {
+                status: ACCT_STATUS_ERROR,
+                server_msg: msg.to_string(),
+                data: format!("reason=task-id-reuse;detail={msg}"),
+                args: Vec::new(),
+            };
+            audit_event(
+                "acct_task_id_reuse",
+                peer,
+                &request.user,
+                request.header.session_id,
+                "error",
+                "task-id-reuse",
+                msg,
+            );
+            resp
+        }
+        Err(msg) => {
+            warn!(
+                peer = %peer,
+                user = %request.user,
+                session = request.header.session_id,
+                reason = %msg,
+                "accounting request rejected by semantic checks"
+            );
+            let resp = AccountingResponse {
+                status: ACCT_STATUS_ERROR,
+                server_msg: msg.to_string(),
+                data: format!("reason=semantic-invalid;detail={msg}"),
+                args: Vec::new(),
+            };
+            let meta = format!(
+                "flags=0x{:02x};attrs={};reason={}",
+                request.flags,
+                request.args.len(),
+                msg
+            );
+            audit_event(
+                "acct_semantic_reject",
+                peer,
+                &request.user,
+                request.header.session_id,
+                "error",
+                msg,
+                &meta,
+            );
+            if resp.status == ACCT_STATUS_ERROR {
+                audit_event(
+                    "acct_error",
+                    peer,
+                    &request.user,
+                    request.header.session_id,
+                    "error",
+                    "acct-error",
+                    &resp.data,
+                );
+            }
+            resp
+        }
+    };
+
+    if response.status == ACCT_STATUS_SUCCESS {
+        log_accounting_success(request, peer);
+    } else if response.status == ACCT_STATUS_ERROR {
+        audit_event(
+            "acct_error",
+            peer,
+            &request.user,
+            request.header.session_id,
+            "error",
+            "acct-error",
+            &response.data,
+        );
+    }
+
+    write_accounting_response(stream, &request.header, &response, secret)
+        .await
+        .with_context(|| "sending TACACS+ accounting response")?;
+
+    Ok(LoopControl::Continue)
+}
+
+/// Handle authentication packet processing.
+///
+/// Note: This function is large (600+ lines) and will be further decomposed in Phase 5
+/// into type-specific handlers (ASCII, PAP, CHAP, continue, finalize).
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | Multi-method authentication |
+/// | IA-5 | Authenticator Management | Password verification across sources |
+/// | AU-12 | Audit Generation | Comprehensive authentication logging |
+/// | SC-23 | Session Authenticity | Single-connect validation and activation |
+#[allow(clippy::too_many_arguments)]
+async fn handle_authentication_packet<S>(
+    stream: &mut S,
+    packet: AuthenPacket,
+    auth_states: &mut HashMap<u32, AuthSessionState>,
+    single_connect: &mut SingleConnectState,
+    connection_id: u64,
+    registry: &Arc<SessionRegistry>,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>,
+    ldap: &Option<Arc<LdapConfig>>,
+    ascii_cfg: &AsciiConfig,
+    secret: Option<&[u8]>,
+    peer: &str,
+) -> Result<LoopControl>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let session_id = match &packet {
+        AuthenPacket::Start(start) => start.header.session_id,
+        AuthenPacket::Continue(cont) => cont.header.session_id,
+    };
+    match &packet {
+        AuthenPacket::Start(start) => {
+            if let Err(err) = usg_tacacs_proto::validate_authen_start(start) {
+                warn!(peer = %peer, user = %start.user, session = session_id, error = %err, "authentication start failed RFC validation");
+                let reply = AuthenReply {
+                    status: AUTHEN_STATUS_ERROR,
+                    flags: 0,
+                    server_msg: err.to_string(),
+                    server_msg_raw: Vec::new(),
+                    data: Vec::new(),
+                };
+                audit_event(
+                    "authn_rfc_invalid",
+                    peer,
+                    &start.user,
+                    session_id,
+                    "error",
+                    "rfc-validate",
+                    &err.to_string(),
+                );
+                let _ = write_authen_reply(stream, &start.header, &reply, secret).await;
+                return Ok(LoopControl::Break);
+            }
+        }
+        AuthenPacket::Continue(cont) => {
+            if let Err(err) = usg_tacacs_proto::validate_authen_continue(cont) {
+                warn!(peer = %peer, session = session_id, error = %err, "authentication continue failed RFC validation");
+                let reply = AuthenReply {
+                    status: AUTHEN_STATUS_ERROR,
+                    flags: 0,
+                    server_msg: err.to_string(),
+                    server_msg_raw: Vec::new(),
+                    data: Vec::new(),
+                };
+                audit_event(
+                    "authn_rfc_invalid",
+                    peer,
+                    "",
+                    session_id,
+                    "error",
+                    "rfc-validate",
+                    &err.to_string(),
+                );
+                let _ = write_authen_reply(stream, &cont.header, &reply, secret).await;
+                return Ok(LoopControl::Break);
+            }
+        }
+    }
+
+    if let Some(err_msg) = validate_authen_single_connect(single_connect, &packet, session_id, peer) {
+        let header = match &packet {
+            AuthenPacket::Start(start) => &start.header,
+            AuthenPacket::Continue(cont) => &cont.header,
+        };
+        let reply = AuthenReply {
+            status: AUTHEN_STATUS_ERROR,
+            flags: 0,
+            server_msg: err_msg,
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        };
+        let _ = write_authen_reply(stream, header, &reply, secret).await;
+        return Ok(LoopControl::Break);
+    }
+
+    let single_connect_flag = match &packet {
+        AuthenPacket::Start(start) => {
+            start.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
+        }
+        AuthenPacket::Continue(cont) => {
+            cont.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
+        }
+    };
+
+    let state = auth_states
+        .entry(session_id)
+        .or_insert_with(|| match &packet {
+            AuthenPacket::Start(start) => AuthSessionState::from_start(start)
+                .unwrap_or(AuthSessionState {
+                    last_seq: start.header.seq_no,
+                    expect_client: false,
+                    authen_type: Some(start.authen_type),
+                    challenge: None,
+                    username: if start.user_raw.is_empty() || start.user.is_empty() {
+                        None
+                    } else {
+                        Some(start.user.clone())
+                    },
+                    username_raw: if start.user_raw.is_empty() {
+                        None
+                    } else {
+                        Some(start.user_raw.clone())
+                    },
+                    port: Some(start.port.clone()),
+                    port_raw: if start.port_raw.is_empty() {
+                        None
+                    } else {
+                        Some(start.port_raw.clone())
+                    },
+                    rem_addr: Some(start.rem_addr.clone()),
+                    rem_addr_raw: if start.rem_addr_raw.is_empty() {
+                        None
+                    } else {
+                        Some(start.rem_addr_raw.clone())
+                    },
+                    service: Some(start.service),
+                    action: Some(start.action),
+                    ascii_need_user: start.user.is_empty(),
+                    ascii_need_pass: start.data.is_empty(),
+                    chap_id: None,
+                    ascii_attempts: 0,
+                    ascii_user_attempts: 0,
+                    ascii_pass_attempts: 0,
+                }),
+            AuthenPacket::Continue(cont) => AuthSessionState {
+                last_seq: cont.header.seq_no,
+                expect_client: false,
+                authen_type: None,
+                challenge: None,
+                username: None,
+                username_raw: None,
+                port_raw: None,
+                port: None,
+                rem_addr_raw: None,
+                rem_addr: None,
+                chap_id: None,
+                ascii_need_user: true,
+                ascii_need_pass: false,
+                ascii_attempts: 0,
+                ascii_user_attempts: 0,
+                ascii_pass_attempts: 0,
+                service: None,
+                action: None,
+            },
+        });
+    if let AuthenPacket::Continue(ref cont) = packet {
+        if let Err(err) = state.validate_client(&cont.header) {
+            warn!(error = %err, peer = %peer, "auth sequence invalid");
+            let reply = AuthenReply {
+                status: AUTHEN_STATUS_ERROR,
+                flags: 0,
+                server_msg: err.to_string(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            };
+            audit_event(
+                "authn_sequence_error",
+                peer,
+                state.username.as_deref().unwrap_or(""),
+                session_id,
+                "error",
+                "sequence",
+                &err.to_string(),
+            );
+            let _ = write_authen_reply(stream, &cont.header, &reply, secret).await;
+            return Ok(LoopControl::Break);
+        }
+    }
+
+    let mut reply = match packet {
+        AuthenPacket::Start(ref start) => match start.authen_type {
+            AUTHEN_TYPE_ASCII => {
+                state.authen_type = Some(AUTHEN_TYPE_ASCII);
+                state.service = Some(start.service);
+                state.action = Some(start.action);
+                let decoded_username =
+                    if start.user_raw.is_empty() || start.user.is_empty() {
+                        None
+                    } else {
+                        Some(start.user.clone())
+                    };
+                state.username = decoded_username;
+                state.username_raw = if start.user_raw.is_empty() {
+                    None
+                } else {
+                    Some(start.user_raw.clone())
+                };
+                let (policy_user_prompt, policy_pass_prompt) = {
+                    let policy = policy.read().await;
+                    let policy_user = username_for_policy(
+                        state.username.as_deref(),
+                        state.username_raw.as_ref(),
+                    );
+                    let policy_port = field_for_policy(
+                        state.port.as_deref(),
+                        state.port_raw.as_ref(),
+                    );
+                    let policy_rem = field_for_policy(
+                        state.rem_addr.as_deref(),
+                        state.rem_addr_raw.as_ref(),
+                    );
+                    (
+                        policy
+                            .prompt_username(
+                                policy_user.as_deref(),
+                                policy_port.as_deref(),
+                                policy_rem.as_deref(),
+                            )
+                            .map(|s| s.as_bytes().to_vec()),
+                        policy
+                            .prompt_password(policy_user.as_deref())
+                            .map(|s| s.as_bytes().to_vec()),
+                    )
+                };
+                let username_prompt = |client_msg: Option<&[u8]>,
+                                       service: Option<u8>|
+                 -> Vec<u8> {
+                    if let Some(msg) = client_msg {
+                        if !msg.is_empty() {
+                            return msg.to_vec();
+                        }
+                    }
+                    if let Some(custom) = policy_user_prompt.as_ref() {
+                        return custom.clone();
+                    }
+                    match service {
+                        Some(svc) => format!("Username (service {svc}):").into_bytes(),
+                        None => b"Username:".to_vec(),
+                    }
+                };
+                let password_prompt = |client_msg: Option<&[u8]>,
+                                       service: Option<u8>|
+                 -> Vec<u8> {
+                    if let Some(msg) = client_msg {
+                        if !msg.is_empty() {
+                            return msg.to_vec();
+                        }
+                    }
+                    if let Some(custom) = policy_pass_prompt.as_ref() {
+                        return custom.clone();
+                    }
+                    match service {
+                        Some(svc) => format!("Password (service {svc}):").into_bytes(),
+                        None => b"Password:".to_vec(),
+                    }
+                };
+                state.ascii_need_user = state.username.is_none();
+                if state.ascii_need_user {
+                    AuthenReply {
+                        status: AUTHEN_STATUS_GETUSER,
+                        flags: 0,
+                        server_msg: String::new(),
+                        server_msg_raw: Vec::new(),
+                        data: username_prompt(None, state.service),
+                    }
+                } else if !start.data.is_empty() {
+                    let ok = if let Some(raw) = state.username_raw.as_ref() {
+                        verify_pap_bytes_username(raw, &start.data, credentials)
+                    } else {
+                        verify_pap_bytes(
+                            state.username.as_deref().unwrap_or_default(),
+                            &start.data,
+                            credentials,
+                        )
+                    } || {
+                        if let Some(user) = state.username.as_deref() {
+                            verify_password_sources(
+                                Some(user),
+                                &start.data,
+                                credentials,
+                                ldap.as_ref(),
+                            )
+                            .await
+                        } else {
+                            false
+                        }
+                    };
+                    if !ok {
+                        if let Some(delay) = calc_ascii_backoff_capped(
+                            ascii_cfg.backoff_ms,
+                            state.ascii_attempts,
+                            ascii_cfg.backoff_max_ms,
+                        ) {
+                            sleep(delay).await;
+                        }
+                    }
+                    let svc_str = state
+                        .service
+                        .map(|svc| format!(" (service {svc})"))
+                        .unwrap_or_default();
+                    let act_str = state
+                        .action
+                        .map(|act| format!(" action {act}"))
+                        .unwrap_or_default();
+                    let policy = policy.read().await;
+                    AuthenReply {
+                        status: if ok {
+                            AUTHEN_STATUS_PASS
+                        } else {
+                            AUTHEN_STATUS_FAIL
+                        },
+                        flags: 0,
+                        server_msg: if ok {
+                            policy
+                                .message_success()
+                                .map(|m| m.to_string())
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "authentication succeeded{svc_str}{act_str}"
+                                    )
+                                })
+                        } else {
+                            policy
+                                .message_failure()
+                                .map(|m| m.to_string())
+                                .unwrap_or_else(|| {
+                                    format!("invalid credentials{svc_str}{act_str}")
+                                })
+                        },
+                        server_msg_raw: Vec::new(),
+                        data: Vec::new(),
+                    }
+                } else {
+                    state.ascii_need_pass = true;
+                    AuthenReply {
+                        status: AUTHEN_STATUS_GETPASS,
+                        flags: AUTHEN_FLAG_NOECHO,
+                        server_msg: String::new(),
+                        server_msg_raw: Vec::new(),
+                        data: password_prompt(None, state.service),
+                    }
+                }
+            }
+            AUTHEN_TYPE_PAP => {
+                state.authen_type = Some(AUTHEN_TYPE_PAP);
+                let password = match start.parsed_data() {
+                    AuthenData::Pap { password } => password,
+                    _ => {
+                        warn!(peer = %peer, user = %start.user, "invalid PAP authentication payload");
+                        return Ok(LoopControl::Continue);
+                    }
+                };
+                let ok = verify_pap(&start.user, &password, credentials)
+                    || verify_password_sources(
+                        Some(&start.user),
+                        password.as_bytes(),
+                        credentials,
+                        ldap.as_ref(),
+                    )
+                    .await;
+                let policy = policy.read().await;
+                let svc_str = start.service.to_string();
+                let act_str = start.action.to_string();
+                AuthenReply {
+                    status: if ok {
+                        AUTHEN_STATUS_PASS
+                    } else {
+                        AUTHEN_STATUS_FAIL
+                    },
+                    flags: 0,
+                    server_msg: if ok {
+                        policy
+                            .message_success()
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| {
+                                format!("authentication succeeded (service {svc_str} action {act_str})")
+                            })
+                    } else {
+                        policy
+                            .message_failure()
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| {
+                                format!("invalid credentials (service {svc_str} action {act_str})")
+                            })
+                    },
+                    server_msg_raw: Vec::new(),
+                    data: Vec::new(),
+                }
+            }
+            AUTHEN_TYPE_CHAP => {
+                if start.data.len() != 1 {
+                    warn!(peer = %peer, user = %start.user, "invalid CHAP start length");
+                    return Ok(LoopControl::Continue);
+                }
+                let chap_id = &start.data;
+                let mut chal = [0u8; 16];
+                let mut chap_id_bytes = [0u8; 1];
+                chap_id_bytes.copy_from_slice(chap_id);
+                if rand_bytes(&mut chal).is_err()
+                    || rand_bytes(&mut chap_id_bytes).is_err()
+                {
+                    AuthenReply {
+                        status: AUTHEN_STATUS_ERROR,
+                        flags: 0,
+                        server_msg: "failed to generate challenge".into(),
+                        server_msg_raw: Vec::new(),
+                        data: Vec::new(),
+                    }
+                } else {
+                    state.challenge = Some(chal.clone().to_vec());
+                    state.chap_id = Some(chap_id_bytes[0]);
+                    AuthenReply {
+                        status: AUTHEN_STATUS_GETDATA,
+                        flags: 0,
+                        server_msg: String::new(),
+                        server_msg_raw: Vec::new(),
+                        data: {
+                            let mut payload = Vec::with_capacity(1 + chal.len());
+                            payload.extend_from_slice(&chap_id_bytes);
+                            payload.extend_from_slice(&chal);
+                            payload
+                        },
+                    }
+                }
+            }
+            _ => AuthenReply {
+                status: AUTHEN_STATUS_FOLLOW,
+                flags: 0,
+                server_msg: "unsupported auth type - fallback".into(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            },
+        },
+        AuthenPacket::Continue(ref cont) => match state.authen_type {
+            Some(AUTHEN_TYPE_ASCII) => {
+                handle_ascii_continue(
+                    cont.user_msg.as_slice(),
+                    cont.data.as_slice(),
+                    cont.flags,
+                    state,
+                    policy,
+                    credentials,
+                    ascii_cfg,
+                    ldap.as_ref(),
+                )
+                .await
+            }
+            _ if state.challenge.is_some() => {
+                let user = state.username.clone().unwrap_or_default();
+                match state.authen_type {
+                    Some(AUTHEN_TYPE_CHAP) => handle_chap_continue(
+                        &user,
+                        cont.data.as_slice(),
+                        state,
+                        credentials,
+                    ),
+                    _ => AuthenReply {
+                        status: AUTHEN_STATUS_FAIL,
+                        flags: 0,
+                        server_msg: "unexpected continue".into(),
+                        server_msg_raw: Vec::new(),
+                        data: Vec::new(),
+                    },
+                }
+            }
+            _ => AuthenReply {
+                status: AUTHEN_STATUS_FAIL,
+                flags: 0,
+                server_msg: format!(
+                    "unexpected authentication continue (flags {:02x})",
+                    cont.flags
+                ),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            },
+        },
+    };
+
+    let header = match &packet {
+        AuthenPacket::Start(start) => &start.header,
+        AuthenPacket::Continue(cont) => &cont.header,
+    };
+    let terminal = matches!(
+        reply.status,
+        AUTHEN_STATUS_PASS
+            | AUTHEN_STATUS_FAIL
+            | AUTHEN_STATUS_ERROR
+            | AUTHEN_STATUS_FOLLOW
+            | AUTHEN_STATUS_RESTART
+    );
+    let single_user = state.username.clone();
+    if terminal {
+        let status_label = match reply.status {
+            AUTHEN_STATUS_PASS => "pass",
+            AUTHEN_STATUS_FAIL => "fail",
+            AUTHEN_STATUS_ERROR => "error",
+            AUTHEN_STATUS_FOLLOW => "follow",
+            AUTHEN_STATUS_RESTART => "restart",
+            _ => "other",
+        };
+        let user_for_log = state.username.as_deref().unwrap_or_else(|| {
+            state.username_raw.as_ref().map(|_| "<raw>").unwrap_or("")
+        });
+        let msg_data = if !reply.server_msg.is_empty() {
+            reply.server_msg.clone()
+        } else if !reply.server_msg_raw.is_empty() {
+            format!("raw={}", hex::encode(&reply.server_msg_raw))
+        } else {
+            String::new()
+        };
+        let attempts = format!(
+            "attempts_total={};user_attempts={};pass_attempts={}",
+            state.ascii_attempts, state.ascii_user_attempts, state.ascii_pass_attempts
+        );
+        let authn_type = match state.authen_type {
+            Some(AUTHEN_TYPE_ASCII) => "ascii",
+            Some(AUTHEN_TYPE_PAP) => "pap",
+            Some(AUTHEN_TYPE_CHAP) => "chap",
+            Some(_) => "other",
+            None => "unknown",
+        };
+        let svc = state
+            .service
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "-".into());
+        let action = state
+            .action
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "-".into());
+        let reason = match reply.status {
+            AUTHEN_STATUS_PASS => "success",
+            AUTHEN_STATUS_FAIL => {
+                let msg_lc = reply.server_msg.to_lowercase();
+                if msg_lc.contains("too many authentication attempts") {
+                    "attempt-limit"
+                } else if msg_lc.contains("too many username attempts") {
+                    "user-attempt-limit"
+                } else if msg_lc.contains("too many password attempts") {
+                    "pass-attempt-limit"
+                } else if msg_lc.contains("authentication locked out") {
+                    "lockout"
+                } else {
+                    "credential-mismatch"
+                }
+            }
+            AUTHEN_STATUS_ERROR => "error",
+            AUTHEN_STATUS_FOLLOW => "follow",
+            AUTHEN_STATUS_RESTART => "restart",
+            _ => "other",
+        };
+        let msg_data = if msg_data.is_empty() {
+            format!(
+                "{attempts};type={authn_type};service={svc};action={action};reason={reason}"
+            )
+        } else {
+            format!(
+                "{attempts};type={authn_type};service={svc};action={action};reason={reason};msg={msg_data}"
+            )
+        };
+        audit_event(
+            "authn_terminal",
+            peer,
+            user_for_log,
+            session_id,
+            status_label,
+            "terminal",
+            &msg_data,
+        );
+    }
+
+    write_authen_reply(stream, header, &reply, secret)
+        .await
+        .with_context(|| "sending TACACS+ auth reply")?;
+    if !reply.server_msg_raw.is_empty() {
+        enforce_server_msg(policy, state, &mut reply).await;
+        debug!(
+            peer = %peer,
+            session = session_id,
+            raw_len = reply.server_msg_raw.len(),
+            server_msg_raw_hex = %hex::encode(&reply.server_msg_raw),
+            "auth reply carried raw server_msg bytes"
+        );
+    }
+    if terminal {
+        auth_states.remove(&session_id);
+        if reply.status != AUTHEN_STATUS_PASS {
+            single_connect.reset();
+        }
+    }
+    if matches!(reply.status, AUTHEN_STATUS_PASS)
+        && single_connect_flag
+        && let Some(user) = single_user
+    {
+        single_connect.activate(user.clone(), session_id);
+        registry
+            .update_authentication(connection_id, user.clone(), session_id)
+            .await;
+        info!(peer = %peer, user = %user, session = session_id, "single-connect established");
+    }
+
+    Ok(LoopControl::Continue)
+}
+
 /// Handle a single TACACS+ connection.
 ///
 /// # NIST Controls
@@ -1209,817 +2320,40 @@ where
         };
         match packet_result {
             Ok(Some(Packet::Authorization(request))) => {
-                if let Err(err) = usg_tacacs_proto::validate_author_request(&request) {
-                    warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
-                    let response = authz_reason_response(
-                        AUTHOR_STATUS_ERROR,
-                        err.to_string(),
-                        "rfc-validate",
-                        Some(err.to_string()),
-                    );
-                    audit_event(
-                        "authz_rfc_invalid",
-                        &peer,
-                        &request.user,
-                        request.header.session_id,
-                        "error",
-                        "rfc-validate",
-                        &response.data,
-                    );
-                    let _ = write_author_response(
-                        &mut stream,
-                        &request.header,
-                        &response,
-                        secret.as_deref().map(|s| s.as_slice()),
-                    )
-                    .await;
-                    break;
-                }
-
-                // Validate single-connect constraints
-                if let Some(err_msg) = validate_authz_single_connect(&single_connect, &request, &peer) {
-                    let response = authz_reason_response(
-                        AUTHOR_STATUS_ERROR,
-                        err_msg,
-                        "single-connect",
-                        Some("violation".into()),
-                    );
-                    let _ = write_author_response(
-                        &mut stream,
-                        &request.header,
-                        &response,
-                        secret.as_deref().map(|s| s.as_slice()),
-                    )
-                    .await;
-                    break;
-                }
-
-                let decision = match validate_authorization_semantics(&request) {
-                    Ok(()) => {
-                        let policy = policy.read().await;
-                        let ctx = authz_context(&request);
-                        let ldap_groups = if let Some(ldap_cfg) = ldap.as_ref() {
-                            ldap_fetch_groups(ldap_cfg, &request.user).await
-                        } else {
-                            Vec::new()
-                        };
-                        if request.is_shell_start() {
-                            let attrs =
-                                policy
-                                    .shell_attributes_for(&request.user)
-                                    .unwrap_or_else(|| {
-                                        vec![
-                                            "service=shell".to_string(),
-                                            "protocol=shell".to_string(),
-                                        ]
-                                    });
-                            let attrs = ensure_priv_attr(attrs, request.priv_lvl);
-                            let resp = AuthorizationResponse {
-                                status: AUTHOR_STATUS_PASS_ADD,
-                                server_msg: String::new(),
-                                data: format!("reason=policy-shell;ctx={ctx}"),
-                                args: attrs,
-                            };
-                            audit_event(
-                                "authz_policy_allow",
-                                &peer,
-                                &request.user,
-                                request.header.session_id,
-                                "pass",
-                                "policy-shell",
-                                &resp.data,
-                            );
-                            resp
-                        } else if let Some(cmd) = request.command_string() {
-                            let decision =
-                                policy.authorize_with_groups(&request.user, &ldap_groups, &cmd);
-                            if decision.allowed {
-                                let mut data = String::from("reason=policy-allow");
-                                if let Some(rule) = decision.matched_rule.clone() {
-                                    data.push_str(";rule=");
-                                    data.push_str(&rule);
-                                }
-                                data.push_str(";ctx=");
-                                data.push_str(&ctx);
-                                let ldap_data = if !ldap_groups.is_empty() {
-                                    format!(";groups={}", ldap_groups.join(","))
-                                } else {
-                                    String::new()
-                                };
-                                let resp = AuthorizationResponse {
-                                    status: AUTHOR_STATUS_PASS_REPL,
-                                    server_msg: String::new(),
-                                    data: format!("{data}{ldap_data}"),
-                                    args: authz_allow_attrs(&request),
-                                };
-                                audit_event(
-                                    "authz_policy_allow",
-                                    &peer,
-                                    &request.user,
-                                    request.header.session_id,
-                                    "pass",
-                                    "policy-allow",
-                                    &resp.data,
-                                );
-                                resp
-                            } else {
-                                let mut resp = authz_reason_response(
-                                    AUTHOR_STATUS_FAIL,
-                                    format!("command '{cmd}' denied by policy"),
-                                    "policy-deny",
-                                    Some(cmd),
-                                );
-                                if let Some(rule) = decision.matched_rule {
-                                    resp.data.push_str(";rule=");
-                                    resp.data.push_str(&rule);
-                                }
-                                resp.data.push_str(";ctx=");
-                                resp.data.push_str(&ctx);
-                                audit_event(
-                                    "authz_policy_deny",
-                                    &peer,
-                                    &request.user,
-                                    request.header.session_id,
-                                    "fail",
-                                    &resp.server_msg,
-                                    &resp.data,
-                                );
-                                resp
-                            }
-                        } else {
-                            authz_reason_response(
-                                AUTHOR_STATUS_ERROR,
-                                "unsupported request",
-                                "unsupported",
-                                None,
-                            )
-                        }
-                    }
-                    Err(msg) => {
-                        warn!(
-                            peer = %peer,
-                            user = %request.user,
-                            session = request.header.session_id,
-                            reason = %msg.msg,
-                            "authorization request rejected by semantic checks"
-                        );
-                        let (code, detail) = authz_semantic_detail(&msg);
-                        let ctx = authz_context(&request);
-                        let resp = authz_reason_response(
-                            AUTHOR_STATUS_ERROR,
-                            authz_server_msg_with_detail(code, msg.msg, &detail),
-                            code,
-                            Some(detail.clone()),
-                        );
-                        let meta = format!("{};ctx={ctx}", resp.data);
-                        audit_event(
-                            "authz_semantic_reject",
-                            &peer,
-                            &request.user,
-                            request.header.session_id,
-                            "error",
-                            code,
-                            &meta,
-                        );
-                        audit_event(
-                            "authz_error",
-                            &peer,
-                            &request.user,
-                            request.header.session_id,
-                            "error",
-                            "authz-error",
-                            &resp.data,
-                        );
-                        resp
-                    }
-                };
-
-                if let Err(err) = validate_author_response_header(&request.header.response(0)) {
-                    warn!(error = %err, peer = %peer, "authorization header invalid");
-                }
-                write_author_response(
+                match handle_authorization_packet(
                     &mut stream,
-                    &request.header,
-                    &decision,
+                    &request,
+                    &single_connect,
+                    &policy,
+                    &ldap,
                     secret.as_deref().map(|s| s.as_slice()),
+                    &peer,
                 )
                 .await
-                .with_context(|| "sending TACACS+ response")?;
+                {
+                    Ok(LoopControl::Continue) => {}
+                    Ok(LoopControl::Break) | Err(_) => break,
+                }
             }
             Ok(Some(Packet::Authentication(packet))) => {
-                let session_id = match &packet {
-                    AuthenPacket::Start(start) => start.header.session_id,
-                    AuthenPacket::Continue(cont) => cont.header.session_id,
-                };
-                match &packet {
-                    AuthenPacket::Start(start) => {
-                        if let Err(err) = usg_tacacs_proto::validate_authen_start(start) {
-                            warn!(peer = %peer, user = %start.user, session = session_id, error = %err, "authentication start failed RFC validation");
-                            let reply = AuthenReply {
-                                status: AUTHEN_STATUS_ERROR,
-                                flags: 0,
-                                server_msg: err.to_string(),
-                                server_msg_raw: Vec::new(),
-                                data: Vec::new(),
-                            };
-                            audit_event(
-                                "authn_rfc_invalid",
-                                &peer,
-                                &start.user,
-                                session_id,
-                                "error",
-                                "rfc-validate",
-                                &err.to_string(),
-                            );
-                            let _ = write_authen_reply(
-                                &mut stream,
-                                &start.header,
-                                &reply,
-                                secret.as_deref().map(|s| s.as_slice()),
-                            )
-                            .await;
-                            break;
-                        }
-                    }
-                    AuthenPacket::Continue(cont) => {
-                        if let Err(err) = usg_tacacs_proto::validate_authen_continue(cont) {
-                            warn!(peer = %peer, session = session_id, error = %err, "authentication continue failed RFC validation");
-                            let reply = AuthenReply {
-                                status: AUTHEN_STATUS_ERROR,
-                                flags: 0,
-                                server_msg: err.to_string(),
-                                server_msg_raw: Vec::new(),
-                                data: Vec::new(),
-                            };
-                            audit_event(
-                                "authn_rfc_invalid",
-                                &peer,
-                                "",
-                                session_id,
-                                "error",
-                                "rfc-validate",
-                                &err.to_string(),
-                            );
-                            let _ = write_authen_reply(
-                                &mut stream,
-                                &cont.header,
-                                &reply,
-                                secret.as_deref().map(|s| s.as_slice()),
-                            )
-                            .await;
-                            break;
-                        }
-                    }
-                }
-
-                // Validate single-connect constraints
-                if let Some(err_msg) = validate_authen_single_connect(&single_connect, &packet, session_id, &peer) {
-                    let header = match &packet {
-                        AuthenPacket::Start(start) => &start.header,
-                        AuthenPacket::Continue(cont) => &cont.header,
-                    };
-                    let reply = AuthenReply {
-                        status: AUTHEN_STATUS_ERROR,
-                        flags: 0,
-                        server_msg: err_msg,
-                        server_msg_raw: Vec::new(),
-                        data: Vec::new(),
-                    };
-                    let _ = write_authen_reply(
-                        &mut stream,
-                        header,
-                        &reply,
-                        secret.as_deref().map(|s| s.as_slice()),
-                    )
-                    .await;
-                    break;
-                }
-
-                let single_connect_flag = match &packet {
-                    AuthenPacket::Start(start) => {
-                        start.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
-                    }
-                    AuthenPacket::Continue(cont) => {
-                        cont.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
-                    }
-                };
-
-                let state = auth_states
-                    .entry(session_id)
-                    .or_insert_with(|| match &packet {
-                        AuthenPacket::Start(start) => AuthSessionState::from_start(start)
-                            .unwrap_or(AuthSessionState {
-                                last_seq: start.header.seq_no,
-                                expect_client: false,
-                                authen_type: Some(start.authen_type),
-                                challenge: None,
-                                username: if start.user_raw.is_empty() || start.user.is_empty() {
-                                    None
-                                } else {
-                                    Some(start.user.clone())
-                                },
-                                username_raw: if start.user_raw.is_empty() {
-                                    None
-                                } else {
-                                    Some(start.user_raw.clone())
-                                },
-                                port: Some(start.port.clone()),
-                                port_raw: if start.port_raw.is_empty() {
-                                    None
-                                } else {
-                                    Some(start.port_raw.clone())
-                                },
-                                rem_addr: Some(start.rem_addr.clone()),
-                                rem_addr_raw: if start.rem_addr_raw.is_empty() {
-                                    None
-                                } else {
-                                    Some(start.rem_addr_raw.clone())
-                                },
-                                service: Some(start.service),
-                                action: Some(start.action),
-                                ascii_need_user: start.user.is_empty(),
-                                ascii_need_pass: start.data.is_empty(),
-                                chap_id: None,
-                                ascii_attempts: 0,
-                                ascii_user_attempts: 0,
-                                ascii_pass_attempts: 0,
-                            }),
-                        AuthenPacket::Continue(cont) => AuthSessionState {
-                            last_seq: cont.header.seq_no,
-                            expect_client: false,
-                            authen_type: None,
-                            challenge: None,
-                            username: None,
-                            username_raw: None,
-                            port_raw: None,
-                            port: None,
-                            rem_addr_raw: None,
-                            rem_addr: None,
-                            chap_id: None,
-                            ascii_need_user: true,
-                            ascii_need_pass: false,
-                            ascii_attempts: 0,
-                            ascii_user_attempts: 0,
-                            ascii_pass_attempts: 0,
-                            service: None,
-                            action: None,
-                        },
-                    });
-                if let AuthenPacket::Continue(ref cont) = packet
-                    && let Err(err) = state.validate_client(&cont.header)
-                {
-                    warn!(error = %err, peer = %peer, "auth sequence invalid");
-                    let reply = AuthenReply {
-                        status: AUTHEN_STATUS_ERROR,
-                        flags: 0,
-                        server_msg: err.to_string(),
-                        server_msg_raw: Vec::new(),
-                        data: Vec::new(),
-                    };
-                    audit_event(
-                        "authn_sequence_error",
-                        &peer,
-                        state.username.as_deref().unwrap_or(""),
-                        session_id,
-                        "error",
-                        "sequence",
-                        &err.to_string(),
-                    );
-                    let _ = write_authen_reply(
-                        &mut stream,
-                        &cont.header,
-                        &reply,
-                        secret.as_deref().map(|s| s.as_slice()),
-                    )
-                    .await;
-                    break;
-                }
-
-                let mut reply = match packet {
-                    AuthenPacket::Start(ref start) => match start.authen_type {
-                        AUTHEN_TYPE_ASCII => {
-                            state.authen_type = Some(AUTHEN_TYPE_ASCII);
-                            state.service = Some(start.service);
-                            state.action = Some(start.action);
-                            let decoded_username =
-                                if start.user_raw.is_empty() || start.user.is_empty() {
-                                    None
-                                } else {
-                                    Some(start.user.clone())
-                                };
-                            state.username = decoded_username;
-                            state.username_raw = if start.user_raw.is_empty() {
-                                None
-                            } else {
-                                Some(start.user_raw.clone())
-                            };
-                            let (policy_user_prompt, policy_pass_prompt) = {
-                                let policy = policy.read().await;
-                                let policy_user = username_for_policy(
-                                    state.username.as_deref(),
-                                    state.username_raw.as_ref(),
-                                );
-                                let policy_port = field_for_policy(
-                                    state.port.as_deref(),
-                                    state.port_raw.as_ref(),
-                                );
-                                let policy_rem = field_for_policy(
-                                    state.rem_addr.as_deref(),
-                                    state.rem_addr_raw.as_ref(),
-                                );
-                                (
-                                    policy
-                                        .prompt_username(
-                                            policy_user.as_deref(),
-                                            policy_port.as_deref(),
-                                            policy_rem.as_deref(),
-                                        )
-                                        .map(|s| s.as_bytes().to_vec()),
-                                    policy
-                                        .prompt_password(policy_user.as_deref())
-                                        .map(|s| s.as_bytes().to_vec()),
-                                )
-                            };
-                            let username_prompt = |client_msg: Option<&[u8]>,
-                                                   service: Option<u8>|
-                             -> Vec<u8> {
-                                if let Some(msg) = client_msg
-                                    && !msg.is_empty()
-                                {
-                                    return msg.to_vec();
-                                }
-                                if let Some(custom) = policy_user_prompt.as_ref() {
-                                    return custom.clone();
-                                }
-                                match service {
-                                    Some(svc) => format!("Username (service {svc}):").into_bytes(),
-                                    None => b"Username:".to_vec(),
-                                }
-                            };
-                            let password_prompt = |client_msg: Option<&[u8]>,
-                                                   service: Option<u8>|
-                             -> Vec<u8> {
-                                if let Some(msg) = client_msg
-                                    && !msg.is_empty()
-                                {
-                                    return msg.to_vec();
-                                }
-                                if let Some(custom) = policy_pass_prompt.as_ref() {
-                                    return custom.clone();
-                                }
-                                match service {
-                                    Some(svc) => format!("Password (service {svc}):").into_bytes(),
-                                    None => b"Password:".to_vec(),
-                                }
-                            };
-                            state.ascii_need_user = state.username.is_none();
-                            if state.ascii_need_user {
-                                AuthenReply {
-                                    status: AUTHEN_STATUS_GETUSER,
-                                    flags: 0,
-                                    server_msg: String::new(),
-                                    server_msg_raw: Vec::new(),
-                                    data: username_prompt(None, state.service),
-                                }
-                            } else if !start.data.is_empty() {
-                                let ok = if let Some(raw) = state.username_raw.as_ref() {
-                                    verify_pap_bytes_username(raw, &start.data, credentials)
-                                } else {
-                                    verify_pap_bytes(
-                                        state.username.as_deref().unwrap_or_default(),
-                                        &start.data,
-                                        credentials,
-                                    )
-                                } || {
-                                    if let Some(user) = state.username.as_deref() {
-                                        verify_password_sources(
-                                            Some(user),
-                                            &start.data,
-                                            credentials,
-                                            ldap.as_ref(),
-                                        )
-                                        .await
-                                    } else {
-                                        false
-                                    }
-                                };
-                                if !ok
-                                    && let Some(delay) = calc_ascii_backoff_capped(
-                                        ascii_cfg.backoff_ms,
-                                        state.ascii_attempts,
-                                        ascii_cfg.backoff_max_ms,
-                                    )
-                                {
-                                    sleep(delay).await;
-                                }
-                                let svc_str = state
-                                    .service
-                                    .map(|svc| format!(" (service {svc})"))
-                                    .unwrap_or_default();
-                                let act_str = state
-                                    .action
-                                    .map(|act| format!(" action {act}"))
-                                    .unwrap_or_default();
-                                let policy = policy.read().await;
-                                AuthenReply {
-                                    status: if ok {
-                                        AUTHEN_STATUS_PASS
-                                    } else {
-                                        AUTHEN_STATUS_FAIL
-                                    },
-                                    flags: 0,
-                                    server_msg: if ok {
-                                        policy
-                                            .message_success()
-                                            .map(|m| m.to_string())
-                                            .unwrap_or_else(|| {
-                                                format!(
-                                                    "authentication succeeded{svc_str}{act_str}"
-                                                )
-                                            })
-                                    } else {
-                                        policy
-                                            .message_failure()
-                                            .map(|m| m.to_string())
-                                            .unwrap_or_else(|| {
-                                                format!("invalid credentials{svc_str}{act_str}")
-                                            })
-                                    },
-                                    server_msg_raw: Vec::new(),
-                                    data: Vec::new(),
-                                }
-                            } else {
-                                state.ascii_need_pass = true;
-                                AuthenReply {
-                                    status: AUTHEN_STATUS_GETPASS,
-                                    flags: AUTHEN_FLAG_NOECHO,
-                                    server_msg: String::new(),
-                                    server_msg_raw: Vec::new(),
-                                    data: password_prompt(None, state.service),
-                                }
-                            }
-                        }
-                        AUTHEN_TYPE_PAP => {
-                            state.authen_type = Some(AUTHEN_TYPE_PAP);
-                            let password = match start.parsed_data() {
-                                AuthenData::Pap { password } => password,
-                                _ => {
-                                    warn!(peer = %peer, user = %start.user, "invalid PAP authentication payload");
-                                    return Ok(());
-                                }
-                            };
-                            let ok = verify_pap(&start.user, &password, credentials)
-                                || verify_password_sources(
-                                    Some(&start.user),
-                                    password.as_bytes(),
-                                    credentials,
-                                    ldap.as_ref(),
-                                )
-                                .await;
-                            let policy = policy.read().await;
-                            let svc_str = start.service.to_string();
-                            let act_str = start.action.to_string();
-                            AuthenReply {
-                                status: if ok {
-                                    AUTHEN_STATUS_PASS
-                                } else {
-                                    AUTHEN_STATUS_FAIL
-                                },
-                                flags: 0,
-                                server_msg: if ok {
-                                    policy
-                                        .message_success()
-                                        .map(|m| m.to_string())
-                                        .unwrap_or_else(|| {
-                                            format!("authentication succeeded (service {svc_str} action {act_str})")
-                                        })
-                                } else {
-                                    policy
-                                        .message_failure()
-                                        .map(|m| m.to_string())
-                                        .unwrap_or_else(|| {
-                                            format!("invalid credentials (service {svc_str} action {act_str})")
-                                        })
-                                },
-                                server_msg_raw: Vec::new(),
-                                data: Vec::new(),
-                            }
-                        }
-                        AUTHEN_TYPE_CHAP => {
-                            if start.data.len() != 1 {
-                                warn!(peer = %peer, user = %start.user, "invalid CHAP start length");
-                                return Ok(());
-                            }
-                            let chap_id = &start.data;
-                            let mut chal = [0u8; 16];
-                            let mut chap_id_bytes = [0u8; 1];
-                            chap_id_bytes.copy_from_slice(chap_id);
-                            if rand_bytes(&mut chal).is_err()
-                                || rand_bytes(&mut chap_id_bytes).is_err()
-                            {
-                                AuthenReply {
-                                    status: AUTHEN_STATUS_ERROR,
-                                    flags: 0,
-                                    server_msg: "failed to generate challenge".into(),
-                                    server_msg_raw: Vec::new(),
-                                    data: Vec::new(),
-                                }
-                            } else {
-                                state.challenge = Some(chal.clone().to_vec());
-                                state.chap_id = Some(chap_id_bytes[0]);
-                                AuthenReply {
-                                    status: AUTHEN_STATUS_GETDATA,
-                                    flags: 0,
-                                    server_msg: String::new(),
-                                    server_msg_raw: Vec::new(),
-                                    data: {
-                                        let mut payload = Vec::with_capacity(1 + chal.len());
-                                        payload.extend_from_slice(&chap_id_bytes);
-                                        payload.extend_from_slice(&chal);
-                                        payload
-                                    },
-                                }
-                            }
-                        }
-                        _ => AuthenReply {
-                            status: AUTHEN_STATUS_FOLLOW,
-                            flags: 0,
-                            server_msg: "unsupported auth type - fallback".into(),
-                            server_msg_raw: Vec::new(),
-                            data: Vec::new(),
-                        },
-                    },
-                    AuthenPacket::Continue(ref cont) => match state.authen_type {
-                        Some(AUTHEN_TYPE_ASCII) => {
-                            handle_ascii_continue(
-                                cont.user_msg.as_slice(),
-                                cont.data.as_slice(),
-                                cont.flags,
-                                state,
-                                policy,
-                                credentials,
-                                ascii_cfg,
-                                ldap.as_ref(),
-                            )
-                            .await
-                        }
-                        _ if state.challenge.is_some() => {
-                            let user = state.username.clone().unwrap_or_default();
-                            match state.authen_type {
-                                Some(AUTHEN_TYPE_CHAP) => handle_chap_continue(
-                                    &user,
-                                    cont.data.as_slice(),
-                                    state,
-                                    credentials,
-                                ),
-                                _ => AuthenReply {
-                                    status: AUTHEN_STATUS_FAIL,
-                                    flags: 0,
-                                    server_msg: "unexpected continue".into(),
-                                    server_msg_raw: Vec::new(),
-                                    data: Vec::new(),
-                                },
-                            }
-                        }
-                        _ => AuthenReply {
-                            status: AUTHEN_STATUS_FAIL,
-                            flags: 0,
-                            server_msg: format!(
-                                "unexpected authentication continue (flags {:02x})",
-                                cont.flags
-                            ),
-                            server_msg_raw: Vec::new(),
-                            data: Vec::new(),
-                        },
-                    },
-                };
-
-                let header = match &packet {
-                    AuthenPacket::Start(start) => &start.header,
-                    AuthenPacket::Continue(cont) => &cont.header,
-                };
-                let terminal = matches!(
-                    reply.status,
-                    AUTHEN_STATUS_PASS
-                        | AUTHEN_STATUS_FAIL
-                        | AUTHEN_STATUS_ERROR
-                        | AUTHEN_STATUS_FOLLOW
-                        | AUTHEN_STATUS_RESTART
-                );
-                let single_user = state.username.clone();
-                if terminal {
-                    let status_label = match reply.status {
-                        AUTHEN_STATUS_PASS => "pass",
-                        AUTHEN_STATUS_FAIL => "fail",
-                        AUTHEN_STATUS_ERROR => "error",
-                        AUTHEN_STATUS_FOLLOW => "follow",
-                        AUTHEN_STATUS_RESTART => "restart",
-                        _ => "other",
-                    };
-                    let user_for_log = state.username.as_deref().unwrap_or_else(|| {
-                        state.username_raw.as_ref().map(|_| "<raw>").unwrap_or("")
-                    });
-                    let msg_data = if !reply.server_msg.is_empty() {
-                        reply.server_msg.clone()
-                    } else if !reply.server_msg_raw.is_empty() {
-                        format!("raw={}", hex::encode(&reply.server_msg_raw))
-                    } else {
-                        String::new()
-                    };
-                    let attempts = format!(
-                        "attempts_total={};user_attempts={};pass_attempts={}",
-                        state.ascii_attempts, state.ascii_user_attempts, state.ascii_pass_attempts
-                    );
-                    let authn_type = match state.authen_type {
-                        Some(AUTHEN_TYPE_ASCII) => "ascii",
-                        Some(AUTHEN_TYPE_PAP) => "pap",
-                        Some(AUTHEN_TYPE_CHAP) => "chap",
-                        Some(_) => "other",
-                        None => "unknown",
-                    };
-                    let svc = state
-                        .service
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "-".into());
-                    let action = state
-                        .action
-                        .map(|a| a.to_string())
-                        .unwrap_or_else(|| "-".into());
-                    let reason = match reply.status {
-                        AUTHEN_STATUS_PASS => "success",
-                        AUTHEN_STATUS_FAIL => {
-                            let msg_lc = reply.server_msg.to_lowercase();
-                            if msg_lc.contains("too many authentication attempts") {
-                                "attempt-limit"
-                            } else if msg_lc.contains("too many username attempts") {
-                                "user-attempt-limit"
-                            } else if msg_lc.contains("too many password attempts") {
-                                "pass-attempt-limit"
-                            } else if msg_lc.contains("authentication locked out") {
-                                "lockout"
-                            } else {
-                                "credential-mismatch"
-                            }
-                        }
-                        AUTHEN_STATUS_ERROR => "error",
-                        AUTHEN_STATUS_FOLLOW => "follow",
-                        AUTHEN_STATUS_RESTART => "restart",
-                        _ => "other",
-                    };
-                    let msg_data = if msg_data.is_empty() {
-                        format!(
-                            "{attempts};type={authn_type};service={svc};action={action};reason={reason}"
-                        )
-                    } else {
-                        format!(
-                            "{attempts};type={authn_type};service={svc};action={action};reason={reason};msg={msg_data}"
-                        )
-                    };
-                    audit_event(
-                        "authn_terminal",
-                        &peer,
-                        user_for_log,
-                        session_id,
-                        status_label,
-                        "terminal",
-                        &msg_data,
-                    );
-                }
-
-                write_authen_reply(
+                match handle_authentication_packet(
                     &mut stream,
-                    header,
-                    &reply,
+                    packet,
+                    &mut auth_states,
+                    &mut single_connect,
+                    connection_id,
+                    &registry,
+                    &policy,
+                    &credentials,
+                    &ldap,
+                    &ascii_cfg,
                     secret.as_deref().map(|s| s.as_slice()),
+                    &peer,
                 )
                 .await
-                .with_context(|| "sending TACACS+ auth reply")?;
-                if !reply.server_msg_raw.is_empty() {
-                    enforce_server_msg(policy, state, &mut reply).await;
-                    debug!(
-                        peer = %peer,
-                        session = session_id,
-                        raw_len = reply.server_msg_raw.len(),
-                        server_msg_raw_hex = %hex::encode(&reply.server_msg_raw),
-                        "auth reply carried raw server_msg bytes"
-                    );
-                }
-                if terminal {
-                    auth_states.remove(&session_id);
-                    if reply.status != AUTHEN_STATUS_PASS {
-                        single_connect.reset();
-                    }
-                }
-                if matches!(reply.status, AUTHEN_STATUS_PASS)
-                    && single_connect_flag
-                    && let Some(user) = single_user
                 {
-                    single_connect.activate(user.clone(), session_id);
-                    // NIST AC-10: Update session registry with authenticated user
-                    registry
-                        .update_authentication(connection_id, user.clone(), session_id)
-                        .await;
-                    info!(peer = %peer, user = %user, session = session_id, "single-connect established");
+                    Ok(LoopControl::Continue) => {}
+                    Ok(LoopControl::Break) | Err(_) => break,
                 }
             }
             Ok(Some(Packet::Capability(cap))) => {
@@ -2032,234 +2366,19 @@ where
                 .await;
             }
             Ok(Some(Packet::Accounting(request))) => {
-                if let Err(err) = usg_tacacs_proto::validate_accounting_request(&request) {
-                    warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "accounting request failed RFC validation");
-                    let response = AccountingResponse {
-                        status: ACCT_STATUS_ERROR,
-                        server_msg: err.to_string(),
-                        data: format!("reason=rfc-validate;detail={err}"),
-                        args: Vec::new(),
-                    };
-                    let meta =
-                        format!("flags=0x{:02x};attrs={}", request.flags, request.args.len());
-                    audit_event(
-                        "acct_rfc_invalid",
-                        &peer,
-                        &request.user,
-                        request.header.session_id,
-                        "error",
-                        "rfc-validate",
-                        &meta,
-                    );
-                    let _ = write_accounting_response(
-                        &mut stream,
-                        &request.header,
-                        &response,
-                        secret.as_deref().map(|s| s.as_slice()),
-                    )
-                    .await;
-                    break;
-                }
-
-                // Validate single-connect constraints
-                if let Some(err_msg) = validate_acct_single_connect(&single_connect, &request, &peer) {
-                    let response = AccountingResponse {
-                        status: ACCT_STATUS_ERROR,
-                        server_msg: err_msg,
-                        data: String::new(),
-                        args: Vec::new(),
-                    };
-                    let _ = write_accounting_response(
-                        &mut stream,
-                        &request.header,
-                        &response,
-                        secret.as_deref().map(|s| s.as_slice()),
-                    )
-                    .await;
-                    break;
-                }
-
-                if let Err(err) = validate_accounting_response_header(&request.header.response(0)) {
-                    warn!(error = %err, peer = %peer, "accounting header invalid");
-                }
-                // RFC 8907: Track task_ids to prevent reuse in start records
-                let task_tracking_result: Result<(), &'static str> = (|| {
-                    let attrs = request.attributes();
-                    let task_id: Option<u32> = attrs
-                        .iter()
-                        .find(|a| a.name.eq_ignore_ascii_case("task_id"))
-                        .and_then(|a| a.value.as_deref())
-                        .and_then(|v| v.parse().ok());
-                    if let Some(tid) = task_id {
-                        if request.flags & ACCT_FLAG_START != 0 {
-                            task_tracker.start(tid)?;
-                        } else if request.flags & ACCT_FLAG_STOP != 0 {
-                            if let Err(e) = task_tracker.stop(tid) {
-                                // Warn but don't fail for orphan stops (some NADs misbehave)
-                                warn!(peer = %peer, task_id = tid, error = %e, "task_id tracking warning");
-                            }
-                        } else if request.flags & ACCT_FLAG_WATCHDOG != 0
-                            && let Err(e) = task_tracker.watchdog(tid)
-                        {
-                            // Warn but don't fail for orphan watchdogs
-                            warn!(peer = %peer, task_id = tid, error = %e, "task_id tracking warning");
-                        }
-                    }
-                    Ok(())
-                })();
-                let response = match validate_accounting_semantics(&request) {
-                    Ok(()) if task_tracking_result.is_ok() => accounting_success_response(&request),
-                    Ok(()) => {
-                        // Semantic validation passed but task_id tracking failed (reuse)
-                        let msg = task_tracking_result.unwrap_err();
-                        warn!(
-                            peer = %peer,
-                            user = %request.user,
-                            session = request.header.session_id,
-                            reason = %msg,
-                            "accounting request rejected by task_id tracking (RFC 8907)"
-                        );
-                        let resp = AccountingResponse {
-                            status: ACCT_STATUS_ERROR,
-                            server_msg: msg.to_string(),
-                            data: format!("reason=task-id-reuse;detail={msg}"),
-                            args: Vec::new(),
-                        };
-                        audit_event(
-                            "acct_task_id_reuse",
-                            &peer,
-                            &request.user,
-                            request.header.session_id,
-                            "error",
-                            "task-id-reuse",
-                            msg,
-                        );
-                        resp
-                    }
-                    Err(msg) => {
-                        warn!(
-                            peer = %peer,
-                            user = %request.user,
-                            session = request.header.session_id,
-                            reason = %msg,
-                            "accounting request rejected by semantic checks"
-                        );
-                        let resp = AccountingResponse {
-                            status: ACCT_STATUS_ERROR,
-                            server_msg: msg.to_string(),
-                            data: format!("reason=semantic-invalid;detail={msg}"),
-                            args: Vec::new(),
-                        };
-                        let meta = format!(
-                            "flags=0x{:02x};attrs={};reason={}",
-                            request.flags,
-                            request.args.len(),
-                            msg
-                        );
-                        audit_event(
-                            "acct_semantic_reject",
-                            &peer,
-                            &request.user,
-                            request.header.session_id,
-                            "error",
-                            msg,
-                            &meta,
-                        );
-                        if resp.status == ACCT_STATUS_ERROR {
-                            audit_event(
-                                "acct_error",
-                                &peer,
-                                &request.user,
-                                request.header.session_id,
-                                "error",
-                                "acct-error",
-                                &resp.data,
-                            );
-                        }
-                        resp
-                    }
-                };
-                if response.status == ACCT_STATUS_SUCCESS {
-                    let acct_type = if request.flags & ACCT_FLAG_START != 0 {
-                        "start"
-                    } else if request.flags & ACCT_FLAG_STOP != 0 {
-                        "stop"
-                    } else if request.flags & ACCT_FLAG_WATCHDOG != 0 {
-                        "watchdog"
-                    } else {
-                        "unknown"
-                    };
-                    let attrs = request.attributes();
-                    let service = attrs
-                        .iter()
-                        .find(|a| a.name.eq_ignore_ascii_case("service"))
-                        .and_then(|a| a.value.as_deref())
-                        .unwrap_or("-");
-                    let cmd = attrs
-                        .iter()
-                        .find(|a| a.name.eq_ignore_ascii_case("cmd"))
-                        .and_then(|a| a.value.as_deref())
-                        .unwrap_or("-");
-                    let task = attrs
-                        .iter()
-                        .find(|a| a.name.eq_ignore_ascii_case("task_id"))
-                        .and_then(|a| a.value.as_deref())
-                        .unwrap_or("-");
-                    let status_attr = attrs
-                        .iter()
-                        .find(|a| a.name.eq_ignore_ascii_case("status"))
-                        .and_then(|a| a.value.as_deref())
-                        .unwrap_or("-");
-                    let bytes_in = attrs
-                        .iter()
-                        .find(|a| a.name.eq_ignore_ascii_case("bytes_in"))
-                        .and_then(|a| a.value.as_deref())
-                        .unwrap_or("-");
-                    let bytes_out = attrs
-                        .iter()
-                        .find(|a| a.name.eq_ignore_ascii_case("bytes_out"))
-                        .and_then(|a| a.value.as_deref())
-                        .unwrap_or("-");
-                    let data = format!(
-                        "type={};flags=0x{:02x};attrs={};service={};cmd={};task_id={};status={};bytes_in={};bytes_out={}",
-                        acct_type,
-                        request.flags,
-                        request.args.len(),
-                        service,
-                        cmd,
-                        task,
-                        status_attr,
-                        bytes_in,
-                        bytes_out
-                    );
-                    audit_event(
-                        "acct_accept",
-                        &peer,
-                        &request.user,
-                        request.header.session_id,
-                        "success",
-                        "semantic-ok",
-                        &data,
-                    );
-                } else if response.status == ACCT_STATUS_ERROR {
-                    audit_event(
-                        "acct_error",
-                        &peer,
-                        &request.user,
-                        request.header.session_id,
-                        "error",
-                        "acct-error",
-                        &response.data,
-                    );
-                }
-                write_accounting_response(
+                match handle_accounting_packet(
                     &mut stream,
-                    &request.header,
-                    &response,
+                    &request,
+                    &single_connect,
+                    &mut task_tracker,
                     secret.as_deref().map(|s| s.as_slice()),
+                    &peer,
                 )
                 .await
-                .with_context(|| "sending TACACS+ accounting response")?;
+                {
+                    Ok(LoopControl::Continue) => {}
+                    Ok(LoopControl::Break) | Err(_) => break,
+                }
             }
             Ok(None) => {
                 debug!(peer = %peer, "client closed connection");
