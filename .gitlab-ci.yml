@@ -32,6 +32,8 @@ format-check:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 clippy-check:
   stage: validate
@@ -42,6 +44,8 @@ clippy-check:
   only:
     - merge_requests
     - master
+  tags:
+    - saas-linux-large-arm64
 
 # ============================================================================
 # Stage 2: Build
