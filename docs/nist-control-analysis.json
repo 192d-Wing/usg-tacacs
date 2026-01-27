@@ -1,0 +1,997 @@
+{
+  "summary": {
+    "total_files_analyzed": 62,
+    "files_with_controls": 35,
+    "unique_controls": 37,
+    "files_needing_headers": 4
+  },
+  "files": [
+    {
+      "file_path": "crates/tacacs-audit/src/config.rs",
+      "control_count": 4,
+      "controls": [
+        "AU-4",
+        "AU-6",
+        "AU-9",
+        "CM-6"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 350,
+      "reference_count": 6
+    },
+    {
+      "file_path": "crates/tacacs-audit/src/elasticsearch.rs",
+      "control_count": 3,
+      "controls": [
+        "AU-4",
+        "AU-6",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 298,
+      "reference_count": 6
+    },
+    {
+      "file_path": "crates/tacacs-audit/src/event.rs",
+      "control_count": 3,
+      "controls": [
+        "AU-2",
+        "AU-3",
+        "AU-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 314,
+      "reference_count": 6
+    },
+    {
+      "file_path": "crates/tacacs-audit/src/forwarder.rs",
+      "control_count": 4,
+      "controls": [
+        "AU-12",
+        "AU-2",
+        "AU-4",
+        "CM-6"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 200,
+      "reference_count": 10
+    },
+    {
+      "file_path": "crates/tacacs-audit/src/lib.rs",
+      "control_count": 6,
+      "controls": [
+        "AU-12",
+        "AU-2",
+        "AU-3",
+        "AU-4",
+        "AU-6",
+        "AU-9"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 62,
+      "reference_count": 9
+    },
+    {
+      "file_path": "crates/tacacs-audit/src/syslog.rs",
+      "control_count": 4,
+      "controls": [
+        "AU-12",
+        "AU-2",
+        "AU-4",
+        "AU-9"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 458,
+      "reference_count": 6
+    },
+    {
+      "file_path": "crates/tacacs-client-tls/src/acct.rs",
+      "control_count": 4,
+      "controls": [
+        "AU-12",
+        "AU-14",
+        "AU-2",
+        "AU-3"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 602,
+      "reference_count": 11
+    },
+    {
+      "file_path": "crates/tacacs-client-tls/src/authen.rs",
+      "control_count": 5,
+      "controls": [
+        "AC-6",
+        "IA-11",
+        "IA-2",
+        "IA-5",
+        "IA-6"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 581,
+      "reference_count": 10
+    },
+    {
+      "file_path": "crates/tacacs-client-tls/src/author.rs",
+      "control_count": 4,
+      "controls": [
+        "AC-17",
+        "AC-3",
+        "AC-6",
+        "CM-5"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 506,
+      "reference_count": 7
+    },
+    {
+      "file_path": "crates/tacacs-client-tls/src/client.rs",
+      "control_count": 2,
+      "controls": [
+        "SC-23",
+        "SC-8"
+      ],
+      "has_module_header": false,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": true,
+      "line_count": 222,
+      "reference_count": 2
+    },
+    {
+      "file_path": "crates/tacacs-client-tls/src/lib.rs",
+      "control_count": 9,
+      "controls": [
+        "AC-3",
+        "AU-12",
+        "AU-2",
+        "IA-2",
+        "IA-3",
+        "SC-13",
+        "SC-17",
+        "SC-23",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": false,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 123,
+      "reference_count": 9
+    },
+    {
+      "file_path": "crates/tacacs-client-tls/src/tls.rs",
+      "control_count": 5,
+      "controls": [
+        "IA-3",
+        "SC-13",
+        "SC-17",
+        "SC-23",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 274,
+      "reference_count": 12
+    },
+    {
+      "file_path": "crates/tacacs-openssh/src/bin/authkeys.rs",
+      "control_count": 7,
+      "controls": [
+        "AC-17",
+        "AC-3",
+        "CM-3",
+        "IA-2",
+        "IA-5",
+        "SC-17",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 298,
+      "reference_count": 16
+    },
+    {
+      "file_path": "crates/tacacs-openssh/src/bin/pam_helper.rs",
+      "control_count": 5,
+      "controls": [
+        "AC-3",
+        "IA-2",
+        "IA-5",
+        "IA-6",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": false,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 197,
+      "reference_count": 5
+    },
+    {
+      "file_path": "crates/tacacs-openssh/src/config.rs",
+      "control_count": 3,
+      "controls": [
+        "CM-6",
+        "IA-3",
+        "SC-17"
+      ],
+      "has_module_header": true,
+      "has_function_tables": false,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 164,
+      "reference_count": 3
+    },
+    {
+      "file_path": "crates/tacacs-openssh/src/lib.rs",
+      "control_count": 12,
+      "controls": [
+        "AC-17",
+        "AC-3",
+        "AC-6",
+        "AU-12",
+        "AU-2",
+        "AU-3",
+        "CM-5",
+        "IA-2",
+        "IA-3",
+        "IA-5",
+        "SC-23",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 267,
+      "reference_count": 23
+    },
+    {
+      "file_path": "crates/tacacs-policy/src/lib.rs",
+      "control_count": 3,
+      "controls": [
+        "AC-3",
+        "AC-6",
+        "SI-10"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 1551,
+      "reference_count": 5
+    },
+    {
+      "file_path": "crates/tacacs-proto/src/crypto.rs",
+      "control_count": 3,
+      "controls": [
+        "SC-12",
+        "SC-13",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 257,
+      "reference_count": 7
+    },
+    {
+      "file_path": "crates/tacacs-secrets/src/config.rs",
+      "control_count": 3,
+      "controls": [
+        "CM-3",
+        "IA-5",
+        "SC-17"
+      ],
+      "has_module_header": false,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": true,
+      "line_count": 384,
+      "reference_count": 3
+    },
+    {
+      "file_path": "crates/tacacs-secrets/src/est/mod.rs",
+      "control_count": 4,
+      "controls": [
+        "CM-3",
+        "IA-5",
+        "SC-12",
+        "SC-17"
+      ],
+      "has_module_header": true,
+      "has_function_tables": false,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 759,
+      "reference_count": 4
+    },
+    {
+      "file_path": "crates/tacacs-server/src/api/handlers.rs",
+      "control_count": 7,
+      "controls": [
+        "AC-10",
+        "AC-12",
+        "AC-3",
+        "AU-12",
+        "AU-2",
+        "CM-3",
+        "SI-4"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 1199,
+      "reference_count": 24
+    },
+    {
+      "file_path": "crates/tacacs-server/src/api/mod.rs",
+      "control_count": 8,
+      "controls": [
+        "AC-10",
+        "AC-12",
+        "AC-3",
+        "AU-12",
+        "AU-2",
+        "CM-3",
+        "SC-23",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 151,
+      "reference_count": 13
+    },
+    {
+      "file_path": "crates/tacacs-server/src/api/models.rs",
+      "control_count": 4,
+      "controls": [
+        "AC-10",
+        "AU-12",
+        "AU-3",
+        "CM-3"
+      ],
+      "has_module_header": false,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": true,
+      "line_count": 126,
+      "reference_count": 4
+    },
+    {
+      "file_path": "crates/tacacs-server/src/api/rbac.rs",
+      "control_count": 4,
+      "controls": [
+        "AC-2",
+        "AC-3",
+        "AC-6",
+        "AU-12"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 233,
+      "reference_count": 13
+    },
+    {
+      "file_path": "crates/tacacs-server/src/ascii.rs",
+      "control_count": 5,
+      "controls": [
+        "AC-7",
+        "AU-12",
+        "AU-2",
+        "IA-2",
+        "IA-6"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 983,
+      "reference_count": 19
+    },
+    {
+      "file_path": "crates/tacacs-server/src/auth.rs",
+      "control_count": 9,
+      "controls": [
+        "AC-2",
+        "AU-12",
+        "AU-2",
+        "IA-2",
+        "IA-5",
+        "IA-6",
+        "SC-13",
+        "SC-8",
+        "SI-10"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 1430,
+      "reference_count": 30
+    },
+    {
+      "file_path": "crates/tacacs-server/src/config.rs",
+      "control_count": 8,
+      "controls": [
+        "AC-10",
+        "AC-7",
+        "CM-2",
+        "CM-6",
+        "IA-5",
+        "SC-12",
+        "SC-28",
+        "SI-10"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 2034,
+      "reference_count": 16
+    },
+    {
+      "file_path": "crates/tacacs-server/src/main.rs",
+      "control_count": 7,
+      "controls": [
+        "AC-10",
+        "AC-12",
+        "AC-3",
+        "CM-3",
+        "IA-5",
+        "SC-17",
+        "SC-8"
+      ],
+      "has_module_header": false,
+      "has_function_tables": false,
+      "has_inline_markers": true,
+      "needs_formal_header": true,
+      "line_count": 622,
+      "reference_count": 10
+    },
+    {
+      "file_path": "crates/tacacs-server/src/metrics.rs",
+      "control_count": 3,
+      "controls": [
+        "AU-2",
+        "AU-6",
+        "SI-4"
+      ],
+      "has_module_header": true,
+      "has_function_tables": false,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 485,
+      "reference_count": 3
+    },
+    {
+      "file_path": "crates/tacacs-server/src/policy.rs",
+      "control_count": 4,
+      "controls": [
+        "AC-3",
+        "AC-4",
+        "AU-12",
+        "AU-2"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 250,
+      "reference_count": 6
+    },
+    {
+      "file_path": "crates/tacacs-server/src/server.rs",
+      "control_count": 16,
+      "controls": [
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-3",
+        "AC-7",
+        "AU-12",
+        "AU-2",
+        "CM-3",
+        "IA-2",
+        "IA-3",
+        "IA-4",
+        "IA-5",
+        "SC-17",
+        "SC-23",
+        "SC-7",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 2859,
+      "reference_count": 78
+    },
+    {
+      "file_path": "crates/tacacs-server/src/session.rs",
+      "control_count": 4,
+      "controls": [
+        "AU-2",
+        "AU-3",
+        "SC-23",
+        "SI-7"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 237,
+      "reference_count": 7
+    },
+    {
+      "file_path": "crates/tacacs-server/src/session_registry.rs",
+      "control_count": 8,
+      "controls": [
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AU-2",
+        "AU-3",
+        "SC-23",
+        "SC-7",
+        "SI-4"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 957,
+      "reference_count": 32
+    },
+    {
+      "file_path": "crates/tacacs-server/src/telemetry.rs",
+      "control_count": 4,
+      "controls": [
+        "AU-12",
+        "AU-4",
+        "AU-6",
+        "AU-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": false,
+      "has_inline_markers": false,
+      "needs_formal_header": false,
+      "line_count": 192,
+      "reference_count": 4
+    },
+    {
+      "file_path": "crates/tacacs-server/src/tls.rs",
+      "control_count": 6,
+      "controls": [
+        "IA-3",
+        "SC-12",
+        "SC-13",
+        "SC-17",
+        "SC-23",
+        "SC-8"
+      ],
+      "has_module_header": true,
+      "has_function_tables": true,
+      "has_inline_markers": true,
+      "needs_formal_header": false,
+      "line_count": 461,
+      "reference_count": 18
+    }
+  ],
+  "controls": {
+    "AC-10": {
+      "file_count": 7,
+      "files": [
+        "crates/tacacs-server/src/api/handlers.rs",
+        "crates/tacacs-server/src/api/mod.rs",
+        "crates/tacacs-server/src/api/models.rs",
+        "crates/tacacs-server/src/config.rs",
+        "crates/tacacs-server/src/main.rs",
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/session_registry.rs"
+      ]
+    },
+    "AC-11": {
+      "file_count": 2,
+      "files": [
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/session_registry.rs"
+      ]
+    },
+    "AC-12": {
+      "file_count": 5,
+      "files": [
+        "crates/tacacs-server/src/api/handlers.rs",
+        "crates/tacacs-server/src/api/mod.rs",
+        "crates/tacacs-server/src/main.rs",
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/session_registry.rs"
+      ]
+    },
+    "AC-17": {
+      "file_count": 3,
+      "files": [
+        "crates/tacacs-client-tls/src/author.rs",
+        "crates/tacacs-openssh/src/bin/authkeys.rs",
+        "crates/tacacs-openssh/src/lib.rs"
+      ]
+    },
+    "AC-2": {
+      "file_count": 2,
+      "files": [
+        "crates/tacacs-server/src/api/rbac.rs",
+        "crates/tacacs-server/src/auth.rs"
+      ]
+    },
+    "AC-3": {
+      "file_count": 12,
+      "files": [
+        "crates/tacacs-client-tls/src/author.rs",
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-openssh/src/bin/authkeys.rs",
+        "crates/tacacs-openssh/src/bin/pam_helper.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-policy/src/lib.rs",
+        "crates/tacacs-server/src/api/handlers.rs",
+        "crates/tacacs-server/src/api/mod.rs",
+        "crates/tacacs-server/src/api/rbac.rs",
+        "crates/tacacs-server/src/main.rs",
+        "crates/tacacs-server/src/policy.rs",
+        "crates/tacacs-server/src/server.rs"
+      ]
+    },
+    "AC-4": {
+      "file_count": 1,
+      "files": [
+        "crates/tacacs-server/src/policy.rs"
+      ]
+    },
+    "AC-6": {
+      "file_count": 5,
+      "files": [
+        "crates/tacacs-client-tls/src/authen.rs",
+        "crates/tacacs-client-tls/src/author.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-policy/src/lib.rs",
+        "crates/tacacs-server/src/api/rbac.rs"
+      ]
+    },
+    "AC-7": {
+      "file_count": 3,
+      "files": [
+        "crates/tacacs-server/src/ascii.rs",
+        "crates/tacacs-server/src/config.rs",
+        "crates/tacacs-server/src/server.rs"
+      ]
+    },
+    "AU-12": {
+      "file_count": 15,
+      "files": [
+        "crates/tacacs-audit/src/forwarder.rs",
+        "crates/tacacs-audit/src/lib.rs",
+        "crates/tacacs-audit/src/syslog.rs",
+        "crates/tacacs-client-tls/src/acct.rs",
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-server/src/api/handlers.rs",
+        "crates/tacacs-server/src/api/mod.rs",
+        "crates/tacacs-server/src/api/models.rs",
+        "crates/tacacs-server/src/api/rbac.rs",
+        "crates/tacacs-server/src/ascii.rs",
+        "crates/tacacs-server/src/auth.rs",
+        "crates/tacacs-server/src/policy.rs",
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/telemetry.rs"
+      ]
+    },
+    "AU-14": {
+      "file_count": 1,
+      "files": [
+        "crates/tacacs-client-tls/src/acct.rs"
+      ]
+    },
+    "AU-2": {
+      "file_count": 16,
+      "files": [
+        "crates/tacacs-audit/src/event.rs",
+        "crates/tacacs-audit/src/forwarder.rs",
+        "crates/tacacs-audit/src/lib.rs",
+        "crates/tacacs-audit/src/syslog.rs",
+        "crates/tacacs-client-tls/src/acct.rs",
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-server/src/api/handlers.rs",
+        "crates/tacacs-server/src/api/mod.rs",
+        "crates/tacacs-server/src/ascii.rs",
+        "crates/tacacs-server/src/auth.rs",
+        "crates/tacacs-server/src/metrics.rs",
+        "crates/tacacs-server/src/policy.rs",
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/session.rs",
+        "crates/tacacs-server/src/session_registry.rs"
+      ]
+    },
+    "AU-3": {
+      "file_count": 7,
+      "files": [
+        "crates/tacacs-audit/src/event.rs",
+        "crates/tacacs-audit/src/lib.rs",
+        "crates/tacacs-client-tls/src/acct.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-server/src/api/models.rs",
+        "crates/tacacs-server/src/session.rs",
+        "crates/tacacs-server/src/session_registry.rs"
+      ]
+    },
+    "AU-4": {
+      "file_count": 6,
+      "files": [
+        "crates/tacacs-audit/src/config.rs",
+        "crates/tacacs-audit/src/elasticsearch.rs",
+        "crates/tacacs-audit/src/forwarder.rs",
+        "crates/tacacs-audit/src/lib.rs",
+        "crates/tacacs-audit/src/syslog.rs",
+        "crates/tacacs-server/src/telemetry.rs"
+      ]
+    },
+    "AU-6": {
+      "file_count": 5,
+      "files": [
+        "crates/tacacs-audit/src/config.rs",
+        "crates/tacacs-audit/src/elasticsearch.rs",
+        "crates/tacacs-audit/src/lib.rs",
+        "crates/tacacs-server/src/metrics.rs",
+        "crates/tacacs-server/src/telemetry.rs"
+      ]
+    },
+    "AU-8": {
+      "file_count": 2,
+      "files": [
+        "crates/tacacs-audit/src/event.rs",
+        "crates/tacacs-server/src/telemetry.rs"
+      ]
+    },
+    "AU-9": {
+      "file_count": 3,
+      "files": [
+        "crates/tacacs-audit/src/config.rs",
+        "crates/tacacs-audit/src/lib.rs",
+        "crates/tacacs-audit/src/syslog.rs"
+      ]
+    },
+    "CM-2": {
+      "file_count": 1,
+      "files": [
+        "crates/tacacs-server/src/config.rs"
+      ]
+    },
+    "CM-3": {
+      "file_count": 8,
+      "files": [
+        "crates/tacacs-openssh/src/bin/authkeys.rs",
+        "crates/tacacs-secrets/src/config.rs",
+        "crates/tacacs-secrets/src/est/mod.rs",
+        "crates/tacacs-server/src/api/handlers.rs",
+        "crates/tacacs-server/src/api/mod.rs",
+        "crates/tacacs-server/src/api/models.rs",
+        "crates/tacacs-server/src/main.rs",
+        "crates/tacacs-server/src/server.rs"
+      ]
+    },
+    "CM-5": {
+      "file_count": 2,
+      "files": [
+        "crates/tacacs-client-tls/src/author.rs",
+        "crates/tacacs-openssh/src/lib.rs"
+      ]
+    },
+    "CM-6": {
+      "file_count": 4,
+      "files": [
+        "crates/tacacs-audit/src/config.rs",
+        "crates/tacacs-audit/src/forwarder.rs",
+        "crates/tacacs-openssh/src/config.rs",
+        "crates/tacacs-server/src/config.rs"
+      ]
+    },
+    "IA-11": {
+      "file_count": 1,
+      "files": [
+        "crates/tacacs-client-tls/src/authen.rs"
+      ]
+    },
+    "IA-2": {
+      "file_count": 8,
+      "files": [
+        "crates/tacacs-client-tls/src/authen.rs",
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-openssh/src/bin/authkeys.rs",
+        "crates/tacacs-openssh/src/bin/pam_helper.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-server/src/ascii.rs",
+        "crates/tacacs-server/src/auth.rs",
+        "crates/tacacs-server/src/server.rs"
+      ]
+    },
+    "IA-3": {
+      "file_count": 6,
+      "files": [
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-client-tls/src/tls.rs",
+        "crates/tacacs-openssh/src/config.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/tls.rs"
+      ]
+    },
+    "IA-4": {
+      "file_count": 1,
+      "files": [
+        "crates/tacacs-server/src/server.rs"
+      ]
+    },
+    "IA-5": {
+      "file_count": 10,
+      "files": [
+        "crates/tacacs-client-tls/src/authen.rs",
+        "crates/tacacs-openssh/src/bin/authkeys.rs",
+        "crates/tacacs-openssh/src/bin/pam_helper.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-secrets/src/config.rs",
+        "crates/tacacs-secrets/src/est/mod.rs",
+        "crates/tacacs-server/src/auth.rs",
+        "crates/tacacs-server/src/config.rs",
+        "crates/tacacs-server/src/main.rs",
+        "crates/tacacs-server/src/server.rs"
+      ]
+    },
+    "IA-6": {
+      "file_count": 4,
+      "files": [
+        "crates/tacacs-client-tls/src/authen.rs",
+        "crates/tacacs-openssh/src/bin/pam_helper.rs",
+        "crates/tacacs-server/src/ascii.rs",
+        "crates/tacacs-server/src/auth.rs"
+      ]
+    },
+    "SC-12": {
+      "file_count": 4,
+      "files": [
+        "crates/tacacs-proto/src/crypto.rs",
+        "crates/tacacs-secrets/src/est/mod.rs",
+        "crates/tacacs-server/src/config.rs",
+        "crates/tacacs-server/src/tls.rs"
+      ]
+    },
+    "SC-13": {
+      "file_count": 5,
+      "files": [
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-client-tls/src/tls.rs",
+        "crates/tacacs-proto/src/crypto.rs",
+        "crates/tacacs-server/src/auth.rs",
+        "crates/tacacs-server/src/tls.rs"
+      ]
+    },
+    "SC-17": {
+      "file_count": 9,
+      "files": [
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-client-tls/src/tls.rs",
+        "crates/tacacs-openssh/src/bin/authkeys.rs",
+        "crates/tacacs-openssh/src/config.rs",
+        "crates/tacacs-secrets/src/config.rs",
+        "crates/tacacs-secrets/src/est/mod.rs",
+        "crates/tacacs-server/src/main.rs",
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/tls.rs"
+      ]
+    },
+    "SC-23": {
+      "file_count": 9,
+      "files": [
+        "crates/tacacs-client-tls/src/client.rs",
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-client-tls/src/tls.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-server/src/api/mod.rs",
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/session.rs",
+        "crates/tacacs-server/src/session_registry.rs",
+        "crates/tacacs-server/src/tls.rs"
+      ]
+    },
+    "SC-28": {
+      "file_count": 1,
+      "files": [
+        "crates/tacacs-server/src/config.rs"
+      ]
+    },
+    "SC-7": {
+      "file_count": 2,
+      "files": [
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/session_registry.rs"
+      ]
+    },
+    "SC-8": {
+      "file_count": 13,
+      "files": [
+        "crates/tacacs-audit/src/elasticsearch.rs",
+        "crates/tacacs-client-tls/src/client.rs",
+        "crates/tacacs-client-tls/src/lib.rs",
+        "crates/tacacs-client-tls/src/tls.rs",
+        "crates/tacacs-openssh/src/bin/authkeys.rs",
+        "crates/tacacs-openssh/src/bin/pam_helper.rs",
+        "crates/tacacs-openssh/src/lib.rs",
+        "crates/tacacs-proto/src/crypto.rs",
+        "crates/tacacs-server/src/api/mod.rs",
+        "crates/tacacs-server/src/auth.rs",
+        "crates/tacacs-server/src/main.rs",
+        "crates/tacacs-server/src/server.rs",
+        "crates/tacacs-server/src/tls.rs"
+      ]
+    },
+    "SI-10": {
+      "file_count": 3,
+      "files": [
+        "crates/tacacs-policy/src/lib.rs",
+        "crates/tacacs-server/src/auth.rs",
+        "crates/tacacs-server/src/config.rs"
+      ]
+    },
+    "SI-4": {
+      "file_count": 3,
+      "files": [
+        "crates/tacacs-server/src/api/handlers.rs",
+        "crates/tacacs-server/src/metrics.rs",
+        "crates/tacacs-server/src/session_registry.rs"
+      ]
+    },
+    "SI-7": {
+      "file_count": 1,
+      "files": [
+        "crates/tacacs-server/src/session.rs"
+      ]
+    }
+  }
+}

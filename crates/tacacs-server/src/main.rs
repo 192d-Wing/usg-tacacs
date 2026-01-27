@@ -1,3 +1,77 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! TACACS+ server main entry point and application initialization.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-3 | Access Control | Implemented | 2026-01-26 | Management API TLS/mTLS |
+//! | AC-10 | Access Control | Implemented | 2026-01-26 | [`main`] session registry |
+//! | AC-12 | Access Control | Implemented | 2026-01-26 | [`main`] idle sweep task |
+//! | CM-3 | Config Management | Implemented | 2026-01-26 | Policy reload coordination |
+//! | IA-5 | Ident/Authentication | Implemented | 2026-01-26 | EST bootstrap enrollment |
+//! | SC-8 | Sys/Comm Protection | Implemented | 2026-01-26 | Management API TLS |
+//! | SC-17 | Sys/Comm Protection | Implemented | 2026-01-26 | EST certificate management |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-26",
+//!   "control_families": ["AC", "CM", "IA", "SC"],
+//!   "total_controls": 7,
+//!   "file_path": "crates/tacacs-server/src/main.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
+//! ## Control Details
+//!
+//! ### AC-3: Access Enforcement
+//! - **Implementation:** Management API requires TLS with mutual TLS (mTLS) for authentication
+//! - **Evidence:** TLS acceptor configuration, client certificate validation
+//! - **Reference:** [AC-3](../../../docs/NIST-CONTROLS-MAPPING.md#ac-3-access-enforcement)
+//!
+//! ### AC-10: Concurrent Session Control
+//! - **Implementation:** Session registry tracks active connections with configurable limits
+//! - **Evidence:** Per-IP and total session counting, connection rejection when limits exceeded
+//! - **Reference:** [AC-10](../../../docs/NIST-CONTROLS-MAPPING.md#ac-10-concurrent-session-control)
+//!
+//! ### AC-12: Session Termination
+//! - **Implementation:** Background idle sweep task terminates inactive sessions
+//! - **Evidence:** Configurable idle timeout, periodic session cleanup
+//! - **Reference:** [AC-12](../../../docs/NIST-CONTROLS-MAPPING.md#ac-11-session-lock--ac-12-session-termination)
+//!
+//! ### CM-3: Configuration Change Control
+//! - **Implementation:** Policy reload coordination via SIGHUP signal and management API
+//! - **Evidence:** Unified policy change watcher, atomic policy updates
+//! - **Reference:** [CM-3](../../../docs/NIST-CONTROLS-MAPPING.md#cm-3-configuration-change-control)
+//!
+//! ### IA-5: Authenticator Management
+//! - **Implementation:** EST (Enrollment over Secure Transport) bootstrap for zero-touch certificate enrollment
+//! - **Evidence:** Automatic certificate provisioning, secure credential establishment
+//! - **Reference:** [IA-5](../../../docs/NIST-CONTROLS-MAPPING.md#ia-5-authenticator-management)
+//!
+//! ### SC-8: Transmission Confidentiality and Integrity
+//! - **Implementation:** TLS 1.2+ for all management API connections
+//! - **Evidence:** TLS acceptor with certificate validation, encrypted channels
+//! - **Reference:** [SC-8](../../../docs/NIST-CONTROLS-MAPPING.md#sc-8-transmission-confidentiality-and-integrity)
+//!
+//! ### SC-17: Public Key Infrastructure Certificates
+//! - **Implementation:** EST integration for automated certificate lifecycle management
+//! - **Evidence:** Certificate enrollment, renewal, and rotation via RFC 7030
+//! - **Reference:** [SC-17](../../../docs/NIST-CONTROLS-MAPPING.md#sc-17-public-key-infrastructure-certificates)
+
 use crate::ascii::AsciiConfig;
 use crate::auth::LdapConfig;
 use crate::config::{Args, LogFormat, StaticCreds, build_est_config, credentials_map};

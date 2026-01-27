@@ -1,5 +1,57 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Data models for the Management API.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [NIST-CONTROLS-MAPPING.md](../../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-10 | Access Control | Implemented | 2026-01-26 | [`SessionInfo`] |
+//! | AU-3 | Audit/Accountability | Implemented | 2026-01-26 | [`SessionInfo`], [`AuditEvent`] |
+//! | AU-12 | Audit/Accountability | Implemented | 2026-01-26 | [`AuditEvent`] |
+//! | CM-3 | Config Management | Implemented | 2026-01-26 | [`PolicyReloadResponse`] |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-26",
+//!   "control_families": ["AC", "AU", "CM"],
+//!   "total_controls": 4,
+//!   "file_path": "crates/tacacs-server/src/api/models.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
+//! ## Control Details
+//!
+//! ### AC-10: Concurrent Session Control
+//! - **Implementation:** Session data structures provide visibility into active connections
+//! - **Evidence:** SessionInfo tracks connection metadata, enables session monitoring
+//! - **Reference:** [AC-10](../../../../docs/NIST-CONTROLS-MAPPING.md#ac-10-concurrent-session-control)
+//!
+//! ### AU-3: Content of Audit Records
+//! - **Implementation:** Structured audit event data with comprehensive session context
+//! - **Evidence:** Timestamp, peer address, username, event type, reason, detail fields
+//! - **Reference:** [AU-3](../../../../docs/NIST-CONTROLS-MAPPING.md#au-3-content-of-audit-records)
+//!
+//! ### AU-12: Audit Generation
+//! - **Implementation:** API models for audit event query and retrieval
+//! - **Evidence:** AuditEvent struct with all required audit fields
+//! - **Reference:** [AU-12](../../../../docs/NIST-CONTROLS-MAPPING.md#au-12-audit-generation)
+//!
+//! ### CM-3: Configuration Change Control
+//! - **Implementation:** Policy reload response models track configuration changes
+//! - **Evidence:** PolicyReloadResponse with status and metadata
+//! - **Reference:** [CM-3](../../../../docs/NIST-CONTROLS-MAPPING.md#cm-3-configuration-change-control)
 
 use serde::{Deserialize, Serialize};
 

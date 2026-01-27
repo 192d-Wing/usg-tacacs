@@ -1,4 +1,52 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration structures for secrets management.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | CM-3 | Config Management | Implemented | 2026-01-26 | Configuration structures |
+//! | IA-5 | Ident/Authentication | Implemented | 2026-01-26 | [`OpenBaoConfig`], [`EstConfig`] |
+//! | SC-17 | Sys/Comm Protection | Implemented | 2026-01-26 | [`PkiConfig`], [`EstConfig`] |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-26",
+//!   "control_families": ["CM", "IA", "SC"],
+//!   "total_controls": 3,
+//!   "file_path": "crates/tacacs-secrets/src/config.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
+//! ## Control Details
+//!
+//! ### CM-3: Configuration Change Control
+//! - **Implementation:** Structured configuration for secrets providers with validation
+//! - **Evidence:** Serde-based deserialization, type-safe configuration models
+//! - **Reference:** [CM-3](../../../docs/NIST-CONTROLS-MAPPING.md#cm-3-configuration-change-control)
+//!
+//! ### IA-5: Authenticator Management
+//! - **Implementation:** OpenBao AppRole credentials, EST authentication configuration
+//! - **Evidence:** Role/secret ID file paths, secure credential storage patterns
+//! - **Reference:** [IA-5](../../../docs/NIST-CONTROLS-MAPPING.md#ia-5-authenticator-management)
+//!
+//! ### SC-17: Public Key Infrastructure Certificates
+//! - **Implementation:** PKI and EST configuration for automated certificate lifecycle
+//! - **Evidence:** Certificate paths, EST server URLs, renewal thresholds
+//! - **Reference:** [SC-17](../../../docs/NIST-CONTROLS-MAPPING.md#sc-17-public-key-infrastructure-certificates)
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

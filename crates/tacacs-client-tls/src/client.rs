@@ -4,6 +4,46 @@
 //! This module provides a high-level async client for TACACS+ over TLS 1.3.
 //! Unlike legacy TACACS+, this client does not use MD5 obfuscation - all
 //! security is provided by the TLS transport layer per RFC 9887.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | SC-8 | Sys/Comm Protection | Implemented | 2026-01-26 | [`TacacsClient::connect`] |
+//! | SC-23 | Sys/Comm Protection | Implemented | 2026-01-26 | [`TacacsClient`] session ID |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-26",
+//!   "control_families": ["SC"],
+//!   "total_controls": 2,
+//!   "file_path": "crates/tacacs-client-tls/src/client.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
+//! ## Control Details
+//!
+//! ### SC-8: Transmission Confidentiality and Integrity
+//! - **Implementation:** TLS 1.3 for all client-server communication, no MD5 obfuscation
+//! - **Evidence:** TLS-only transport per RFC 9887, encrypted packet payloads
+//! - **Reference:** [SC-8](../../../docs/NIST-CONTROLS-MAPPING.md#sc-8-transmission-confidentiality-and-integrity)
+//!
+//! ### SC-23: Session Authenticity
+//! - **Implementation:** Atomic session ID generation, prevents session hijacking
+//! - **Evidence:** Session ID counter with unique per-connection identifiers
+//! - **Reference:** [SC-23](../../../docs/NIST-CONTROLS-MAPPING.md#sc-23-session-authenticity)
 
 use crate::tls::TlsClientConfig;
 use anyhow::{Context, Result};
