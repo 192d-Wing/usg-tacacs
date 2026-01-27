@@ -59,7 +59,10 @@ argon2 = "0.5"
 sha2 = "0.10"
 
 # EST client for zero-touch certificate provisioning
-usg-est-client = { git = "https://gitlab.com/192d-wing/usg-est-client.git", features = ["csr-gen", "renewal"] }
+usg-est-client = { git = "https://gitlab.com/192d-wing/usg-est-client.git", features = [
+  "csr-gen",
+  "renewal",
+] }
 
 # Utilities
 bytes = "1"
@@ -68,7 +71,7 @@ regex = "1"
 clap = { version = "4", features = ["derive", "env"] }
 
 # JSON Schema
-jsonschema = "0.38"
+jsonschema = "0.40"
 
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
