@@ -49,7 +49,10 @@ use tokio::sync::mpsc;
 /// | AU-4 | Audit Log Storage | Configures external forwarding to prevent local exhaustion |
 pub async fn init_audit_system(
     config: AuditConfig,
-) -> Result<(mpsc::UnboundedSender<AuditEvent>, tokio::task::JoinHandle<()>)> {
+) -> Result<(
+    mpsc::UnboundedSender<AuditEvent>,
+    tokio::task::JoinHandle<()>,
+)> {
     let (tx, rx) = mpsc::unbounded_channel();
     let forwarder = Arc::new(AuditForwarder::new(config).await?);
 

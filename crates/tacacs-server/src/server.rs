@@ -59,11 +59,11 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS,
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
     AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
-    AccountingRequest, AccountingResponse, AuthSessionState, AuthenData,
-    AuthenPacket, AuthenReply, AuthenStart, AuthorizationRequest, AuthorizationResponse,
-    CAPABILITY_FLAG_REQUEST, CAPABILITY_FLAG_RESPONSE, Capability, Packet, read_packet,
-    validate_accounting_response_header, validate_author_response_header,
-    write_accounting_response, write_authen_reply, write_author_response,
+    AccountingRequest, AccountingResponse, AuthSessionState, AuthenData, AuthenPacket, AuthenReply,
+    AuthenStart, AuthorizationRequest, AuthorizationResponse, CAPABILITY_FLAG_REQUEST,
+    CAPABILITY_FLAG_RESPONSE, Capability, Packet, read_packet, validate_accounting_response_header,
+    validate_author_response_header, write_accounting_response, write_authen_reply,
+    write_author_response,
 };
 
 /// Per-IP connection rate limiter.
@@ -939,11 +939,7 @@ async fn initialize_connection(
 /// |---------|------|----------------|
 /// | AC-10 | Concurrent Session Control | Unregisters connection from session registry |
 /// | AU-2 | Audit Events | Logs connection close |
-async fn cleanup_connection(
-    connection_id: u64,
-    peer: &str,
-    registry: &Arc<SessionRegistry>,
-) {
+async fn cleanup_connection(connection_id: u64, peer: &str, registry: &Arc<SessionRegistry>) {
     // NIST AC-10: Unregister connection from session registry
     registry.unregister_connection(connection_id).await;
     audit_event("conn_close", peer, "", 0, "info", "loop-exit", "");
@@ -1118,7 +1114,10 @@ where
         } else {
             "unknown"
         },
-        &format!("vendor=0x{:04x};caps=0x{:08x}", cap.vendor, cap.capabilities.0),
+        &format!(
+            "vendor=0x{:04x};caps=0x{:08x}",
+            cap.vendor, cap.capabilities.0
+        ),
     );
 
     if cap.flags & CAPABILITY_FLAG_REQUEST != 0 {
@@ -1152,12 +1151,7 @@ fn authorize_shell_command(
     let ctx = authz_context(request);
     let attrs = policy
         .shell_attributes_for(&request.user)
-        .unwrap_or_else(|| {
-            vec![
-                "service=shell".to_string(),
-                "protocol=shell".to_string(),
-            ]
-        });
+        .unwrap_or_else(|| vec!["service=shell".to_string(), "protocol=shell".to_string()]);
     let attrs = ensure_priv_attr(attrs, request.priv_lvl);
     let resp = AuthorizationResponse {
         status: AUTHOR_STATUS_PASS_ADD,
@@ -1742,8 +1736,8 @@ where
     let state = auth_states
         .entry(session_id)
         .or_insert_with(|| match packet {
-            AuthenPacket::Start(start) => AuthSessionState::from_start(start)
-                .unwrap_or(AuthSessionState {
+            AuthenPacket::Start(start) => {
+                AuthSessionState::from_start(start).unwrap_or(AuthSessionState {
                     last_seq: start.header.seq_no,
                     expect_client: false,
                     authen_type: Some(start.authen_type),
@@ -1778,7 +1772,8 @@ where
                     ascii_attempts: 0,
                     ascii_user_attempts: 0,
                     ascii_pass_attempts: 0,
-                }),
+                })
+            }
             AuthenPacket::Continue(cont) => AuthSessionState {
                 last_seq: cont.header.seq_no,
                 expect_client: false,
@@ -1861,21 +1856,39 @@ async fn handle_authen_start_pap(
     };
 
     let ok = verify_pap(&start.user, &password, credentials)
-        || verify_password_sources(Some(&start.user), password.as_bytes(), credentials, ldap.as_ref()).await;
+        || verify_password_sources(
+            Some(&start.user),
+            password.as_bytes(),
+            credentials,
+            ldap.as_ref(),
+        )
+        .await;
 
     let policy = policy.read().await;
     let svc_str = start.service.to_string();
     let act_str = start.action.to_string();
 
     Ok(AuthenReply {
-        status: if ok { AUTHEN_STATUS_PASS } else { AUTHEN_STATUS_FAIL },
+        status: if ok {
+            AUTHEN_STATUS_PASS
+        } else {
+            AUTHEN_STATUS_FAIL
+        },
         flags: 0,
         server_msg: if ok {
-            policy.message_success().map(|m| m.to_string())
-                .unwrap_or_else(|| format!("authentication succeeded (service {svc_str} action {act_str})"))
+            policy
+                .message_success()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| {
+                    format!("authentication succeeded (service {svc_str} action {act_str})")
+                })
         } else {
-            policy.message_failure().map(|m| m.to_string())
-                .unwrap_or_else(|| format!("invalid credentials (service {svc_str} action {act_str})"))
+            policy
+                .message_failure()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| {
+                    format!("invalid credentials (service {svc_str} action {act_str})")
+                })
         },
         server_msg_raw: Vec::new(),
         data: Vec::new(),
@@ -1973,13 +1986,21 @@ async fn handle_authen_start_ascii(
 
     let (policy_user_prompt, policy_pass_prompt) = {
         let policy = policy.read().await;
-        let policy_user = username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
+        let policy_user =
+            username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
         let policy_port = field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
         let policy_rem = field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
         (
-            policy.prompt_username(policy_user.as_deref(), policy_port.as_deref(), policy_rem.as_deref())
+            policy
+                .prompt_username(
+                    policy_user.as_deref(),
+                    policy_port.as_deref(),
+                    policy_rem.as_deref(),
+                )
                 .map(|s| s.as_bytes().to_vec()),
-            policy.prompt_password(policy_user.as_deref()).map(|s| s.as_bytes().to_vec()),
+            policy
+                .prompt_password(policy_user.as_deref())
+                .map(|s| s.as_bytes().to_vec()),
         )
     };
 
@@ -2020,7 +2041,11 @@ async fn handle_authen_start_ascii(
         let ok = if let Some(raw) = state.username_raw.as_ref() {
             verify_pap_bytes_username(raw, &start.data, credentials)
         } else {
-            verify_pap_bytes(state.username.as_deref().unwrap_or_default(), &start.data, credentials)
+            verify_pap_bytes(
+                state.username.as_deref().unwrap_or_default(),
+                &start.data,
+                credentials,
+            )
         } || {
             if let Some(user) = state.username.as_deref() {
                 verify_password_sources(Some(user), &start.data, credentials, ldap.as_ref()).await
@@ -2039,18 +2064,32 @@ async fn handle_authen_start_ascii(
             }
         }
 
-        let svc_str = state.service.map(|svc| format!(" (service {svc})")).unwrap_or_default();
-        let act_str = state.action.map(|act| format!(" action {act})")).unwrap_or_default();
+        let svc_str = state
+            .service
+            .map(|svc| format!(" (service {svc})"))
+            .unwrap_or_default();
+        let act_str = state
+            .action
+            .map(|act| format!(" action {act})"))
+            .unwrap_or_default();
         let policy = policy.read().await;
 
         AuthenReply {
-            status: if ok { AUTHEN_STATUS_PASS } else { AUTHEN_STATUS_FAIL },
+            status: if ok {
+                AUTHEN_STATUS_PASS
+            } else {
+                AUTHEN_STATUS_FAIL
+            },
             flags: 0,
             server_msg: if ok {
-                policy.message_success().map(|m| m.to_string())
+                policy
+                    .message_success()
+                    .map(|m| m.to_string())
                     .unwrap_or_else(|| format!("authentication succeeded{svc_str}{act_str}"))
             } else {
-                policy.message_failure().map(|m| m.to_string())
+                policy
+                    .message_failure()
+                    .map(|m| m.to_string())
                     .unwrap_or_else(|| format!("invalid credentials{svc_str}{act_str}"))
             },
             server_msg_raw: Vec::new(),
@@ -2119,7 +2158,11 @@ where
             _ => "other",
         };
         let user_for_log = state_snapshot.username.as_deref().unwrap_or_else(|| {
-            state_snapshot.username_raw.as_ref().map(|_| "<raw>").unwrap_or("")
+            state_snapshot
+                .username_raw
+                .as_ref()
+                .map(|_| "<raw>")
+                .unwrap_or("")
         });
         let msg_data = if !reply.server_msg.is_empty() {
             reply.server_msg.clone()
@@ -2130,7 +2173,9 @@ where
         };
         let attempts = format!(
             "attempts_total={};user_attempts={};pass_attempts={}",
-            state_snapshot.ascii_attempts, state_snapshot.ascii_user_attempts, state_snapshot.ascii_pass_attempts
+            state_snapshot.ascii_attempts,
+            state_snapshot.ascii_user_attempts,
+            state_snapshot.ascii_pass_attempts
         );
         let authn_type = match state_snapshot.authen_type {
             Some(AUTHEN_TYPE_ASCII) => "ascii",
@@ -2169,9 +2214,7 @@ where
             _ => "other",
         };
         let msg_data = if msg_data.is_empty() {
-            format!(
-                "{attempts};type={authn_type};service={svc};action={action};reason={reason}"
-            )
+            format!("{attempts};type={authn_type};service={svc};action={action};reason={reason}")
         } else {
             format!(
                 "{attempts};type={authn_type};service={svc};action={action};reason={reason};msg={msg_data}"
@@ -2262,7 +2305,8 @@ where
     if !validate_authen_rfc(stream, &packet, session_id, secret, peer).await? {
         return Ok(LoopControl::Break);
     }
-    if let Some(err_msg) = validate_authen_single_connect(single_connect, &packet, session_id, peer) {
+    if let Some(err_msg) = validate_authen_single_connect(single_connect, &packet, session_id, peer)
+    {
         let header = match &packet {
             AuthenPacket::Start(start) => &start.header,
             AuthenPacket::Continue(cont) => &cont.header,
@@ -2287,19 +2331,13 @@ where
         }
     };
 
-    let state = match get_or_create_auth_state(
-        stream,
-        &packet,
-        auth_states,
-        session_id,
-        secret,
-        peer,
-    )
-    .await?
-    {
-        Some(s) => s,
-        None => return Ok(LoopControl::Break),
-    };
+    let state =
+        match get_or_create_auth_state(stream, &packet, auth_states, session_id, secret, peer)
+            .await?
+        {
+            Some(s) => s,
+            None => return Ok(LoopControl::Break),
+        };
 
     let mut reply = match packet {
         AuthenPacket::Start(ref start) => match start.authen_type {
@@ -2312,12 +2350,10 @@ where
                     Err(_) => return Ok(LoopControl::Break),
                 }
             }
-            AUTHEN_TYPE_CHAP => {
-                match handle_authen_start_chap(start, state, peer).await {
-                    Ok(reply) => reply,
-                    Err(_) => return Ok(LoopControl::Break),
-                }
-            }
+            AUTHEN_TYPE_CHAP => match handle_authen_start_chap(start, state, peer).await {
+                Ok(reply) => reply,
+                Err(_) => return Ok(LoopControl::Break),
+            },
             _ => AuthenReply {
                 status: AUTHEN_STATUS_FOLLOW,
                 flags: 0,
@@ -2343,12 +2379,9 @@ where
             _ if state.challenge.is_some() => {
                 let user = state.username.clone().unwrap_or_default();
                 match state.authen_type {
-                    Some(AUTHEN_TYPE_CHAP) => handle_chap_continue(
-                        &user,
-                        cont.data.as_slice(),
-                        state,
-                        credentials,
-                    ),
+                    Some(AUTHEN_TYPE_CHAP) => {
+                        handle_chap_continue(&user, cont.data.as_slice(), state, credentials)
+                    }
                     _ => AuthenReply {
                         status: AUTHEN_STATUS_FAIL,
                         flags: 0,
@@ -2431,8 +2464,15 @@ where
                 Err(_) => {
                     warn!(peer = %peer, idle_secs = keepalive_deadline,
                         "single-connect keepalive/idle timeout reached; closing");
-                    audit_event("conn_close", peer, "", 0, "error", "keepalive-timeout",
-                        &format!("idle_secs={keepalive_deadline}"));
+                    audit_event(
+                        "conn_close",
+                        peer,
+                        "",
+                        0,
+                        "error",
+                        "keepalive-timeout",
+                        &format!("idle_secs={keepalive_deadline}"),
+                    );
                     break;
                 }
             }
@@ -2442,16 +2482,38 @@ where
 
         match packet_result {
             Ok(Some(Packet::Authorization(request))) => {
-                match handle_authorization_packet(stream, &request, single_connect, policy, ldap, secret, peer).await {
+                match handle_authorization_packet(
+                    stream,
+                    &request,
+                    single_connect,
+                    policy,
+                    ldap,
+                    secret,
+                    peer,
+                )
+                .await
+                {
                     Ok(LoopControl::Continue) => {}
                     Ok(LoopControl::Break) | Err(_) => break,
                 }
             }
             Ok(Some(Packet::Authentication(packet))) => {
                 match handle_authentication_packet(
-                    stream, packet, auth_states, single_connect, connection_id,
-                    registry, policy, credentials, ldap, ascii_cfg, secret, peer,
-                ).await {
+                    stream,
+                    packet,
+                    auth_states,
+                    single_connect,
+                    connection_id,
+                    registry,
+                    policy,
+                    credentials,
+                    ldap,
+                    ascii_cfg,
+                    secret,
+                    peer,
+                )
+                .await
+                {
                     Ok(LoopControl::Continue) => {}
                     Ok(LoopControl::Break) | Err(_) => break,
                 }
@@ -2460,7 +2522,16 @@ where
                 let _ = handle_capability_packet(stream, &cap, peer, secret).await;
             }
             Ok(Some(Packet::Accounting(request))) => {
-                match handle_accounting_packet(stream, &request, single_connect, task_tracker, secret, peer).await {
+                match handle_accounting_packet(
+                    stream,
+                    &request,
+                    single_connect,
+                    task_tracker,
+                    secret,
+                    peer,
+                )
+                .await
+                {
                     Ok(LoopControl::Continue) => {}
                     Ok(LoopControl::Break) | Err(_) => break,
                 }
@@ -2472,7 +2543,15 @@ where
             }
             Err(err) => {
                 warn!(error = %err, peer = %peer, "failed to read TACACS+ packet");
-                audit_event("conn_close", peer, "", 0, "error", "read-error", &err.to_string());
+                audit_event(
+                    "conn_close",
+                    peer,
+                    "",
+                    0,
+                    "error",
+                    "read-error",
+                    &err.to_string(),
+                );
                 break;
             }
         }
@@ -2480,8 +2559,15 @@ where
         // NIST AC-12: Check for API-initiated session termination
         if registry.is_termination_requested(connection_id).await {
             info!(peer = %peer, connection_id = connection_id, "session terminated via API");
-            audit_event("conn_close", peer, "", 0, "info", "api-terminated",
-                "session terminated via management API");
+            audit_event(
+                "conn_close",
+                peer,
+                "",
+                0,
+                "info",
+                "api-terminated",
+                "session terminated via management API",
+            );
             break;
         }
 

@@ -247,7 +247,8 @@ impl AuditConfig {
     /// Check if any audit destination is enabled.
     pub fn is_enabled(&self) -> bool {
         self.syslog.as_ref().map(|s| s.enabled).unwrap_or(false)
-            || self.elasticsearch
+            || self
+                .elasticsearch
                 .as_ref()
                 .map(|e| e.enabled)
                 .unwrap_or(false)

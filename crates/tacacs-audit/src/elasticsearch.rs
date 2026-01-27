@@ -75,9 +75,8 @@ impl ElasticsearchForwarder {
                 // Assume it's base64-encoded single string
                 (api_key.clone(), String::new())
             };
-            transport_builder = transport_builder.auth(elasticsearch::auth::Credentials::ApiKey(
-                id, key,
-            ));
+            transport_builder =
+                transport_builder.auth(elasticsearch::auth::Credentials::ApiKey(id, key));
         } else if let (Some(ref username), Some(ref password)) =
             (&config.username, &config.password)
         {
@@ -158,7 +157,10 @@ impl ElasticsearchForwarder {
             return Ok(());
         }
 
-        debug!(count = events.len(), "flushing audit events to Elasticsearch");
+        debug!(
+            count = events.len(),
+            "flushing audit events to Elasticsearch"
+        );
 
         // Build bulk request body as newline-delimited JSON
         let mut body_lines: Vec<String> = Vec::new();
@@ -176,7 +178,8 @@ impl ElasticsearchForwarder {
             body_lines.push(serde_json::to_string(&action).context("failed to serialize action")?);
 
             // Event document
-            let event_json = serde_json::to_string(event).context("failed to serialize audit event")?;
+            let event_json =
+                serde_json::to_string(event).context("failed to serialize audit event")?;
             body_lines.push(event_json);
         }
 
@@ -212,7 +215,10 @@ impl ElasticsearchForwarder {
             }
         }
 
-        debug!(count = events.len(), "audit events flushed to Elasticsearch");
+        debug!(
+            count = events.len(),
+            "audit events flushed to Elasticsearch"
+        );
         Ok(())
     }
 

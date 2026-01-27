@@ -689,9 +689,18 @@ mod tests {
     async fn test_multiple_sessions() {
         let registry = SessionRegistry::new();
 
-        let conn1 = registry.try_register_connection(test_addr(10001)).await.unwrap();
-        let conn2 = registry.try_register_connection(test_addr(10002)).await.unwrap();
-        let conn3 = registry.try_register_connection(test_addr(10003)).await.unwrap();
+        let conn1 = registry
+            .try_register_connection(test_addr(10001))
+            .await
+            .unwrap();
+        let conn2 = registry
+            .try_register_connection(test_addr(10002))
+            .await
+            .unwrap();
+        let conn3 = registry
+            .try_register_connection(test_addr(10003))
+            .await
+            .unwrap();
 
         assert_eq!(registry.session_count().await, 3);
 
@@ -756,8 +765,14 @@ mod tests {
     async fn test_sweep_idle_preserves_active_sessions() {
         let registry = SessionRegistry::new();
 
-        let idle_conn = registry.try_register_connection(test_addr(12352)).await.unwrap();
-        let active_conn = registry.try_register_connection(test_addr(12353)).await.unwrap();
+        let idle_conn = registry
+            .try_register_connection(test_addr(12352))
+            .await
+            .unwrap();
+        let active_conn = registry
+            .try_register_connection(test_addr(12353))
+            .await
+            .unwrap();
 
         // Wait for both to become "idle"
         tokio::time::sleep(Duration::from_millis(50)).await;

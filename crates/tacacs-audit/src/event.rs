@@ -284,10 +284,7 @@ mod tests {
         assert_eq!(event.outcome, AuditOutcome::Success);
         assert_eq!(event.location, Some("NYC01".to_string()));
         assert_eq!(event.username, Some("alice".to_string()));
-        assert_eq!(
-            event.source_ip,
-            Some("10.1.1.5".parse::<IpAddr>().unwrap())
-        );
+        assert_eq!(event.source_ip, Some("10.1.1.5".parse::<IpAddr>().unwrap()));
         assert_eq!(event.session_id, Some(12345));
         assert_eq!(event.priv_lvl, Some(15));
         assert_eq!(

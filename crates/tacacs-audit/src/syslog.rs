@@ -103,8 +103,7 @@ impl SyslogForwarder {
                 }
 
                 let config_builder =
-                    rustls::ClientConfig::builder()
-                        .with_root_certificates(root_store);
+                    rustls::ClientConfig::builder().with_root_certificates(root_store);
 
                 // Add client certificate if provided (mTLS)
                 let tls_config = if let (Some(ref cert_file), Some(ref key_file)) =
@@ -338,9 +337,7 @@ fn load_private_key(path: &std::path::Path) -> Result<rustls::pki_types::Private
     let mut reader = std::io::BufReader::new(key_file);
 
     // Try reading as PKCS#8 first
-    if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .next()
-    {
+    if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut reader).next() {
         return key
             .map(rustls::pki_types::PrivateKeyDer::Pkcs8)
             .context("failed to parse PKCS#8 private key");
@@ -349,9 +346,7 @@ fn load_private_key(path: &std::path::Path) -> Result<rustls::pki_types::Private
     // Try reading as RSA key
     let key_file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(key_file);
-    if let Some(key) = rustls_pemfile::rsa_private_keys(&mut reader)
-        .next()
-    {
+    if let Some(key) = rustls_pemfile::rsa_private_keys(&mut reader).next() {
         return key
             .map(rustls::pki_types::PrivateKeyDer::Pkcs1)
             .context("failed to parse RSA private key");

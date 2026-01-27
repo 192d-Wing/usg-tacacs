@@ -503,7 +503,10 @@ async fn get_metrics() -> Result<Response<Body>, (StatusCode, &'static str)> {
         .body(Body::from(body_text))
         .map_err(|e| {
             tracing::error!(error = %e, "failed to build metrics response");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build metrics response")
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build metrics response",
+            )
         })
 }
 
