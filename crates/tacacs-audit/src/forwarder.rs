@@ -145,7 +145,6 @@ impl AuditForwarder {
 mod tests {
     use super::*;
     use crate::config::{ElasticsearchConfig, SyslogConfig, SyslogFacility, SyslogProtocol};
-    use crate::event::{AuditEventType, AuditOutcome};
 
     #[tokio::test]
     async fn test_audit_forwarder_no_destinations() {

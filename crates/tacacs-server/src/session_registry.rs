@@ -318,6 +318,7 @@ impl SessionRegistry {
         since = "0.77.0",
         note = "Use try_register_connection() to enforce session limits"
     )]
+    #[allow(dead_code)]
     pub async fn register_connection(&self, peer_addr: SocketAddr) -> u64 {
         let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
         let record = SessionRecord::new(connection_id, peer_addr);
@@ -427,6 +428,7 @@ impl SessionRegistry {
     }
 
     /// Get the count of active sessions.
+    #[allow(dead_code)]
     pub async fn session_count(&self) -> usize {
         let sessions = self.sessions.read().await;
         sessions.len()
@@ -471,6 +473,7 @@ impl SessionRegistry {
     /// | AC-12 | Session Termination | Administrative session termination |
     ///
     /// Returns `true` if a matching session was found and marked, `false` otherwise.
+    #[allow(dead_code)]
     pub async fn terminate_by_session_id(&self, session_id: u32) -> bool {
         let mut sessions = self.sessions.write().await;
         for record in sessions.values_mut() {
@@ -542,6 +545,7 @@ impl SessionRegistry {
     /// | Control | Name | Implementation |
     /// |---------|------|----------------|
     /// | AC-10 | Concurrent Session Control | Per-IP session counting |
+    #[allow(dead_code)]
     pub async fn count_sessions_from_ip(&self, ip: std::net::IpAddr) -> usize {
         let sessions = self.sessions.read().await;
         sessions.values().filter(|r| r.peer_addr.ip() == ip).count()

@@ -463,6 +463,7 @@ pub fn read_secret_file(path: &PathBuf) -> std::io::Result<String> {
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | SC-12 | Cryptographic Key Establishment | Secure secret provisioning via files with restrictive permissions |
+#[allow(dead_code)]
 pub fn resolve_tacacs_secret(args: &Args) -> std::result::Result<Option<String>, String> {
     // File-based secret takes precedence
     if let Some(path) = &args.secret_file {
@@ -485,6 +486,7 @@ pub fn resolve_tacacs_secret(args: &Args) -> std::result::Result<Option<String>,
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | SC-12 | Cryptographic Key Establishment | Secure secret provisioning via files with restrictive permissions |
+#[allow(dead_code)]
 pub fn resolve_ldap_bind_password(args: &Args) -> std::result::Result<Option<String>, String> {
     // File-based password takes precedence
     if let Some(path) = &args.ldap_bind_password_file {

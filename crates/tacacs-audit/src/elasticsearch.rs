@@ -256,7 +256,6 @@ impl ElasticsearchForwarder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{AuditEventType, AuditOutcome};
     use chrono::TimeZone;
 
     #[test]

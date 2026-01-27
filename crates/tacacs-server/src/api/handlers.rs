@@ -957,7 +957,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(&format!("/api/v1/sessions/{}", conn_id))
+                    .uri(format!("/api/v1/sessions/{}", conn_id))
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1182,7 +1182,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(&format!("/api/v1/sessions/{}", conn_id))
+                    .uri(format!("/api/v1/sessions/{}", conn_id))
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),

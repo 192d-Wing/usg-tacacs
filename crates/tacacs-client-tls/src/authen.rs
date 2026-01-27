@@ -304,6 +304,7 @@ impl TacacsClient {
 }
 
 /// Build an authentication START packet body.
+#[allow(clippy::too_many_arguments)]
 fn build_authen_start(
     action: u8,
     priv_lvl: u8,

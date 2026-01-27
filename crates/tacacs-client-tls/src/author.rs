@@ -228,6 +228,7 @@ impl TacacsClient {
 }
 
 /// Build an authorization request packet body.
+#[allow(clippy::too_many_arguments)]
 fn build_author_request(
     authen_method: u8,
     priv_lvl: u8,

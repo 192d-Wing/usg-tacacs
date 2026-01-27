@@ -131,6 +131,7 @@ impl ConnLimiter {
 /// Encapsulates mutable state that is shared across the packet processing loop
 /// within a single connection. This allows extracted handler functions to have
 /// clean signatures while maintaining access to necessary state.
+#[allow(dead_code)]
 struct ConnectionContext<'a, S> {
     stream: &'a mut S,
     auth_states: &'a mut HashMap<u32, AuthSessionState>,

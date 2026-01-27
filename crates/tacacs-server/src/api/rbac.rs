@@ -162,6 +162,7 @@ impl RbacMiddleware {
 /// # Arguments
 /// * `config` - RBAC configuration (cloned for 'static lifetime)
 /// * `permission` - Required permission string (e.g., "read:status")
+#[allow(clippy::type_complexity)]
 pub fn require_permission(
     config: &RbacConfig,
     permission: &'static str,

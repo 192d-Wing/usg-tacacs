@@ -51,6 +51,7 @@ use usg_tacacs_policy::PolicyEngine;
 /// # Security Warning
 /// When `acceptor` is `None`, the API runs in plaintext mode which should only
 /// be used for development/testing. Production deployments must use TLS.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_api(
     addr: SocketAddr,
     acceptor: Option<TlsAcceptor>,

@@ -134,6 +134,7 @@ impl TacacsClient {
     /// # NIST Controls
     /// - **AU-2 (Audit Events)**: Session end logging
     /// - **AU-12 (Audit Generation)**: Generate audit record with statistics
+    #[allow(clippy::too_many_arguments)]
     #[instrument(skip(self), fields(username = %username, task_id = %task_id, elapsed = elapsed_time))]
     pub async fn accounting_stop(
         &mut self,
@@ -338,6 +339,7 @@ impl TacacsClient {
 }
 
 /// Build an accounting request packet body.
+#[allow(clippy::too_many_arguments)]
 fn build_acct_request(
     flags: u8,
     authen_method: u8,

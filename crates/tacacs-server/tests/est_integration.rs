@@ -188,7 +188,7 @@ fn test_est_config_serde() -> Result<()> {
     assert_eq!(parsed.server_url, config.server_url);
     assert_eq!(parsed.common_name, config.common_name);
     assert_eq!(parsed.renewal_threshold_percent, 80);
-    assert_eq!(parsed.initial_enrollment_required, true);
+    assert!(parsed.initial_enrollment_required);
 
     Ok(())
 }

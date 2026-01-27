@@ -618,6 +618,7 @@ mod tests {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn make_argon_creds() -> StaticCreds {
         let mut creds = StaticCreds::default();
         // Valid argon2id hash for password "test123"
