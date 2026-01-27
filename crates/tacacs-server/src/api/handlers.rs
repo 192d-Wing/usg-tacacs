@@ -835,7 +835,7 @@ mod tests {
 
         // Register a test session
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
-        let conn_id = registry.register_connection(peer_addr).await;
+        let conn_id = registry.try_register_connection(peer_addr).await.unwrap();
 
         let response = app
             .oneshot(
@@ -877,7 +877,7 @@ mod tests {
 
         // Register and authenticate a session
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 50)), 12345);
-        let conn_id = registry.register_connection(peer_addr).await;
+        let conn_id = registry.try_register_connection(peer_addr).await.unwrap();
         registry
             .update_authentication(conn_id, "network_admin".to_string(), 42)
             .await;
@@ -945,7 +945,7 @@ mod tests {
 
         // Register a session to terminate
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 9999);
-        let conn_id = registry.register_connection(peer_addr).await;
+        let conn_id = registry.try_register_connection(peer_addr).await.unwrap();
 
         // Verify session is not yet marked for termination
         assert!(!registry.is_termination_requested(conn_id).await);
@@ -1018,9 +1018,9 @@ mod tests {
         let peer2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 1, 1, 2)), 1002);
         let peer3 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 1, 1, 3)), 1003);
 
-        let conn1 = registry.register_connection(peer1).await;
-        let conn2 = registry.register_connection(peer2).await;
-        let conn3 = registry.register_connection(peer3).await;
+        let conn1 = registry.try_register_connection(peer1).await.unwrap();
+        let conn2 = registry.try_register_connection(peer2).await.unwrap();
+        let conn3 = registry.try_register_connection(peer3).await.unwrap();
 
         // Authenticate some sessions
         registry
@@ -1081,7 +1081,7 @@ mod tests {
 
         // Register a session
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 5000);
-        let conn_id = registry.register_connection(peer_addr).await;
+        let conn_id = registry.try_register_connection(peer_addr).await.unwrap();
 
         // Verify it appears
         {
@@ -1134,7 +1134,7 @@ mod tests {
 
         // Register a session and record some activity
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080);
-        let conn_id = registry.register_connection(peer_addr).await;
+        let conn_id = registry.try_register_connection(peer_addr).await.unwrap();
 
         // Record 5 requests
         for _ in 0..5 {
@@ -1172,7 +1172,7 @@ mod tests {
 
         // Register a session
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 1234);
-        let conn_id = registry.register_connection(peer_addr).await;
+        let conn_id = registry.try_register_connection(peer_addr).await.unwrap();
 
         // Viewer should not be able to delete sessions (requires write:sessions)
         let response = app

@@ -1,0 +1,26 @@
+{
+  "$schema": "../schemas/policy.schema.json",
+  "version": "1.0",
+  "comment": "Base TACACS+ policy - inherited by all locations",
+
+  "_comment": "Default deny-all policy. Locations override with specific rules.",
+
+  "rules": [
+    {
+      "id": "global-deny-all",
+      "comment": "Default deny - must be overridden by location-specific allow rules",
+      "priority": 0,
+      "match": {
+        "any": true
+      },
+      "effect": "deny",
+      "server_msg": "Access denied by default policy. Contact security team."
+    }
+  ],
+
+  "metadata": {
+    "managed_by": "gitops",
+    "last_updated": "2026-01-18",
+    "contact": "security-team@example.com"
+  }
+}

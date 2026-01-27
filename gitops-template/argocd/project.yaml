@@ -1,0 +1,152 @@
+# ArgoCD AppProject for TACACS+ Deployment
+#
+# Defines the TACACS project scope, permissions, and restrictions.
+#
+# NIST SP 800-53 Controls:
+# - AC-3: Access Enforcement (RBAC for ArgoCD access)
+# - AC-6: Least Privilege (Restricted source repos and destinations)
+# - CM-5: Access Restrictions for Change (Only approved repos)
+
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tacacs
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: tacacs
+spec:
+  description: TACACS+ Server Multi-Location Deployment
+
+  # Source Repositories (NIST CM-5: Only approved sources)
+  sourceRepos:
+    - 'https://github.com/your-org/tacacs-gitops.git'
+    # Allow Helm charts if needed
+    - 'https://charts.your-org.com'
+
+  # Destinations (NIST AC-6: Restrict where apps can be deployed)
+  destinations:
+    # Allow deployment to tacacs-* namespaces in any cluster
+    - namespace: 'tacacs-*'
+      server: '*'
+    # Allow ArgoCD namespace for ApplicationSets
+    - namespace: argocd
+      server: 'https://kubernetes.default.svc'
+
+  # Cluster Resource Allowlist (What can be created cluster-wide)
+  clusterResourceWhitelist:
+    # Allow namespace creation
+    - group: ''
+      kind: Namespace
+    # Allow custom resource definitions if needed
+    - group: 'apiextensions.k8s.io'
+      kind: CustomResourceDefinition
+
+  # Namespace Resource Allowlist (What can be created in namespaces)
+  namespaceResourceWhitelist:
+    # Core resources
+    - group: ''
+      kind: ConfigMap
+    - group: ''
+      kind: Secret
+    - group: ''
+      kind: Service
+    - group: ''
+      kind: ServiceAccount
+    - group: ''
+      kind: PersistentVolumeClaim
+
+    # Apps
+    - group: 'apps'
+      kind: Deployment
+    - group: 'apps'
+      kind: StatefulSet
+    - group: 'apps'
+      kind: DaemonSet
+
+    # Networking
+    - group: 'networking.k8s.io'
+      kind: Ingress
+    - group: 'networking.k8s.io'
+      kind: NetworkPolicy
+
+    # Autoscaling
+    - group: 'autoscaling'
+      kind: HorizontalPodAutoscaler
+
+    # RBAC
+    - group: 'rbac.authorization.k8s.io'
+      kind: Role
+    - group: 'rbac.authorization.k8s.io'
+      kind: RoleBinding
+
+    # Monitoring
+    - group: 'monitoring.coreos.com'
+      kind: ServiceMonitor
+    - group: 'monitoring.coreos.com'
+      kind: PrometheusRule
+
+  # Denied Resources (NIST AC-6: Prevent privilege escalation)
+  namespaceResourceBlacklist:
+    # Prevent ClusterRole creation (only namespace-scoped roles)
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRoleBinding
+
+  # Orphaned Resources (handle resources when app is deleted)
+  orphanedResources:
+    # Warn about orphaned resources
+    warn: true
+
+  # Sync Windows: When automated sync is allowed
+  syncWindows:
+    # Allow syncs during business hours (UTC)
+    - kind: allow
+      schedule: '0 6-18 * * MON-FRI'
+      duration: 12h
+      applications:
+        - '*'
+      manualSync: true
+
+    # Block automated syncs during maintenance window
+    - kind: deny
+      schedule: '0 2-4 * * SUN'
+      duration: 2h
+      applications:
+        - '*'
+      manualSync: false  # Still allow manual sync if needed
+
+  # Role Bindings (NIST AC-3: RBAC)
+  roles:
+    # Read-only role for viewers
+    - name: viewer
+      description: Read-only access to TACACS applications
+      policies:
+        - p, proj:tacacs:viewer, applications, get, tacacs/*, allow
+        - p, proj:tacacs:viewer, applications, list, tacacs/*, allow
+        - p, proj:tacacs:viewer, logs, get, tacacs/*, allow
+
+    # Operator role for day-to-day operations
+    - name: operator
+      description: Can sync and view TACACS applications
+      policies:
+        - p, proj:tacacs:operator, applications, get, tacacs/*, allow
+        - p, proj:tacacs:operator, applications, sync, tacacs/*, allow
+        - p, proj:tacacs:operator, applications, action/*, tacacs/*, allow
+        - p, proj:tacacs:operator, logs, get, tacacs/*, allow
+
+    # Admin role for full access
+    - name: admin
+      description: Full access to TACACS project
+      policies:
+        - p, proj:tacacs:admin, applications, *, tacacs/*, allow
+        - p, proj:tacacs:admin, repositories, *, *, allow
+        - p, proj:tacacs:admin, clusters, *, *, allow
+
+  # Signature verification (require signed commits)
+  signatureKeys:
+    - keyID: '0x1234567890ABCDEF'  # Replace with your GPG key ID
+
+  # Source namespaces (for multi-tenancy)
+  sourceNamespaces:
+    - argocd

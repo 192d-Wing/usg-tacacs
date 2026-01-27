@@ -5,6 +5,162 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.78.0] - 2026-01-18
+
+### 🎯 Code Quality & Documentation Release
+
+This release focuses on code quality improvements, deprecation cleanup, and comprehensive production deployment documentation for the Management API.
+
+### ✨ Added
+
+#### Documentation
+- **NEW**: Comprehensive reverse proxy mTLS guide (`docs/admin/reverse-proxy-mtls.md`)
+  - Complete Nginx configuration with mTLS client authentication
+  - Complete HAProxy configuration with mTLS client authentication
+  - Certificate generation and management procedures
+  - Security hardening recommendations (rate limiting, IP allowlisting, CRL)
+  - Monitoring and troubleshooting guides
+  - Production deployment checklist
+  - NIST SP 800-53 control mappings (SC-8, IA-3, IA-5(2), AC-3)
+
+#### Management API
+- Production-ready reverse proxy integration pattern
+- Industry best practice architecture (TLS termination at proxy layer)
+- X-User-CN header-based identity extraction from client certificates
+
+### 🔧 Changed
+
+#### Code Quality - Function Signature Refactoring
+All major server functions now use configuration structs instead of long parameter lists:
+
+| Function | Before | After | Improvement |
+|----------|--------|-------|-------------|
+| `serve_tls` | 17 parameters | 6 parameters | **65% reduction** |
+| `serve_legacy` | 15 parameters | 5 parameters | **67% reduction** |
+| `handle_connection` | 15 parameters | 6 parameters | **60% reduction** |
+| `AuthSessionState::new_from_start` | 10 parameters | 1 parameter | **90% reduction** |
+
+**Benefits:**
+- Improved code readability and maintainability
+- Easier to add new parameters without breaking changes
+- Better self-documentation via struct field names
+- Enables builder pattern for optional parameters
+
+#### Test Code Modernization
+- Updated 25 test cases: `register_connection()` → `try_register_connection()` (with session limit enforcement)
+- Updated 6 test cases: `AuthSessionState::new_from_start()` → `from_start()` (cleaner API)
+- All tests now use modern, non-deprecated APIs
+
+#### Documentation Updates
+- Management API guide updated with reverse proxy recommendations
+- ROADMAP.md Phase 6.1 (Management API) marked **COMPLETE**
+- ROADMAP.md Phase 7.5 (Code Quality) marked **COMPLETE**
+
+### 🐛 Fixed
+
+#### Deprecation Warnings
+- **ELIMINATED ALL DEPRECATION WARNINGS** across the entire codebase
+- Session registry tests now use `try_register_connection()` (enforces session limits)
+- Protocol tests now use `AuthSessionState::from_start()` (cleaner, single-parameter API)
+
+### 🧪 Testing
+
+- ✅ All 642 tests passing
+- ✅ Zero deprecation warnings
+- ✅ Zero compiler warnings
+- ✅ Full test coverage maintained
+
+### 📊 NIST SP 800-53 Controls Enhanced
+
+#### Management API (Phase 6.1 - COMPLETE)
+| Control | Name | Implementation |
+|---------|------|----------------|
+| **SC-8** | Transmission Confidentiality | TLS 1.3 with mTLS via reverse proxy |
+| **IA-3** | Device Identification | Client certificate CN validation |
+| **IA-5(2)** | PKI-Based Authentication | mTLS client certificates |
+| **AC-3** | Access Enforcement | Certificate-based RBAC |
+
+### 🔒 Security
+
+#### Production Deployment Pattern
+- **Recommended**: Nginx or HAProxy reverse proxy with mTLS
+- **Benefits**:
+  - Centralized TLS termination and certificate management
+  - Load balancing and high availability support
+  - Standard industry practice (Kubernetes, Istio, service meshes)
+  - Enhanced security (rate limiting, IP filtering, WAF integration)
+
+#### Example Nginx Configuration
+```nginx
+server {
+    listen 8443 ssl http2;
+    ssl_protocols TLSv1.3;
+    ssl_client_certificate /etc/nginx/certs/client-ca.pem;
+    ssl_verify_client on;
+
+    location /api/ {
+        proxy_set_header X-User-CN $ssl_client_s_dn_cn;
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+```
+
+### 📝 Roadmap Progress
+
+**Completed Phases:**
+- ✅ Phase 1: Observability Foundation
+- ✅ Phase 2: Infrastructure as Code
+- ✅ Phase 3: High Availability
+- ✅ Phase 4: Secrets Management (OpenBao/EST)
+- ✅ Phase 6.1: Management API with RBAC
+- ✅ Phase 7.5: Code Quality Improvements
+
+**Next Phase:**
+- 🔜 Phase 5: GitOps with ArgoCD (for 184-location deployment)
+
+### 🎓 Developer Experience
+
+#### Improved Code Structure
+- Configuration structs for better API design:
+  - `ConnectionConfig` - Connection-level settings
+  - `AuthContext` - Authentication configuration
+  - `TlsIdentityConfig` - Client certificate validation
+  - `AsciiConfig` - ASCII authentication settings
+
+#### Better Testing
+- Modern, idiomatic test code
+- Clear intent through explicit error handling
+- Session limit enforcement in tests
+
+### 📚 Files Changed
+
+```
+Modified:
+  crates/tacacs-server/src/session_registry.rs (16 test updates)
+  crates/tacacs-server/src/api/handlers.rs (9 test updates)
+  crates/tacacs-proto/src/authen.rs (6 test updates)
+  crates/tacacs-server/src/api/mod.rs (tracing imports)
+  ROADMAP.md (Phase status updates)
+  docs/docs/admin/management-api.md (reverse proxy recommendations)
+
+Created:
+  docs/docs/admin/reverse-proxy-mtls.md (380 lines - comprehensive guide)
+```
+
+### 🚀 Upgrade Notes
+
+This release is **100% backward compatible**. No configuration changes required.
+
+**Recommended Actions:**
+1. Review the new [Reverse Proxy mTLS Guide](docs/admin/reverse-proxy-mtls.md) for production deployments
+2. No code changes needed - all improvements are internal
+
+### 🙏 Contributors
+
+This release represents significant progress toward v1.0.0 production readiness.
+
+---
+
 ## [0.77.1] - 2026-01-18
 
 ### 🔒 Security (Post-Audit Fixes)

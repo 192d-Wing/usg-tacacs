@@ -1,0 +1,141 @@
+# ArgoCD ApplicationSet for TACACS+ Multi-Location Deployment
+#
+# This ApplicationSet automatically generates an ArgoCD Application for each
+# location directory in the Git repository. As you add new locations, ArgoCD
+# will automatically create corresponding applications.
+#
+# NIST SP 800-53 Controls:
+# - CM-2: Baseline Configuration (GitOps ensures consistent baselines)
+# - CM-3: Configuration Change Control (Git-based approval workflow)
+# - CM-6: Configuration Settings (Enforced via Git and validation)
+
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tacacs-locations
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: tacacs
+    app.kubernetes.io/component: applicationset
+spec:
+  # Generator: Automatically discovers location directories
+  generators:
+    - git:
+        repoURL: https://github.com/your-org/tacacs-gitops.git
+        revision: HEAD
+        directories:
+          - path: locations/*
+        # Exclude example/template directories
+        exclude:
+          - path: locations/example
+          - path: locations/template
+
+  # Template: Applied to each discovered location
+  template:
+    metadata:
+      name: 'tacacs-{{path.basename}}'
+      labels:
+        app: tacacs
+        location: '{{path.basename}}'
+        managed-by: argocd
+      annotations:
+        # Track which commit is deployed
+        deployed-commit: '{{.git.commit}}'
+        # Link to source
+        source-repo: '{{.git.repoURL}}'
+        source-path: '{{path}}'
+        # Notifications
+        notifications.argoproj.io/subscribe.on-sync-succeeded.slack: tacacs-deployments
+
+    spec:
+      # Associate with TACACS project
+      project: tacacs
+
+      # Source: Git repository
+      source:
+        repoURL: https://github.com/your-org/tacacs-gitops.git
+        targetRevision: HEAD
+        path: '{{path}}'
+
+        # Use Kustomize for configuration management
+        kustomize:
+          # Inherit from base configuration
+          bases:
+            - ../../base
+
+          # Location-specific patches
+          patches:
+            - path: config.json
+            - path: policy.json
+
+          # Common labels
+          commonLabels:
+            app.kubernetes.io/name: tacacs
+            app.kubernetes.io/instance: '{{path.basename}}'
+            location: '{{path.basename}}'
+
+          # SOPS plugin for secret decryption
+          # Requires: https://github.com/viaduct-ai/kustomize-sops
+          generators:
+            - secrets.enc.yaml
+
+      # Destination: Where to deploy
+      destination:
+        # For multi-cluster: Use cluster URL from location config
+        # server: '{{metadata.annotations.cluster-url}}'
+
+        # For single cluster:
+        server: https://kubernetes.default.svc
+
+        # Namespace per location for isolation
+        namespace: 'tacacs-{{path.basename}}'
+
+      # Sync Policy: Automated deployment
+      syncPolicy:
+        automated:
+          # Automatically sync when Git changes
+          prune: true
+          # Self-heal if someone makes manual changes
+          selfHeal: true
+          # Allow empty directories during sync
+          allowEmpty: false
+
+        syncOptions:
+          # Create namespace if it doesn't exist
+          - CreateNamespace=true
+          # Validate resources before applying
+          - Validate=true
+          # Use server-side apply for better conflict resolution
+          - ServerSideApply=true
+          # Respect ignore differences
+          - RespectIgnoreDifferences=true
+
+        # Retry on failure
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+
+      # Ignore differences for fields we don't control
+      ignoreDifferences:
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas  # Don't sync replica count (HPA manages it)
+
+      # Health check configuration
+      # Requires health check endpoints in TACACS server
+      health:
+        http:
+          url: 'http://tacacs-server.tacacs-{{path.basename}}.svc:8080/health'
+          expectedStatus: 200
+        # Wait up to 5 minutes for health check
+        timeout: 300
+
+      # Resource tracking
+      revisionHistoryLimit: 10
+
+  # Preserve resources on deletion (safety measure)
+  preserveResourcesOnDeletion: false

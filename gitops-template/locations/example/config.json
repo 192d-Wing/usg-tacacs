@@ -1,0 +1,60 @@
+{
+  "$schema": "../../schemas/config.schema.json",
+  "version": "1.0",
+  "comment": "Example location configuration - NYC01 datacenter",
+
+  "_comment": "This file contains ONLY location-specific overrides.",
+  "_comment2": "All other settings are inherited from ../../base/config.json",
+
+  "location": {
+    "name": "New York 01",
+    "site_code": "NYC01",
+    "region": "US-EAST",
+    "environment": "production"
+  },
+
+  "listen_tls": "10.1.1.10:300",
+  "listen_http": "127.0.0.1:8080",
+
+  "tls": {
+    "allowed_cn": [
+      "router-nyc-core-01.internal",
+      "router-nyc-core-02.internal",
+      "switch-nyc-dist-*.internal"
+    ],
+    "allowed_san": [
+      "DNS:*.nyc.internal",
+      "IP:10.1.0.0/16"
+    ]
+  },
+
+  "ldap": {
+    "enabled": true,
+    "server": "ldaps://ldap.nyc.corp.internal:636",
+    "bind_dn": "CN=tacacs-svc,OU=Service Accounts,DC=corp,DC=internal",
+    "bind_password": "${LDAP_BIND_PASSWORD}",
+    "base_dn": "OU=Network Admins,DC=corp,DC=internal",
+    "user_filter": "(sAMAccountName={username})",
+    "required_groups": [
+      "CN=Network-Admins-NYC,OU=Groups,DC=corp,DC=internal",
+      "CN=Network-Engineers,OU=Groups,DC=corp,DC=internal"
+    ],
+    "timeout_secs": 5
+  },
+
+  "session": {
+    "max_total_sessions": 500,
+    "max_sessions_per_ip": 20
+  },
+
+  "rate_limiting": {
+    "max_connections_per_ip": 10
+  },
+
+  "telemetry": {
+    "otlp": {
+      "enabled": true,
+      "endpoint": "http://otel-collector.nyc.internal:4317"
+    }
+  }
+}

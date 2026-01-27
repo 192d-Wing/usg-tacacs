@@ -1,0 +1,101 @@
+{
+  "$schema": "../../schemas/policy.schema.json",
+  "version": "1.0",
+  "comment": "NYC01 location-specific policy",
+
+  "rules": [
+    {
+      "id": "nyc01-senior-engineers-full-access",
+      "comment": "Senior network engineers get full privileged access",
+      "priority": 100,
+      "match": {
+        "ldap_groups": ["CN=Network-Senior-Engineers-NYC,OU=Groups,DC=corp,DC=internal"],
+        "service": "shell",
+        "protocol": "ssh"
+      },
+      "effect": "allow",
+      "priv_lvl": 15,
+      "server_msg": "Senior engineer access granted"
+    },
+
+    {
+      "id": "nyc01-engineers-read-only",
+      "comment": "Regular engineers get read-only access",
+      "priority": 90,
+      "match": {
+        "ldap_groups": ["CN=Network-Engineers-NYC,OU=Groups,DC=corp,DC=internal"],
+        "service": "shell",
+        "protocol": "ssh"
+      },
+      "effect": "allow",
+      "priv_lvl": 1,
+      "server_msg": "Engineer read-only access"
+    },
+
+    {
+      "id": "nyc01-allow-show-commands",
+      "comment": "Allow show commands for engineers",
+      "priority": 80,
+      "match": {
+        "ldap_groups": ["CN=Network-Engineers-NYC,OU=Groups,DC=corp,DC=internal"],
+        "cmd": "show .*"
+      },
+      "effect": "permit",
+      "server_msg": null
+    },
+
+    {
+      "id": "nyc01-deny-reload",
+      "comment": "Prevent device reboots without approval",
+      "priority": 95,
+      "match": {
+        "cmd": "reload"
+      },
+      "effect": "deny",
+      "server_msg": "Device reload requires change control approval"
+    },
+
+    {
+      "id": "nyc01-noc-monitoring",
+      "comment": "NOC team can view status but not configure",
+      "priority": 70,
+      "match": {
+        "ldap_groups": ["CN=NOC-NYC,OU=Groups,DC=corp,DC=internal"],
+        "cmd": "(show|ping|traceroute) .*"
+      },
+      "effect": "permit"
+    },
+
+    {
+      "id": "nyc01-emergency-access",
+      "comment": "Emergency break-glass account",
+      "priority": 110,
+      "match": {
+        "user": "emergency-admin",
+        "source_ip": "10.1.0.0/16"
+      },
+      "effect": "allow",
+      "priv_lvl": 15,
+      "server_msg": "EMERGENCY ACCESS - All actions logged"
+    },
+
+    {
+      "id": "nyc01-default-deny",
+      "comment": "Deny all other access",
+      "priority": 0,
+      "match": {
+        "any": true
+      },
+      "effect": "deny",
+      "server_msg": "Access denied. Contact NYC NOC for assistance."
+    }
+  ],
+
+  "metadata": {
+    "location": "NYC01",
+    "managed_by": "gitops",
+    "last_reviewed": "2026-01-18",
+    "reviewer": "security-team@example.com",
+    "compliance": ["SOC2", "PCI-DSS", "NIST-800-53"]
+  }
+}

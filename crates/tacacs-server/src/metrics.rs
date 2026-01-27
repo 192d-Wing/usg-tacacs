@@ -375,13 +375,14 @@ impl Metrics {
 }
 
 /// Helper to record authentication duration.
-/// Used when instrumenting authentication flows in server.rs.
-#[allow(dead_code)]
+/// Currently only used in tests. May be integrated into auth flow in the future.
+#[cfg(test)]
 pub struct AuthnTimer {
     method: &'static str,
     start: std::time::Instant,
 }
 
+#[cfg(test)]
 impl AuthnTimer {
     pub fn new(method: &'static str) -> Self {
         Self {
@@ -406,12 +407,13 @@ impl AuthnTimer {
 }
 
 /// Helper to record authorization duration.
-/// Used when instrumenting authorization flows in server.rs.
-#[allow(dead_code)]
+/// Currently only used in tests. May be integrated into authz flow in the future.
+#[cfg(test)]
 pub struct AuthzTimer {
     start: std::time::Instant,
 }
 
+#[cfg(test)]
 impl AuthzTimer {
     pub fn new() -> Self {
         Self {
@@ -431,6 +433,7 @@ impl AuthzTimer {
     }
 }
 
+#[cfg(test)]
 impl Default for AuthzTimer {
     fn default() -> Self {
         Self::new()

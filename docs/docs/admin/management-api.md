@@ -23,6 +23,13 @@ The Management API implements the following NIST SP 800-53 security controls:
 | **SC-8** (Transmission Confidentiality) | TLS 1.3 with mTLS (when configured) |
 | **AU-2/AU-12** (Audit Events) | All API access attempts are logged |
 
+## Production Deployment
+
+!!! tip "Reverse Proxy Recommended"
+    For production deployments, use a reverse proxy (Nginx or HAProxy) with mTLS instead of direct TLS mode. This provides better security, flexibility, and follows industry best practices.
+
+    See the **[Reverse Proxy with mTLS Guide](reverse-proxy-mtls.md)** for complete setup instructions.
+
 ## Enabling the API
 
 ### Command Line

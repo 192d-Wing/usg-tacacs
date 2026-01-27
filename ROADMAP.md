@@ -798,7 +798,7 @@ spec:
 
 Add REST API to `tacacs-server` for runtime management:
 
-**Status**: Implemented and integrated with main server. TLS/mTLS support deferred to Phase 6.4.
+**Status**: ✅ **COMPLETE** - Fully implemented with TLS/mTLS support via reverse proxy pattern.
 
 | Endpoint                | Method | Permission       | Description              |
 | ----------------------- | ------ | ---------------- | ------------------------ |
@@ -846,19 +846,20 @@ Add REST API to `tacacs-server` for runtime management:
 - ✅ Prometheus metrics endpoint (`/api/v1/metrics`)
 - ✅ Server status endpoint with uptime and active connections
 - ✅ Comprehensive unit tests for RBAC permission checking
-- 🔜 TLS/mTLS support deferred to Phase 6.4
-- 🔜 Session tracking integration (endpoints stubbed with TODOs)
+- ✅ Session tracking integration (list, view, and terminate sessions)
+- ✅ TLS/mTLS support with client certificate authentication
+- ✅ Reverse proxy integration pattern (Nginx/HAProxy) for production deployments
 - 🔜 Advanced metric aggregation from CounterVec (using placeholders)
 
 **CLI Arguments**:
 
 ```bash
 --api-enabled                  # Enable Management API
---api-listen 127.0.0.1:8443   # Listen address
+--api-listen 127.0.0.1:8080   # Listen address (bind to localhost, use reverse proxy for TLS)
 --api-rbac-config rbac.json   # RBAC configuration file (optional)
---api-tls-cert cert.pem       # TLS certificate (future)
---api-tls-key key.pem         # TLS key (future)
---api-client-ca ca.pem        # Client CA for mTLS (future)
+--api-tls-cert cert.pem       # TLS certificate (optional, for direct TLS mode)
+--api-tls-key key.pem         # TLS key (optional, for direct TLS mode)
+--api-client-ca ca.pem        # Client CA for mTLS (optional, for direct TLS mode)
 ```
 
 **Example RBAC Configuration** (`rbac.json`):
@@ -1032,23 +1033,27 @@ Document per-location sizing:
 | `ldap_pool_size`     | 5       | 20    | LDAP throughput |
 | `policy_cache_ttl`   | 60s     | 300s  | Reduced I/O     |
 
-### 7.5 Code Quality Improvements ⚙️ (In Progress)
+### 7.5 Code Quality Improvements ✅ COMPLETE
 
 Refactor functions with too many arguments to use configuration structs:
 
 | Function | Location | Args | Status | Refactor |
 | -------- | -------- | ---- | ------ | -------- |
 | `new_from_start` | authen.rs:198 | 10 → 1 | ✅ **Complete** | New `from_start(&AuthenStart)` method, old method deprecated |
-| `serve_tls` | server.rs:604 | 17 | 🔜 Planned | Create `TlsServerConfig` struct, use `ConnectionConfig` + `AuthContext` |
-| `serve_legacy` | server.rs:685 | 15 | 🔜 Planned | Create `LegacyServerConfig` struct, use `ConnectionConfig` + `AuthContext` |
-| `handle_connection` | server.rs:757 | 15 | 🔜 Planned | Use `ConnectionContext` + `AsciiConfig` + `AuthContext` structs |
-| `handle_ascii_continue` | ascii.rs:101 | 8 | 🔜 Planned | Create `AsciiContinueContext` struct |
+| `serve_tls` | server.rs:737 | 17 → 6 | ✅ **Complete** | Uses `AuthContext`, `ConnectionConfig`, `TlsIdentityConfig` structs |
+| `serve_legacy` | server.rs:803 | 15 → 5 | ✅ **Complete** | Uses `AuthContext`, `ConnectionConfig` structs |
+| `handle_connection` | server.rs:871 | 15 → 6 | ✅ **Complete** | Uses `AuthContext`, `ConnectionConfig` structs |
+| `handle_ascii_continue` | ascii.rs:101 | 8 → 5 | ✅ **Complete** | Uses `AsciiConfig` struct |
 
-**Completed**:
+**Completed Refactorings**:
 
 - ✅ `AuthSessionState::from_start()` - Reduced from 10 args to 1 by accepting `&AuthenStart` directly
-- ✅ Created reusable config structs: `ConnectionConfig`, `AuthContext`, `ConnectionContext` (server.rs:103-140)
+- ✅ `serve_tls()` - Reduced from 17 to 6 parameters using config structs
+- ✅ `serve_legacy()` - Reduced from 15 to 5 parameters using config structs
+- ✅ `handle_connection()` - Reduced from 15 to 6 parameters using config structs
+- ✅ Created reusable config structs: `ConnectionConfig`, `AuthContext`, `TlsIdentityConfig` (server.rs:144-204)
 - ✅ Fixed `make_argon_creds` - Now properly marked with `#[cfg(test)]` (auth.rs:314)
+- ✅ All deprecation warnings resolved - Tests updated to use modern APIs
 
 **Benefits**:
 
@@ -1062,8 +1067,8 @@ Refactor functions with too many arguments to use configuration structs:
 | Item | Location | Status | Notes |
 | ---- | -------- | ------ | ----- |
 | `make_argon_creds` | auth.rs:314 | ✅ **Fixed** | Now marked `#[cfg(test)]` to exclude from release builds |
-| `AuthnTimer` | metrics.rs:231 | 🔜 TODO | Remove or integrate into auth flow (currently only used in tests) |
-| `AuthzTimer` | metrics.rs:259 | 🔜 TODO | Remove or integrate into authz flow (currently only used in tests) |
+| `AuthnTimer` | metrics.rs:380 | ✅ **Fixed** | Now marked `#[cfg(test)]` - only used in tests |
+| `AuthzTimer` | metrics.rs:412 | ✅ **Fixed** | Now marked `#[cfg(test)]` - only used in tests |
 
 ---
 

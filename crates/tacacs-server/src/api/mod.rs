@@ -34,7 +34,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{RwLock, mpsc};
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, debug};
 use usg_tacacs_policy::PolicyEngine;
 
 /// Start the management API server.

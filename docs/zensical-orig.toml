@@ -156,7 +156,8 @@ features = [
     # https://zensical.org/docs/authoring/content-tabs/#linked-content-tabs
     "content.tabs.link",
 
-    # TODO: not sure I understand this one? Is there a demo of this in the docs?
+    # Replaces browser default tooltips with styled popups for links with titles,
+    # permalinks, code copy buttons, header components, and truncated navigation items.
     # https://zensical.org/docs/authoring/tooltips/#improved-tooltips
     "content.tooltips",
 

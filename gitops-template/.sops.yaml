@@ -1,0 +1,123 @@
+# SOPS Configuration for TACACS+ GitOps Repository
+#
+# This file configures how SOPS encrypts secrets in the repository.
+# Supports multiple encryption backends: age, GPG, AWS KMS, Azure Key Vault, GCP KMS
+#
+# NIST SP 800-53 Controls:
+# - SC-12: Cryptographic Key Establishment (Key management for secrets)
+# - SC-13: Cryptographic Protection (Encryption of secrets at rest)
+# - SC-28: Protection of Information at Rest (Encrypted storage)
+
+# Creation rules (applied in order, first match wins)
+creation_rules:
+  # Rule 1: Location secrets (use age encryption)
+  - path_regex: locations/.*/secrets\.enc\.yaml$
+    encrypted_regex: '^(data|stringData|password|secret|key|token|cert|private)$'
+    age: >-
+      age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    # Alternative: Use multiple age keys for redundancy
+    # age: >-
+    #   age1key1...,
+    #   age2key2...,
+    #   age3key3...
+
+  # Rule 2: Global secrets (use AWS KMS for production)
+  - path_regex: (base|policies)/.*secrets.*\.yaml$
+    encrypted_regex: '^(data|stringData|password|secret|key|token)$'
+    kms: 'arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012'
+    # Add multiple KMS keys for multi-region redundancy
+    # kms: >-
+    #   arn:aws:kms:us-east-1:...:key/...,
+    #   arn:aws:kms:us-west-2:...:key/...
+
+  # Rule 3: Staging environment (separate keys)
+  - path_regex: overlays/staging/.*secrets.*\.yaml$
+    encrypted_regex: '^(data|stringData|password|secret|key|token)$'
+    age: age1stagingkeyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    # Or use a separate KMS key for staging
+    # kms: 'arn:aws:kms:us-east-1:123456789012:key/staging-key-id'
+
+  # Rule 4: Production environment (high security)
+  - path_regex: overlays/production/.*secrets.*\.yaml$
+    encrypted_regex: '^(data|stringData|password|secret|key|token)$'
+    kms: 'arn:aws:kms:us-east-1:123456789012:key/production-key-id'
+    # Require multiple KMS keys (quorum)
+    shamir_threshold: 2
+    kms_keys:
+      - 'arn:aws:kms:us-east-1:123456789012:key/prod-key-1'
+      - 'arn:aws:kms:us-west-2:123456789012:key/prod-key-2'
+      - 'arn:aws:kms:eu-west-1:123456789012:key/prod-key-3'
+
+# Destination rules (for key rotation)
+destination_rules:
+  # Rotate keys for production secrets every 90 days
+  - path_regex: overlays/production/.*
+    age_recipients:
+      - age1newkeyafter90daysxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# MAC (Message Authentication Code) settings
+# Ensures integrity - detects tampering
+mac_only_encrypted: true
+
+# Comment markers (don't encrypt comments)
+unencrypted_comment_regex: '^_comment'
+
+# Example age key generation:
+#
+# Generate a new age key:
+#   age-keygen -o ~/.config/sops/age/keys.txt
+#
+# Extract public key for this config:
+#   age-keygen -y ~/.config/sops/age/keys.txt
+#
+# Example output:
+#   # Public key: age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#
+# Add the public key to the age: field above.
+
+# Example AWS KMS setup:
+#
+# 1. Create KMS key:
+#    aws kms create-key --description "TACACS GitOps Secrets"
+#
+# 2. Create alias:
+#    aws kms create-alias \
+#      --alias-name alias/tacacs-gitops \
+#      --target-key-id <key-id>
+#
+# 3. Grant access to CI/CD:
+#    aws kms create-grant \
+#      --key-id <key-id> \
+#      --grantee-principal arn:aws:iam::123456789012:role/github-actions \
+#      --operations Decrypt Encrypt
+
+# Example GPG setup (alternative to age):
+#
+# creation_rules:
+#   - path_regex: locations/.*/secrets\.enc\.yaml$
+#     pgp: >-
+#       FBC7B9E2A4F9289AC0C1D4843D16CEE4A27381B4,
+#       1234567890ABCDEF1234567890ABCDEF12345678
+
+# Security best practices:
+#
+# 1. **Never commit private keys to git**
+#    - Store age private keys in ~/.config/sops/age/keys.txt
+#    - Store GPG private keys in ~/.gnupg/
+#    - Use CI/CD secrets for automation
+#
+# 2. **Use different keys per environment**
+#    - Staging and production should have separate keys
+#    - Limits blast radius if key is compromised
+#
+# 3. **Rotate keys regularly**
+#    - Age keys: every 90-180 days
+#    - KMS keys: enable automatic rotation
+#
+# 4. **Back up keys securely**
+#    - Store encrypted backups in password manager
+#    - Document key recovery procedures
+#
+# 5. **Audit key access**
+#    - Monitor who can decrypt secrets
+#    - Use AWS CloudTrail for KMS access logs

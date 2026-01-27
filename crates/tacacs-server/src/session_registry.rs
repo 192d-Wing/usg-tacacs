@@ -607,7 +607,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let addr = test_addr(12345);
 
-        let conn_id = registry.register_connection(addr).await;
+        let conn_id = registry.try_register_connection(addr).await.unwrap();
         assert!(conn_id > 0);
         assert_eq!(registry.session_count().await, 1);
 
@@ -620,7 +620,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let addr = test_addr(12346);
 
-        let conn_id = registry.register_connection(addr).await;
+        let conn_id = registry.try_register_connection(addr).await.unwrap();
         registry
             .update_authentication(conn_id, "testuser".to_string(), 42)
             .await;
@@ -636,7 +636,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let addr = test_addr(12347);
 
-        let conn_id = registry.register_connection(addr).await;
+        let conn_id = registry.try_register_connection(addr).await.unwrap();
         assert_eq!(registry.list_sessions().await[0].request_count, 0);
 
         registry.record_activity(conn_id).await;
@@ -651,7 +651,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let addr = test_addr(12348);
 
-        let conn_id = registry.register_connection(addr).await;
+        let conn_id = registry.try_register_connection(addr).await.unwrap();
         assert!(!registry.is_termination_requested(conn_id).await);
 
         let result = registry.terminate_session(conn_id).await;
@@ -664,7 +664,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let addr = test_addr(12349);
 
-        let conn_id = registry.register_connection(addr).await;
+        let conn_id = registry.try_register_connection(addr).await.unwrap();
         registry
             .update_authentication(conn_id, "user".to_string(), 999)
             .await;
@@ -689,9 +689,9 @@ mod tests {
     async fn test_multiple_sessions() {
         let registry = SessionRegistry::new();
 
-        let conn1 = registry.register_connection(test_addr(10001)).await;
-        let conn2 = registry.register_connection(test_addr(10002)).await;
-        let conn3 = registry.register_connection(test_addr(10003)).await;
+        let conn1 = registry.try_register_connection(test_addr(10001)).await.unwrap();
+        let conn2 = registry.try_register_connection(test_addr(10002)).await.unwrap();
+        let conn3 = registry.try_register_connection(test_addr(10003)).await.unwrap();
 
         assert_eq!(registry.session_count().await, 3);
 
@@ -710,7 +710,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let addr = test_addr(12350);
 
-        let conn_id = registry.register_connection(addr).await;
+        let conn_id = registry.try_register_connection(addr).await.unwrap();
 
         // Small delay to ensure duration > 0
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -726,7 +726,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let addr = test_addr(12351);
 
-        let conn_id = registry.register_connection(addr).await;
+        let conn_id = registry.try_register_connection(addr).await.unwrap();
 
         // Immediate sweep with short timeout shouldn't terminate (just registered)
         let terminated = registry.sweep_idle_sessions(Duration::from_secs(1)).await;
@@ -756,8 +756,8 @@ mod tests {
     async fn test_sweep_idle_preserves_active_sessions() {
         let registry = SessionRegistry::new();
 
-        let idle_conn = registry.register_connection(test_addr(12352)).await;
-        let active_conn = registry.register_connection(test_addr(12353)).await;
+        let idle_conn = registry.try_register_connection(test_addr(12352)).await.unwrap();
+        let active_conn = registry.try_register_connection(test_addr(12353)).await.unwrap();
 
         // Wait for both to become "idle"
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -784,20 +784,24 @@ mod tests {
         // Register 3 sessions from same IP (different ports)
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let _conn1 = registry
-            .register_connection(SocketAddr::new(ip, 10001))
-            .await;
+            .try_register_connection(SocketAddr::new(ip, 10001))
+            .await
+            .unwrap();
         let _conn2 = registry
-            .register_connection(SocketAddr::new(ip, 10002))
-            .await;
+            .try_register_connection(SocketAddr::new(ip, 10002))
+            .await
+            .unwrap();
         let _conn3 = registry
-            .register_connection(SocketAddr::new(ip, 10003))
-            .await;
+            .try_register_connection(SocketAddr::new(ip, 10003))
+            .await
+            .unwrap();
 
         // Register 1 session from different IP
         let other_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
         let _conn4 = registry
-            .register_connection(SocketAddr::new(other_ip, 10004))
-            .await;
+            .try_register_connection(SocketAddr::new(other_ip, 10004))
+            .await
+            .unwrap();
 
         assert_eq!(registry.count_sessions_from_ip(ip).await, 3);
         assert_eq!(registry.count_sessions_from_ip(other_ip).await, 1);

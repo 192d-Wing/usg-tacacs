@@ -1,0 +1,96 @@
+# Kustomize base configuration for TACACS+ deployment
+#
+# This base is inherited by all location overlays.
+# Each location patches this with location-specific settings.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace (overridden by ApplicationSet)
+namespace: tacacs
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/name: tacacs
+  app.kubernetes.io/managed-by: argocd
+  app.kubernetes.io/part-of: tacacs-multi-location
+
+# Common annotations
+commonAnnotations:
+  managed-by: gitops
+  source: tacacs-gitops
+
+# Resources to create
+resources:
+  - deployment.yaml
+  - service.yaml
+  - configmap.yaml
+  - serviceaccount.yaml
+  - networkpolicy.yaml
+
+# ConfigMap generator (creates ConfigMap from files)
+configMapGenerator:
+  - name: tacacs-config
+    files:
+      - config.json
+      - policy.json
+      - rbac.json
+    options:
+      disableNameSuffixHash: false
+
+# Secret generator (SOPS-encrypted secrets)
+# Requires kustomize-sops plugin
+secretGenerator:
+  - name: tacacs-secrets
+    files:
+      - secrets.enc.yaml
+    options:
+      disableNameSuffixHash: false
+
+# Images to use
+images:
+  - name: tacacs-server
+    newName: your-registry.example.com/tacacs-server
+    newTag: v0.78.0
+
+# Replacements (variable substitution)
+replacements:
+  - source:
+      kind: ConfigMap
+      name: tacacs-config
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: Deployment
+          name: tacacs-server
+        fieldPaths:
+          - spec.template.spec.volumes.[name=config].configMap.name
+
+# Patches (applied to all locations)
+patches:
+  # Add location label from directory name
+  - patch: |-
+      - op: add
+        path: /metadata/labels/location
+        value: ${LOCATION_NAME}
+    target:
+      kind: Deployment
+
+  # Set resource limits
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: tacacs-server
+      spec:
+        template:
+          spec:
+            containers:
+              - name: tacacs
+                resources:
+                  requests:
+                    memory: "256Mi"
+                    cpu: "100m"
+                  limits:
+                    memory: "1Gi"
+                    cpu: "1000m"

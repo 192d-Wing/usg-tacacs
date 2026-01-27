@@ -1,0 +1,138 @@
+{
+  "$schema": "../schemas/config.schema.json",
+  "version": "1.0",
+  "comment": "Base TACACS+ server configuration - inherited by all locations",
+
+  "_comment_listeners": "Network listeners",
+  "listen_tls": "0.0.0.0:300",
+  "listen_legacy": null,
+  "listen_http": "0.0.0.0:8080",
+
+  "_comment_tls": "TLS configuration (required for listen_tls)",
+  "tls": {
+    "cert_path": "/etc/tacacs/tls/server.pem",
+    "key_path": "/etc/tacacs/tls/server-key.pem",
+    "client_ca_path": "/etc/tacacs/tls/client-ca.pem",
+    "allowed_cn": [],
+    "allowed_san": []
+  },
+
+  "_comment_est": "EST (RFC 7030) certificate provisioning",
+  "est": {
+    "enabled": false,
+    "server_url": "https://est.example.com/.well-known/est",
+    "username": null,
+    "password": null,
+    "common_name": null,
+    "cert_path": "/etc/tacacs/tls/est-server.pem",
+    "key_path": "/etc/tacacs/tls/est-server-key.pem",
+    "renewal_days": 30
+  },
+
+  "_comment_ldap": "LDAP authentication (disabled by default)",
+  "ldap": {
+    "enabled": false,
+    "server": null,
+    "bind_dn": null,
+    "bind_password": null,
+    "base_dn": null,
+    "user_filter": "(uid={username})",
+    "required_groups": [],
+    "timeout_secs": 10,
+    "connection_pool_size": 5
+  },
+
+  "_comment_policy": "Policy engine configuration",
+  "policy": {
+    "path": "/etc/tacacs/policy.json",
+    "schema_path": "/etc/tacacs/policy.schema.json",
+    "reload_on_sighup": true,
+    "validate_on_load": true
+  },
+
+  "_comment_credentials": "Static credentials (for testing/fallback)",
+  "credentials": {
+    "file": null,
+    "inline": []
+  },
+
+  "_comment_secrets": "Secret management",
+  "secrets": {
+    "openbao": {
+      "enabled": false,
+      "address": null,
+      "namespace": null,
+      "mount_path": "tacacs",
+      "role": null,
+      "jwt_path": "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    },
+    "shared_secret": null
+  },
+
+  "_comment_api": "Management API configuration",
+  "api": {
+    "enabled": true,
+    "listen": "127.0.0.1:8080",
+    "rbac_config": "/etc/tacacs/rbac.json",
+    "tls": {
+      "enabled": false,
+      "cert_path": null,
+      "key_path": null,
+      "client_ca_path": null
+    }
+  },
+
+  "_comment_session": "Session management",
+  "session": {
+    "max_total_sessions": 10000,
+    "max_sessions_per_ip": 100,
+    "idle_timeout_secs": 300,
+    "keepalive_timeout_secs": 600
+  },
+
+  "_comment_rate_limiting": "Rate limiting and connection control",
+  "rate_limiting": {
+    "max_connections_per_ip": 50,
+    "enabled": true
+  },
+
+  "_comment_ascii_auth": "ASCII authentication settings",
+  "ascii_auth": {
+    "max_attempts": 3,
+    "max_user_attempts": 3,
+    "max_pass_attempts": 3,
+    "prompt_timeout_secs": 60
+  },
+
+  "_comment_logging": "Logging configuration",
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "file": null,
+    "syslog": {
+      "enabled": false,
+      "address": null,
+      "facility": "auth"
+    }
+  },
+
+  "_comment_telemetry": "Observability configuration",
+  "telemetry": {
+    "otlp": {
+      "enabled": false,
+      "endpoint": null
+    },
+    "prometheus": {
+      "enabled": true,
+      "path": "/metrics"
+    }
+  },
+
+  "_comment_location": "Location metadata (override per location)",
+  "location": {
+    "name": "UNKNOWN",
+    "site_code": "UNKNOWN",
+    "region": "UNKNOWN",
+    "environment": "production"
+  }
+}

@@ -654,19 +654,22 @@ mod tests {
     fn auth_session_state_new_from_start_valid() {
         let header = make_header(1); // odd seq
 
-        let state = AuthSessionState::new_from_start(
-            &header,
-            AUTHEN_TYPE_ASCII,
-            "alice".to_string(),
-            b"alice".to_vec(),
-            "tty0".to_string(),
-            b"tty0".to_vec(),
-            "10.0.0.1".to_string(),
-            b"10.0.0.1".to_vec(),
-            1,
-            1,
-        )
-        .unwrap();
+        let start = AuthenStart {
+            header,
+            action: 1,
+            priv_lvl: 15,
+            authen_type: AUTHEN_TYPE_ASCII,
+            service: 1,
+            user_raw: b"alice".to_vec(),
+            user: "alice".to_string(),
+            port_raw: b"tty0".to_vec(),
+            port: "tty0".to_string(),
+            rem_addr_raw: b"10.0.0.1".to_vec(),
+            rem_addr: "10.0.0.1".to_string(),
+            data: vec![],
+        };
+
+        let state = AuthSessionState::from_start(&start).unwrap();
 
         assert_eq!(state.last_seq, 1);
         assert!(!state.expect_client);
@@ -680,18 +683,22 @@ mod tests {
     fn auth_session_state_new_from_start_rejects_even_seq() {
         let header = make_header(2); // even seq - invalid for start
 
-        let result = AuthSessionState::new_from_start(
-            &header,
-            AUTHEN_TYPE_ASCII,
-            "alice".to_string(),
-            b"alice".to_vec(),
-            String::new(),
-            vec![],
-            String::new(),
-            vec![],
-            1,
-            1,
-        );
+        let start = AuthenStart {
+            header,
+            action: 1,
+            priv_lvl: 15,
+            authen_type: AUTHEN_TYPE_ASCII,
+            service: 1,
+            user_raw: b"alice".to_vec(),
+            user: "alice".to_string(),
+            port_raw: vec![],
+            port: String::new(),
+            rem_addr_raw: vec![],
+            rem_addr: String::new(),
+            data: vec![],
+        };
+
+        let result = AuthSessionState::from_start(&start);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("odd"));
@@ -701,19 +708,22 @@ mod tests {
     fn auth_session_state_empty_port_becomes_none() {
         let header = make_header(1);
 
-        let state = AuthSessionState::new_from_start(
-            &header,
-            AUTHEN_TYPE_ASCII,
-            "alice".to_string(),
-            b"alice".to_vec(),
-            String::new(),
-            vec![],
-            String::new(),
-            vec![],
-            1,
-            1,
-        )
-        .unwrap();
+        let start = AuthenStart {
+            header,
+            action: 1,
+            priv_lvl: 15,
+            authen_type: AUTHEN_TYPE_ASCII,
+            service: 1,
+            user_raw: b"alice".to_vec(),
+            user: "alice".to_string(),
+            port_raw: vec![],
+            port: String::new(),
+            rem_addr_raw: vec![],
+            rem_addr: String::new(),
+            data: vec![],
+        };
+
+        let state = AuthSessionState::from_start(&start).unwrap();
 
         assert!(state.port.is_none());
         assert!(state.rem_addr.is_none());
@@ -722,19 +732,23 @@ mod tests {
     #[test]
     fn auth_session_state_validate_client_valid() {
         let header = make_header(1);
-        let mut state = AuthSessionState::new_from_start(
-            &header,
-            AUTHEN_TYPE_ASCII,
-            "alice".to_string(),
-            b"alice".to_vec(),
-            String::new(),
-            vec![],
-            String::new(),
-            vec![],
-            1,
-            1,
-        )
-        .unwrap();
+
+        let start = AuthenStart {
+            header,
+            action: 1,
+            priv_lvl: 15,
+            authen_type: AUTHEN_TYPE_ASCII,
+            service: 1,
+            user_raw: b"alice".to_vec(),
+            user: "alice".to_string(),
+            port_raw: vec![],
+            port: String::new(),
+            rem_addr_raw: vec![],
+            rem_addr: String::new(),
+            data: vec![],
+        };
+
+        let mut state = AuthSessionState::from_start(&start).unwrap();
 
         // Simulate server reply was sent
         state.expect_client = true;
@@ -751,19 +765,23 @@ mod tests {
     #[test]
     fn auth_session_state_validate_client_rejects_even_seq() {
         let header = make_header(1);
-        let mut state = AuthSessionState::new_from_start(
-            &header,
-            AUTHEN_TYPE_ASCII,
-            "alice".to_string(),
-            b"alice".to_vec(),
-            String::new(),
-            vec![],
-            String::new(),
-            vec![],
-            1,
-            1,
-        )
-        .unwrap();
+
+        let start = AuthenStart {
+            header,
+            action: 1,
+            priv_lvl: 15,
+            authen_type: AUTHEN_TYPE_ASCII,
+            service: 1,
+            user_raw: b"alice".to_vec(),
+            user: "alice".to_string(),
+            port_raw: vec![],
+            port: String::new(),
+            rem_addr_raw: vec![],
+            rem_addr: String::new(),
+            data: vec![],
+        };
+
+        let mut state = AuthSessionState::from_start(&start).unwrap();
 
         state.expect_client = true;
         state.last_seq = 2;
@@ -778,19 +796,23 @@ mod tests {
     #[test]
     fn auth_session_state_prepare_server_reply_valid() {
         let header = make_header(1);
-        let mut state = AuthSessionState::new_from_start(
-            &header,
-            AUTHEN_TYPE_ASCII,
-            "alice".to_string(),
-            b"alice".to_vec(),
-            String::new(),
-            vec![],
-            String::new(),
-            vec![],
-            1,
-            1,
-        )
-        .unwrap();
+
+        let start = AuthenStart {
+            header,
+            action: 1,
+            priv_lvl: 15,
+            authen_type: AUTHEN_TYPE_ASCII,
+            service: 1,
+            user_raw: b"alice".to_vec(),
+            user: "alice".to_string(),
+            port_raw: vec![],
+            port: String::new(),
+            rem_addr_raw: vec![],
+            rem_addr: String::new(),
+            data: vec![],
+        };
+
+        let mut state = AuthSessionState::from_start(&start).unwrap();
 
         let reply_header = make_header(2); // even, last_seq + 1
         let result = state.prepare_server_reply(&reply_header);

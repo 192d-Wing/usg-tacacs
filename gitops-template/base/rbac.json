@@ -1,0 +1,48 @@
+{
+  "$schema": "../schemas/rbac.schema.json",
+  "version": "1.0",
+  "comment": "Base RBAC configuration for Management API",
+
+  "roles": {
+    "admin": {
+      "comment": "Full administrative access",
+      "permissions": [
+        "read:*",
+        "write:*"
+      ]
+    },
+    "operator": {
+      "comment": "Day-to-day operations (read-all, manage sessions)",
+      "permissions": [
+        "read:*",
+        "write:sessions"
+      ]
+    },
+    "viewer": {
+      "comment": "Read-only monitoring access",
+      "permissions": [
+        "read:status",
+        "read:metrics",
+        "read:sessions"
+      ]
+    },
+    "automation": {
+      "comment": "Automated tools (policy reload, status checks)",
+      "permissions": [
+        "read:status",
+        "read:config",
+        "write:policy"
+      ]
+    }
+  },
+
+  "users": {
+    "_comment": "Map client certificate CN to roles",
+    "_example": "CN=admin.tacacs.internal",
+
+    "CN=admin.tacacs.internal": "admin",
+    "CN=operator.tacacs.internal": "operator",
+    "CN=monitor.tacacs.internal": "viewer",
+    "CN=automation.tacacs.internal": "automation"
+  }
+}
