@@ -31,7 +31,7 @@ format-check:
     - cargo fmt --all -- --check
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -43,7 +43,7 @@ clippy-check:
     - cargo clippy --all-targets --all-features -- -D warnings
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -62,7 +62,7 @@ build-debug:
     expire_in: 1 hour
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -76,7 +76,7 @@ build-release:
       - target/release/usg-tacacs-server
     expire_in: 1 day
   only:
-    - main
+    - master
     - tags
   tags:
     - docker
@@ -93,7 +93,7 @@ unit-tests:
   coverage: '/^\s*lines:\s*(\d+\.\d+)%/'
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -104,7 +104,7 @@ integration-tests:
     - cargo test --all-features --test '*'
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -115,7 +115,7 @@ doc-tests:
     - cargo test --all-features --doc
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -151,7 +151,7 @@ nist-control-coverage:
     expire_in: 1 week
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -187,7 +187,7 @@ nasa-power-of-10-rule4:
   allow_failure: true
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -229,7 +229,7 @@ runtime-unwrap-check:
       fi
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -248,7 +248,7 @@ cargo-audit:
   allow_failure: false
   only:
     - merge_requests
-    - main
+    - master
     - schedules
   tags:
     - docker
@@ -264,7 +264,7 @@ cargo-deny:
   allow_failure: true
   only:
     - merge_requests
-    - main
+    - master
   tags:
     - docker
 
@@ -296,7 +296,7 @@ rustdoc-build:
       - target/doc/
     expire_in: 1 week
   only:
-    - main
+    - master
   tags:
     - docker
 
