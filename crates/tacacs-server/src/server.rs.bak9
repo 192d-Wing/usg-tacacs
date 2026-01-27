@@ -1737,7 +1737,7 @@ where
             },
         });
 
-    if let AuthenPacket::Continue(cont) = packet {
+    if let AuthenPacket::Continue(ref cont) = packet {
         if let Err(err) = state.validate_client(&cont.header) {
             warn!(error = %err, peer = %peer, "auth sequence invalid");
             let reply = AuthenReply {
@@ -2269,19 +2269,6 @@ where
         }
     };
 
-    let state = match get_or_create_auth_state(
-        stream,
-        &packet,
-        auth_states,
-        session_id,
-        secret,
-        peer,
-    )
-    .await?
-    {
-        Some(s) => s,
-        None => return Ok(LoopControl::Break),
-    };
 
     let mut reply = match packet {
         AuthenPacket::Start(ref start) => match start.authen_type {

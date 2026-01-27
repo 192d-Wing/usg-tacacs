@@ -1737,7 +1737,7 @@ where
             },
         });
 
-    if let AuthenPacket::Continue(cont) = packet {
+    if let AuthenPacket::Continue(ref cont) = packet {
         if let Err(err) = state.validate_client(&cont.header) {
             warn!(error = %err, peer = %peer, "auth sequence invalid");
             let reply = AuthenReply {
@@ -2269,19 +2269,90 @@ where
         }
     };
 
-    let state = match get_or_create_auth_state(
-        stream,
-        &packet,
-        auth_states,
-        session_id,
-        secret,
-        peer,
-    )
-    .await?
-    {
-        Some(s) => s,
-        None => return Ok(LoopControl::Break),
-    };
+    let state = auth_states
+        .entry(session_id)
+        .or_insert_with(|| match &packet {
+            AuthenPacket::Start(start) => AuthSessionState::from_start(start)
+                .unwrap_or(AuthSessionState {
+                    last_seq: start.header.seq_no,
+                    expect_client: false,
+                    authen_type: Some(start.authen_type),
+                    challenge: None,
+                    username: if start.user_raw.is_empty() || start.user.is_empty() {
+                        None
+                    } else {
+                        Some(start.user.clone())
+                    },
+                    username_raw: if start.user_raw.is_empty() {
+                        None
+                    } else {
+                        Some(start.user_raw.clone())
+                    },
+                    port: Some(start.port.clone()),
+                    port_raw: if start.port_raw.is_empty() {
+                        None
+                    } else {
+                        Some(start.port_raw.clone())
+                    },
+                    rem_addr: Some(start.rem_addr.clone()),
+                    rem_addr_raw: if start.rem_addr_raw.is_empty() {
+                        None
+                    } else {
+                        Some(start.rem_addr_raw.clone())
+                    },
+                    service: Some(start.service),
+                    action: Some(start.action),
+                    ascii_need_user: start.user.is_empty(),
+                    ascii_need_pass: start.data.is_empty(),
+                    chap_id: None,
+                    ascii_attempts: 0,
+                    ascii_user_attempts: 0,
+                    ascii_pass_attempts: 0,
+                }),
+            AuthenPacket::Continue(cont) => AuthSessionState {
+                last_seq: cont.header.seq_no,
+                expect_client: false,
+                authen_type: None,
+                challenge: None,
+                username: None,
+                username_raw: None,
+                port_raw: None,
+                port: None,
+                rem_addr_raw: None,
+                rem_addr: None,
+                chap_id: None,
+                ascii_need_user: true,
+                ascii_need_pass: false,
+                ascii_attempts: 0,
+                ascii_user_attempts: 0,
+                ascii_pass_attempts: 0,
+                service: None,
+                action: None,
+            },
+        });
+    if let AuthenPacket::Continue(ref cont) = packet {
+        if let Err(err) = state.validate_client(&cont.header) {
+            warn!(error = %err, peer = %peer, "auth sequence invalid");
+            let reply = AuthenReply {
+                status: AUTHEN_STATUS_ERROR,
+                flags: 0,
+                server_msg: err.to_string(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            };
+            audit_event(
+                "authn_sequence_error",
+                peer,
+                state.username.as_deref().unwrap_or(""),
+                session_id,
+                "error",
+                "sequence",
+                &err.to_string(),
+            );
+            let _ = write_authen_reply(stream, &cont.header, &reply, secret).await;
+            return Ok(LoopControl::Break);
+        }
+    }
 
     let mut reply = match packet {
         AuthenPacket::Start(ref start) => match start.authen_type {
