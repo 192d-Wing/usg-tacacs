@@ -965,13 +965,12 @@ fn validate_authz_single_connect(
         return None;
     }
 
-    if let Some(bound) = single_connect.session {
-        if bound != request.header.session_id {
+    if let Some(bound) = single_connect.session
+        && bound != request.header.session_id {
             warn!(peer = %peer, user = %request.user, session = request.header.session_id,
                 bound_session = bound, "single-connect violation: session-id mismatch on authorization");
             return Some("session-id mismatch".into());
         }
-    }
 
     if let Some(ref bound_user) = single_connect.user {
         if bound_user != &request.user {
@@ -1030,13 +1029,12 @@ fn validate_authen_single_connect(
             return Some("single-connection already authenticated".into());
         }
 
-        if let Some(bound) = single_connect.session {
-            if bound != start.header.session_id {
+        if let Some(bound) = single_connect.session
+            && bound != start.header.session_id {
                 warn!(peer = %peer, user = %start.user, session = session_id,
                     bound_session = bound, "single-connect violation: session-id mismatch on authentication");
                 return Some("session-id mismatch".into());
             }
-        }
     }
 
     None
@@ -1062,13 +1060,12 @@ fn validate_acct_single_connect(
         return None;
     }
 
-    if let Some(bound) = single_connect.session {
-        if bound != request.header.session_id {
+    if let Some(bound) = single_connect.session
+        && bound != request.header.session_id {
             warn!(peer = %peer, user = %request.user, session = request.header.session_id,
                 bound_session = bound, "single-connect violation: session-id mismatch on accounting");
             return Some("session-id mismatch".into());
         }
-    }
 
     if let Some(ref bound_user) = single_connect.user {
         if bound_user != &request.user {
@@ -1392,11 +1389,10 @@ fn track_task_id(
             if let Err(e) = task_tracker.stop(tid) {
                 warn!(peer = %peer, task_id = tid, error = %e, "task_id tracking warning");
             }
-        } else if request.flags & ACCT_FLAG_WATCHDOG != 0 {
-            if let Err(e) = task_tracker.watchdog(tid) {
+        } else if request.flags & ACCT_FLAG_WATCHDOG != 0
+            && let Err(e) = task_tracker.watchdog(tid) {
                 warn!(peer = %peer, task_id = tid, error = %e, "task_id tracking warning");
             }
-        }
     }
     Ok(())
 }
@@ -1796,8 +1792,8 @@ where
             },
         });
 
-    if let AuthenPacket::Continue(cont) = packet {
-        if let Err(err) = state.validate_client(&cont.header) {
+    if let AuthenPacket::Continue(cont) = packet
+        && let Err(err) = state.validate_client(&cont.header) {
             warn!(error = %err, peer = %peer, "auth sequence invalid");
             let reply = AuthenReply {
                 status: AUTHEN_STATUS_ERROR,
@@ -1818,7 +1814,6 @@ where
             let _ = write_authen_reply(stream, &cont.header, &reply, secret).await;
             return Ok(None);
         }
-    }
 
     Ok(Some(state))
 }
@@ -2054,15 +2049,14 @@ async fn handle_authen_start_ascii(
             }
         };
 
-        if !ok {
-            if let Some(delay) = calc_ascii_backoff_capped(
+        if !ok
+            && let Some(delay) = calc_ascii_backoff_capped(
                 ascii_cfg.backoff_ms,
                 state.ascii_attempts,
                 ascii_cfg.backoff_max_ms,
             ) {
                 sleep(delay).await;
             }
-        }
 
         let svc_str = state
             .service
@@ -2235,8 +2229,8 @@ where
         .await
         .with_context(|| "sending TACACS+ auth reply")?;
 
-    if !reply.server_msg_raw.is_empty() {
-        if let Some(state) = auth_states.get(&session_id) {
+    if !reply.server_msg_raw.is_empty()
+        && let Some(state) = auth_states.get(&session_id) {
             enforce_server_msg(policy, state, &mut reply).await;
             debug!(
                 peer = %peer,
@@ -2246,7 +2240,6 @@ where
                 "auth reply carried raw server_msg bytes"
             );
         }
-    }
     if terminal {
         auth_states.remove(&session_id);
         if reply.status != AUTHEN_STATUS_PASS {
@@ -2339,7 +2332,7 @@ where
             None => return Ok(LoopControl::Break),
         };
 
-    let mut reply = match packet {
+    let reply = match packet {
         AuthenPacket::Start(ref start) => match start.authen_type {
             AUTHEN_TYPE_ASCII => {
                 handle_authen_start_ascii(start, state, policy, credentials, ldap, ascii_cfg).await
