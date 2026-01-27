@@ -25,7 +25,7 @@ stages:
 
 format-check:
   stage: validate
-  image: rust:1.75
+  image: rust:1.92
   script:
     - rustup component add rustfmt
     - cargo fmt --all -- --check
@@ -37,7 +37,7 @@ format-check:
 
 clippy-check:
   stage: validate
-  image: rust:1.75
+  image: rust:1.92
   script:
     - rustup component add clippy
     - cargo clippy --all-targets --all-features -- -D warnings
@@ -53,7 +53,7 @@ clippy-check:
 
 build-debug:
   stage: build
-  image: rust:1.75
+  image: rust:1.92
   script:
     - cargo build --all-features
   artifacts:
@@ -68,7 +68,7 @@ build-debug:
 
 build-release:
   stage: build
-  image: rust:1.75
+  image: rust:1.92
   script:
     - cargo build --release --all-features
   artifacts:
@@ -87,7 +87,7 @@ build-release:
 
 unit-tests:
   stage: test
-  image: rust:1.75
+  image: rust:1.92
   script:
     - cargo test --all-features --lib
   coverage: '/^\s*lines:\s*(\d+\.\d+)%/'
@@ -99,7 +99,7 @@ unit-tests:
 
 integration-tests:
   stage: test
-  image: rust:1.75
+  image: rust:1.92
   script:
     - cargo test --all-features --test '*'
   only:
@@ -110,7 +110,7 @@ integration-tests:
 
 doc-tests:
   stage: test
-  image: rust:1.75
+  image: rust:1.92
   script:
     - cargo test --all-features --doc
   only:
@@ -125,7 +125,7 @@ doc-tests:
 
 nist-control-coverage:
   stage: compliance
-  image: python:3.11
+  image: python:3.14
   before_script:
     - pip install --quiet --no-cache-dir jq
   script:
@@ -135,7 +135,7 @@ nist-control-coverage:
     - echo "=== Checking for files with controls but no headers ==="
     - python3 scripts/analyze-nist-controls.py > /tmp/nist-report.txt 2>&1
     - FILES_NEEDING_HEADERS=$(python3 -c "import json; data=json.load(open('docs/nist-control-analysis.json')); print(data['summary']['files_needing_headers'])")
-    - echo "Files needing headers: $FILES_NEEDING_HEADERS"
+    - echo "Files needing headers $FILES_NEEDING_HEADERS"
     - |
       if [ "$FILES_NEEDING_HEADERS" -gt 0 ]; then
         echo "❌ FAIL: $FILES_NEEDING_HEADERS files with controls are missing formal NIST headers"
@@ -157,10 +157,10 @@ nist-control-coverage:
 
 nasa-power-of-10-rule4:
   stage: compliance
-  image: python:3.11
+  image: python:3.14
   script:
     - echo "=== NASA Power of 10 Rule #4: Function Length Validation ==="
-    - echo "Rule: All functions must be ≤60 lines"
+    - echo "Rule All functions must be ≤60 lines"
     - echo ""
     - python3 /private/tmp/claude/-Users-johnewillmanv-projects-usg-tacacs/38035c27-d2cd-477b-a098-8bd69659a6ee/scratchpad/analyze_rust_functions.py crates/tacacs-server/src/server.rs > /tmp/function-analysis.txt 2>&1 || true
     - echo "=== Checking handle_connection function ==="
@@ -193,10 +193,10 @@ nasa-power-of-10-rule4:
 
 runtime-unwrap-check:
   stage: compliance
-  image: rust:1.75
+  image: rust:1.92
   script:
     - echo "=== NASA Power of 10 Rules #5 & #7: Runtime unwrap() Validation ==="
-    - echo "Rule: No .unwrap() or .expect() in production request handling paths"
+    - echo "Rule - No .unwrap() or .expect() in production request handling paths"
     - echo ""
     - echo "=== Checking critical runtime files ==="
     - |
@@ -239,7 +239,7 @@ runtime-unwrap-check:
 
 cargo-audit:
   stage: security
-  image: rust:1.75
+  image: rust:1.92
   before_script:
     - cargo install --quiet cargo-audit
   script:
@@ -255,7 +255,7 @@ cargo-audit:
 
 cargo-deny:
   stage: security
-  image: rust:1.75
+  image: rust:1.92
   before_script:
     - cargo install --quiet cargo-deny
   script:
@@ -274,7 +274,7 @@ cargo-deny:
 
 rustdoc-build:
   stage: compliance
-  image: rust:1.75
+  image: rust:1.92
   script:
     - echo "=== Building Rust Documentation ==="
     - cargo doc --no-deps --all-features
@@ -306,7 +306,7 @@ rustdoc-build:
 
 nightly-full-suite:
   stage: test
-  image: rust:1.75
+  image: rust:1.92
   script:
     - cargo test --all-features --all-targets
     - cargo audit
@@ -321,7 +321,7 @@ nightly-full-suite:
 
 benchmark:
   stage: test
-  image: rust:1.75
+  image: rust:1.92
   script:
     - cargo bench --all-features
   when: manual
