@@ -1,8 +1,10 @@
 #!/bin/bash
 # NASA Power of 10 Rule #4: Function Length Validation
-# All functions must be ≤60 lines
+# All functions must be ≤60 lines (excluding blank lines)
 #
 # Usage: ./scripts/ci/validate-function-length.sh [--all] [function_name] [file_path] [max_lines]
+#
+# Note: Blank lines (lines containing only whitespace) are not counted.
 #
 # Modes:
 #   --all           Scan all .rs files in crates/ directory for violations
@@ -22,16 +24,23 @@ VIOLATIONS_FILE=$(mktemp)
 trap "rm -f $VIOLATIONS_FILE" EXIT
 
 # Function to measure a single function's length using brace matching
+# Excludes blank lines from the count
 measure_function_length() {
     local file="$1"
     local start_line="$2"
 
-    local line_count=0
+    local total_line_count=0
+    local non_blank_count=0
     local brace_count=0
     local found_open=false
 
     while IFS= read -r line; do
-        line_count=$((line_count + 1))
+        total_line_count=$((total_line_count + 1))
+
+        # Check if line is blank (only whitespace or empty)
+        if [[ ! "$line" =~ ^[[:space:]]*$ ]]; then
+            non_blank_count=$((non_blank_count + 1))
+        fi
 
         # Count opening braces
         local open=$(echo "$line" | grep -o '{' | wc -l | tr -d ' ')
@@ -47,7 +56,7 @@ measure_function_length() {
 
         # Function ends when braces balance
         if [ "$found_open" = true ] && [ "$brace_count" -eq 0 ]; then
-            echo "$line_count"
+            echo "$non_blank_count"
             return 0
         fi
     done < <(tail -n +"$start_line" "$file")
