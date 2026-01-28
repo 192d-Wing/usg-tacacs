@@ -1275,6 +1275,55 @@ fn authorize_shell_command(
 /// |---------|------|----------------|
 /// | AC-3 | Access Enforcement | Policy-based command authorization |
 /// | AU-12 | Audit Generation | Logs allow/deny decisions |
+/// Build authorization allow response with policy metadata.
+fn build_authz_allow_response(
+    request: &AuthorizationRequest,
+    matched_rule: Option<String>,
+    ldap_groups: &[String],
+    ctx: &str,
+    peer: &str,
+) -> AuthorizationResponse {
+    let mut data = String::from("reason=policy-allow");
+    if let Some(rule) = matched_rule {
+        data.push_str(";rule=");
+        data.push_str(&rule);
+    }
+    data.push_str(";ctx=");
+    data.push_str(ctx);
+    let ldap_data = if !ldap_groups.is_empty() {
+        format!(";groups={}", ldap_groups.join(","))
+    } else {
+        String::new()
+    };
+    let resp = AuthorizationResponse {
+        status: AUTHOR_STATUS_PASS_REPL,
+        server_msg: String::new(),
+        data: format!("{data}{ldap_data}"),
+        args: authz_allow_attrs(request),
+    };
+    audit_event("authz_policy_allow", peer, &request.user, request.header.session_id, "pass", "policy-allow", &resp.data);
+    resp
+}
+
+/// Build authorization deny response with policy metadata.
+fn build_authz_deny_response(
+    request: &AuthorizationRequest,
+    matched_rule: Option<String>,
+    cmd: &str,
+    ctx: &str,
+    peer: &str,
+) -> AuthorizationResponse {
+    let mut resp = authz_reason_response(AUTHOR_STATUS_FAIL, format!("command '{cmd}' denied by policy"), "policy-deny", Some(cmd.to_string()));
+    if let Some(rule) = matched_rule {
+        resp.data.push_str(";rule=");
+        resp.data.push_str(&rule);
+    }
+    resp.data.push_str(";ctx=");
+    resp.data.push_str(ctx);
+    audit_event("authz_policy_deny", peer, &request.user, request.header.session_id, "fail", &resp.server_msg, &resp.data);
+    resp
+}
+
 fn authorize_user_command(
     request: &AuthorizationRequest,
     policy: &PolicyEngine,
@@ -1284,58 +1333,11 @@ fn authorize_user_command(
 ) -> AuthorizationResponse {
     let ctx = authz_context(request);
     let decision = policy.authorize_with_groups(&request.user, ldap_groups, cmd);
+
     if decision.allowed {
-        let mut data = String::from("reason=policy-allow");
-        if let Some(rule) = decision.matched_rule.clone() {
-            data.push_str(";rule=");
-            data.push_str(&rule);
-        }
-        data.push_str(";ctx=");
-        data.push_str(&ctx);
-        let ldap_data = if !ldap_groups.is_empty() {
-            format!(";groups={}", ldap_groups.join(","))
-        } else {
-            String::new()
-        };
-        let resp = AuthorizationResponse {
-            status: AUTHOR_STATUS_PASS_REPL,
-            server_msg: String::new(),
-            data: format!("{data}{ldap_data}"),
-            args: authz_allow_attrs(request),
-        };
-        audit_event(
-            "authz_policy_allow",
-            peer,
-            &request.user,
-            request.header.session_id,
-            "pass",
-            "policy-allow",
-            &resp.data,
-        );
-        resp
+        build_authz_allow_response(request, decision.matched_rule, ldap_groups, &ctx, peer)
     } else {
-        let mut resp = authz_reason_response(
-            AUTHOR_STATUS_FAIL,
-            format!("command '{cmd}' denied by policy"),
-            "policy-deny",
-            Some(cmd.to_string()),
-        );
-        if let Some(rule) = decision.matched_rule {
-            resp.data.push_str(";rule=");
-            resp.data.push_str(&rule);
-        }
-        resp.data.push_str(";ctx=");
-        resp.data.push_str(&ctx);
-        audit_event(
-            "authz_policy_deny",
-            peer,
-            &request.user,
-            request.header.session_id,
-            "fail",
-            &resp.server_msg,
-            &resp.data,
-        );
-        resp
+        build_authz_deny_response(request, decision.matched_rule, cmd, &ctx, peer)
     }
 }
 
@@ -1348,6 +1350,78 @@ fn authorize_user_command(
 /// | AC-3 | Access Enforcement | Authorization request validation and processing |
 /// | AU-12 | Audit Generation | Logs all authorization events |
 /// | SC-23 | Session Authenticity | Single-connect validation |
+/// Handle RFC validation error for authorization request.
+async fn handle_authz_rfc_error<S>(
+    stream: &mut S,
+    request: &AuthorizationRequest,
+    secret: Option<&[u8]>,
+    peer: &str,
+    err: anyhow::Error,
+) -> Result<LoopControl>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
+    let response = authz_reason_response(AUTHOR_STATUS_ERROR, err.to_string(), "rfc-validate", Some(err.to_string()));
+    audit_event("authz_rfc_invalid", peer, &request.user, request.header.session_id, "error", "rfc-validate", &response.data);
+    let _ = write_author_response(stream, &request.header, &response, secret).await;
+    Ok(LoopControl::Break)
+}
+
+/// Handle single-connect validation error for authorization.
+async fn handle_authz_single_connect_error<S>(
+    stream: &mut S,
+    request: &AuthorizationRequest,
+    secret: Option<&[u8]>,
+    err_msg: String,
+) -> Result<LoopControl>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let response = authz_reason_response(AUTHOR_STATUS_ERROR, err_msg, "single-connect", Some("violation".into()));
+    let _ = write_author_response(stream, &request.header, &response, secret).await;
+    Ok(LoopControl::Break)
+}
+
+/// Build authorization response for semantic validation failure.
+fn build_authz_semantic_error_response(
+    request: &AuthorizationRequest,
+    msg: AuthzSemanticError,
+    peer: &str,
+) -> AuthorizationResponse {
+    warn!(peer = %peer, user = %request.user, session = request.header.session_id, reason = %msg.msg, "authorization request rejected by semantic checks");
+    let (code, detail) = authz_semantic_detail(&msg);
+    let ctx = authz_context(request);
+    let resp = authz_reason_response(AUTHOR_STATUS_ERROR, authz_server_msg_with_detail(code, msg.msg, &detail), code, Some(detail.clone()));
+    let meta = format!("{};ctx={ctx}", resp.data);
+    audit_event("authz_semantic_reject", peer, &request.user, request.header.session_id, "error", code, &meta);
+    audit_event("authz_error", peer, &request.user, request.header.session_id, "error", "authz-error", &resp.data);
+    resp
+}
+
+/// Execute authorization decision based on request type.
+async fn execute_authorization_decision(
+    request: &AuthorizationRequest,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    ldap: &Option<Arc<LdapConfig>>,
+    peer: &str,
+) -> AuthorizationResponse {
+    let policy_guard = policy.read().await;
+    let ldap_groups = if let Some(ldap_cfg) = ldap.as_ref() {
+        ldap_fetch_groups(ldap_cfg, &request.user).await
+    } else {
+        Vec::new()
+    };
+
+    if request.is_shell_start() {
+        authorize_shell_command(request, &policy_guard, peer)
+    } else if let Some(cmd) = request.command_string() {
+        authorize_user_command(request, &policy_guard, &ldap_groups, &cmd, peer)
+    } else {
+        authz_reason_response(AUTHOR_STATUS_ERROR, "unsupported request", "unsupported", None)
+    }
+}
+
 async fn handle_authorization_packet<S>(
     stream: &mut S,
     request: &AuthorizationRequest,
@@ -1361,104 +1435,23 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     if let Err(err) = usg_tacacs_proto::validate_author_request(request) {
-        warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
-        let response = authz_reason_response(
-            AUTHOR_STATUS_ERROR,
-            err.to_string(),
-            "rfc-validate",
-            Some(err.to_string()),
-        );
-        audit_event(
-            "authz_rfc_invalid",
-            peer,
-            &request.user,
-            request.header.session_id,
-            "error",
-            "rfc-validate",
-            &response.data,
-        );
-        let _ = write_author_response(stream, &request.header, &response, secret).await;
-        return Ok(LoopControl::Break);
+        return handle_authz_rfc_error(stream, request, secret, peer, err).await;
     }
 
     if let Some(err_msg) = validate_authz_single_connect(single_connect, request, peer) {
-        let response = authz_reason_response(
-            AUTHOR_STATUS_ERROR,
-            err_msg,
-            "single-connect",
-            Some("violation".into()),
-        );
-        let _ = write_author_response(stream, &request.header, &response, secret).await;
-        return Ok(LoopControl::Break);
+        return handle_authz_single_connect_error(stream, request, secret, err_msg).await;
     }
 
     let decision = match validate_authorization_semantics(request) {
-        Ok(()) => {
-            let policy_guard = policy.read().await;
-            let ldap_groups = if let Some(ldap_cfg) = ldap.as_ref() {
-                ldap_fetch_groups(ldap_cfg, &request.user).await
-            } else {
-                Vec::new()
-            };
-            if request.is_shell_start() {
-                authorize_shell_command(request, &policy_guard, peer)
-            } else if let Some(cmd) = request.command_string() {
-                authorize_user_command(request, &policy_guard, &ldap_groups, &cmd, peer)
-            } else {
-                authz_reason_response(
-                    AUTHOR_STATUS_ERROR,
-                    "unsupported request",
-                    "unsupported",
-                    None,
-                )
-            }
-        }
-        Err(msg) => {
-            warn!(
-                peer = %peer,
-                user = %request.user,
-                session = request.header.session_id,
-                reason = %msg.msg,
-                "authorization request rejected by semantic checks"
-            );
-            let (code, detail) = authz_semantic_detail(&msg);
-            let ctx = authz_context(request);
-            let resp = authz_reason_response(
-                AUTHOR_STATUS_ERROR,
-                authz_server_msg_with_detail(code, msg.msg, &detail),
-                code,
-                Some(detail.clone()),
-            );
-            let meta = format!("{};ctx={ctx}", resp.data);
-            audit_event(
-                "authz_semantic_reject",
-                peer,
-                &request.user,
-                request.header.session_id,
-                "error",
-                code,
-                &meta,
-            );
-            audit_event(
-                "authz_error",
-                peer,
-                &request.user,
-                request.header.session_id,
-                "error",
-                "authz-error",
-                &resp.data,
-            );
-            resp
-        }
+        Ok(()) => execute_authorization_decision(request, policy, ldap, peer).await,
+        Err(msg) => build_authz_semantic_error_response(request, msg, peer),
     };
 
     if let Err(err) = validate_author_response_header(&request.header.response(0)) {
         warn!(error = %err, peer = %peer, "authorization header invalid");
     }
 
-    write_author_response(stream, &request.header, &decision, secret)
-        .await
-        .with_context(|| "sending TACACS+ response")?;
+    write_author_response(stream, &request.header, &decision, secret).await.with_context(|| "sending TACACS+ response")?;
 
     Ok(LoopControl::Continue)
 }
