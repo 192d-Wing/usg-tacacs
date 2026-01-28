@@ -71,181 +71,247 @@ pub struct Metrics {
     pub certificate_validity_days: Gauge,
 }
 
+/// Create connection metrics.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | SI-4 | Information System Monitoring - Connection tracking |
+fn create_connection_metrics() -> (Gauge, CounterVec, CounterVec) {
+    let connections_active = Gauge::with_opts(Opts::new(
+        "tacacs_connections_active",
+        "Number of active connections",
+    ))
+    .expect("metric can be created");
+
+    let connections_total = CounterVec::new(
+        Opts::new("tacacs_connections_total", "Total connections by status"),
+        &["status", "listener"],
+    )
+    .expect("metric can be created");
+
+    let connections_rejected = CounterVec::new(
+        Opts::new(
+            "tacacs_connections_rejected_total",
+            "Connections rejected by reason",
+        ),
+        &["reason"],
+    )
+    .expect("metric can be created");
+
+    (connections_active, connections_total, connections_rejected)
+}
+
+/// Create authentication metrics.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AU-2 | Audit Events - Authentication request tracking |
+fn create_authn_metrics() -> (CounterVec, HistogramVec) {
+    let authn_requests_total = CounterVec::new(
+        Opts::new(
+            "tacacs_authn_requests_total",
+            "Authentication requests by method and result",
+        ),
+        &["method", "result"],
+    )
+    .expect("metric can be created");
+
+    let authn_duration_seconds = HistogramVec::new(
+        HistogramOpts::new(
+            "tacacs_authn_duration_seconds",
+            "Authentication request duration in seconds",
+        )
+        .buckets(vec![
+            0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
+        ]),
+        &["method"],
+    )
+    .expect("metric can be created");
+
+    (authn_requests_total, authn_duration_seconds)
+}
+
+/// Create authorization metrics.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AU-2 | Audit Events - Authorization decision tracking |
+fn create_authz_metrics() -> (CounterVec, Histogram) {
+    let authz_requests_total = CounterVec::new(
+        Opts::new(
+            "tacacs_authz_requests_total",
+            "Authorization requests by result",
+        ),
+        &["result"],
+    )
+    .expect("metric can be created");
+
+    let authz_duration_seconds = Histogram::with_opts(
+        HistogramOpts::new(
+            "tacacs_authz_duration_seconds",
+            "Authorization request duration in seconds",
+        )
+        .buckets(vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1]),
+    )
+    .expect("metric can be created");
+
+    (authz_requests_total, authz_duration_seconds)
+}
+
+/// Create accounting and session metrics.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AU-2 | Audit Events - Accounting record tracking |
+/// | SI-4 | Information System Monitoring - Session tracking |
+fn create_acct_session_metrics() -> (CounterVec, Gauge) {
+    let acct_records_total = CounterVec::new(
+        Opts::new("tacacs_acct_records_total", "Accounting records by type"),
+        &["type", "status"],
+    )
+    .expect("metric can be created");
+
+    let sessions_active = Gauge::with_opts(Opts::new(
+        "tacacs_sessions_active",
+        "Number of active sessions",
+    ))
+    .expect("metric can be created");
+
+    (acct_records_total, sessions_active)
+}
+
+/// Create policy metrics.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AU-6 | Audit Review - Policy reload tracking |
+fn create_policy_metrics() -> (CounterVec, Gauge) {
+    let policy_reload_total = CounterVec::new(
+        Opts::new(
+            "tacacs_policy_reload_total",
+            "Policy reload attempts by result",
+        ),
+        &["result"],
+    )
+    .expect("metric can be created");
+
+    let policy_rules_count = Gauge::with_opts(Opts::new(
+        "tacacs_policy_rules_count",
+        "Number of rules in the active policy",
+    ))
+    .expect("metric can be created");
+
+    (policy_reload_total, policy_rules_count)
+}
+
+/// Create rate limiting metrics.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | SI-4 | Information System Monitoring - Rate limit tracking |
+fn create_ratelimit_metrics() -> CounterVec {
+    CounterVec::new(
+        Opts::new(
+            "tacacs_ratelimit_rejections_total",
+            "Rate limit rejections by reason",
+        ),
+        &["reason"],
+    )
+    .expect("metric can be created")
+}
+
+/// Create certificate metrics for EST/PKI.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | SI-4 | Information System Monitoring - Certificate lifecycle tracking |
+fn create_certificate_metrics() -> (Gauge, CounterVec, Gauge) {
+    let certificate_expiry_timestamp = Gauge::with_opts(Opts::new(
+        "tacacs_certificate_expiry_timestamp_seconds",
+        "Unix timestamp when the TLS certificate expires",
+    ))
+    .expect("metric can be created");
+
+    let certificate_renewal_total = CounterVec::new(
+        Opts::new(
+            "tacacs_certificate_renewal_total",
+            "Certificate renewal attempts by result",
+        ),
+        &["result", "source"],
+    )
+    .expect("metric can be created");
+
+    let certificate_validity_days = Gauge::with_opts(Opts::new(
+        "tacacs_certificate_validity_days",
+        "Number of days until certificate expires",
+    ))
+    .expect("metric can be created");
+
+    (
+        certificate_expiry_timestamp,
+        certificate_renewal_total,
+        certificate_validity_days,
+    )
+}
+
+/// Register a metric with the registry.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AU-6 | Audit Review - Expose metrics for monitoring |
+fn register_metric<T: Collector + Clone + 'static>(registry: &Registry, metric: &T) {
+    registry
+        .register(Box::new(metric.clone()))
+        .expect("metric can be registered");
+}
+
 impl Metrics {
     fn new() -> Self {
         let registry = Registry::new();
 
-        // Connection metrics
-        let connections_active = Gauge::with_opts(Opts::new(
-            "tacacs_connections_active",
-            "Number of active connections",
-        ))
-        .expect("metric can be created");
-
-        let connections_total = CounterVec::new(
-            Opts::new("tacacs_connections_total", "Total connections by status"),
-            &["status", "listener"],
-        )
-        .expect("metric can be created");
-
-        let connections_rejected = CounterVec::new(
-            Opts::new(
-                "tacacs_connections_rejected_total",
-                "Connections rejected by reason",
-            ),
-            &["reason"],
-        )
-        .expect("metric can be created");
-
-        // Authentication metrics
-        let authn_requests_total = CounterVec::new(
-            Opts::new(
-                "tacacs_authn_requests_total",
-                "Authentication requests by method and result",
-            ),
-            &["method", "result"],
-        )
-        .expect("metric can be created");
-
-        let authn_duration_seconds = HistogramVec::new(
-            HistogramOpts::new(
-                "tacacs_authn_duration_seconds",
-                "Authentication request duration in seconds",
-            )
-            .buckets(vec![
-                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
-            ]),
-            &["method"],
-        )
-        .expect("metric can be created");
-
-        // Authorization metrics
-        let authz_requests_total = CounterVec::new(
-            Opts::new(
-                "tacacs_authz_requests_total",
-                "Authorization requests by result",
-            ),
-            &["result"],
-        )
-        .expect("metric can be created");
-
-        let authz_duration_seconds = Histogram::with_opts(
-            HistogramOpts::new(
-                "tacacs_authz_duration_seconds",
-                "Authorization request duration in seconds",
-            )
-            .buckets(vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1]),
-        )
-        .expect("metric can be created");
-
-        // Accounting metrics
-        let acct_records_total = CounterVec::new(
-            Opts::new("tacacs_acct_records_total", "Accounting records by type"),
-            &["type", "status"],
-        )
-        .expect("metric can be created");
-
-        // Session metrics
-        let sessions_active = Gauge::with_opts(Opts::new(
-            "tacacs_sessions_active",
-            "Number of active sessions",
-        ))
-        .expect("metric can be created");
-
-        // Policy metrics
-        let policy_reload_total = CounterVec::new(
-            Opts::new(
-                "tacacs_policy_reload_total",
-                "Policy reload attempts by result",
-            ),
-            &["result"],
-        )
-        .expect("metric can be created");
-
-        let policy_rules_count = Gauge::with_opts(Opts::new(
-            "tacacs_policy_rules_count",
-            "Number of rules in the active policy",
-        ))
-        .expect("metric can be created");
-
-        // Rate limiting metrics
-        let ratelimit_rejections_total = CounterVec::new(
-            Opts::new(
-                "tacacs_ratelimit_rejections_total",
-                "Rate limit rejections by reason",
-            ),
-            &["reason"],
-        )
-        .expect("metric can be created");
-
-        // Certificate metrics (EST/PKI)
-        let certificate_expiry_timestamp = Gauge::with_opts(Opts::new(
-            "tacacs_certificate_expiry_timestamp_seconds",
-            "Unix timestamp when the TLS certificate expires",
-        ))
-        .expect("metric can be created");
-
-        let certificate_renewal_total = CounterVec::new(
-            Opts::new(
-                "tacacs_certificate_renewal_total",
-                "Certificate renewal attempts by result",
-            ),
-            &["result", "source"],
-        )
-        .expect("metric can be created");
-
-        let certificate_validity_days = Gauge::with_opts(Opts::new(
-            "tacacs_certificate_validity_days",
-            "Number of days until certificate expires",
-        ))
-        .expect("metric can be created");
+        // Create all metric families
+        let (connections_active, connections_total, connections_rejected) =
+            create_connection_metrics();
+        let (authn_requests_total, authn_duration_seconds) = create_authn_metrics();
+        let (authz_requests_total, authz_duration_seconds) = create_authz_metrics();
+        let (acct_records_total, sessions_active) = create_acct_session_metrics();
+        let (policy_reload_total, policy_rules_count) = create_policy_metrics();
+        let ratelimit_rejections_total = create_ratelimit_metrics();
+        let (certificate_expiry_timestamp, certificate_renewal_total, certificate_validity_days) =
+            create_certificate_metrics();
 
         // Register all metrics
-        registry
-            .register(Box::new(connections_active.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(connections_total.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(connections_rejected.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(authn_requests_total.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(authn_duration_seconds.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(authz_requests_total.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(authz_duration_seconds.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(acct_records_total.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(sessions_active.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(policy_reload_total.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(policy_rules_count.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(ratelimit_rejections_total.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(certificate_expiry_timestamp.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(certificate_renewal_total.clone()))
-            .expect("metric can be registered");
-        registry
-            .register(Box::new(certificate_validity_days.clone()))
-            .expect("metric can be registered");
+        register_metric(&registry, &connections_active);
+        register_metric(&registry, &connections_total);
+        register_metric(&registry, &connections_rejected);
+        register_metric(&registry, &authn_requests_total);
+        register_metric(&registry, &authn_duration_seconds);
+        register_metric(&registry, &authz_requests_total);
+        register_metric(&registry, &authz_duration_seconds);
+        register_metric(&registry, &acct_records_total);
+        register_metric(&registry, &sessions_active);
+        register_metric(&registry, &policy_reload_total);
+        register_metric(&registry, &policy_rules_count);
+        register_metric(&registry, &ratelimit_rejections_total);
+        register_metric(&registry, &certificate_expiry_timestamp);
+        register_metric(&registry, &certificate_renewal_total);
+        register_metric(&registry, &certificate_validity_days);
 
         Self {
             registry,
