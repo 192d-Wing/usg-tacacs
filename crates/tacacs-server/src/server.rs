@@ -59,11 +59,11 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS,
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
     AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
-    AccountingRequest, AccountingResponse, AuthSessionState, AuthenData, AuthenPacket, AuthenReply,
-    AuthenStart, AuthorizationRequest, AuthorizationResponse, CAPABILITY_FLAG_REQUEST,
-    CAPABILITY_FLAG_RESPONSE, Capability, Packet, read_packet, validate_accounting_response_header,
-    validate_author_response_header, write_accounting_response, write_authen_reply,
-    write_author_response,
+    AccountingRequest, AccountingResponse, AuthSessionState, AuthenContinue, AuthenData,
+    AuthenPacket, AuthenReply, AuthenStart, AuthorizationRequest, AuthorizationResponse,
+    CAPABILITY_FLAG_REQUEST, CAPABILITY_FLAG_RESPONSE, Capability, Packet, read_packet,
+    validate_accounting_response_header, validate_author_response_header,
+    write_accounting_response, write_authen_reply, write_author_response,
 };
 
 /// Per-IP connection rate limiter.
@@ -1837,6 +1837,123 @@ where
     Ok(true)
 }
 
+/// Create authentication session state from START packet.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-23 | Session Authenticity | Initialize session state from START packet |
+fn create_state_from_start(start: &AuthenStart) -> AuthSessionState {
+    AuthSessionState::from_start(start).unwrap_or(AuthSessionState {
+        last_seq: start.header.seq_no,
+        expect_client: false,
+        authen_type: Some(start.authen_type),
+        challenge: None,
+        username: if start.user_raw.is_empty() || start.user.is_empty() {
+            None
+        } else {
+            Some(start.user.clone())
+        },
+        username_raw: if start.user_raw.is_empty() {
+            None
+        } else {
+            Some(start.user_raw.clone())
+        },
+        port: Some(start.port.clone()),
+        port_raw: if start.port_raw.is_empty() {
+            None
+        } else {
+            Some(start.port_raw.clone())
+        },
+        rem_addr: Some(start.rem_addr.clone()),
+        rem_addr_raw: if start.rem_addr_raw.is_empty() {
+            None
+        } else {
+            Some(start.rem_addr_raw.clone())
+        },
+        service: Some(start.service),
+        action: Some(start.action),
+        ascii_need_user: start.user.is_empty(),
+        ascii_need_pass: start.data.is_empty(),
+        chap_id: None,
+        ascii_attempts: 0,
+        ascii_user_attempts: 0,
+        ascii_pass_attempts: 0,
+    })
+}
+
+/// Create empty authentication session state from CONTINUE packet.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-23 | Session Authenticity | Initialize minimal state for out-of-sequence CONTINUE |
+fn create_state_from_continue(cont: &AuthenContinue) -> AuthSessionState {
+    AuthSessionState {
+        last_seq: cont.header.seq_no,
+        expect_client: false,
+        authen_type: None,
+        challenge: None,
+        username: None,
+        username_raw: None,
+        port_raw: None,
+        port: None,
+        rem_addr_raw: None,
+        rem_addr: None,
+        chap_id: None,
+        ascii_need_user: true,
+        ascii_need_pass: false,
+        ascii_attempts: 0,
+        ascii_user_attempts: 0,
+        ascii_pass_attempts: 0,
+        service: None,
+        action: None,
+    }
+}
+
+/// Handle authentication sequence validation error.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-23 | Session Authenticity | Reject out-of-sequence authentication packets |
+/// | AU-12 | Audit Generation | Log sequence validation failures |
+async fn handle_auth_sequence_error<S>(
+    stream: &mut S,
+    cont: &AuthenContinue,
+    state: &AuthSessionState,
+    session_id: u32,
+    secret: Option<&[u8]>,
+    peer: &str,
+    err: anyhow::Error,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    warn!(error = %err, peer = %peer, "auth sequence invalid");
+    let reply = AuthenReply {
+        status: AUTHEN_STATUS_ERROR,
+        flags: 0,
+        server_msg: err.to_string(),
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    };
+    audit_event(
+        "authn_sequence_error",
+        peer,
+        state.username.as_deref().unwrap_or(""),
+        session_id,
+        "error",
+        "sequence",
+        &err.to_string(),
+    );
+    let _ = write_authen_reply(stream, &cont.header, &reply, secret).await;
+    Ok(())
+}
+
 /// Get or create authentication session state for the given packet.
 ///
 /// # NIST Controls
@@ -1855,90 +1972,15 @@ async fn get_or_create_auth_state<'a, S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let state = auth_states
-        .entry(session_id)
-        .or_insert_with(|| match packet {
-            AuthenPacket::Start(start) => {
-                AuthSessionState::from_start(start).unwrap_or(AuthSessionState {
-                    last_seq: start.header.seq_no,
-                    expect_client: false,
-                    authen_type: Some(start.authen_type),
-                    challenge: None,
-                    username: if start.user_raw.is_empty() || start.user.is_empty() {
-                        None
-                    } else {
-                        Some(start.user.clone())
-                    },
-                    username_raw: if start.user_raw.is_empty() {
-                        None
-                    } else {
-                        Some(start.user_raw.clone())
-                    },
-                    port: Some(start.port.clone()),
-                    port_raw: if start.port_raw.is_empty() {
-                        None
-                    } else {
-                        Some(start.port_raw.clone())
-                    },
-                    rem_addr: Some(start.rem_addr.clone()),
-                    rem_addr_raw: if start.rem_addr_raw.is_empty() {
-                        None
-                    } else {
-                        Some(start.rem_addr_raw.clone())
-                    },
-                    service: Some(start.service),
-                    action: Some(start.action),
-                    ascii_need_user: start.user.is_empty(),
-                    ascii_need_pass: start.data.is_empty(),
-                    chap_id: None,
-                    ascii_attempts: 0,
-                    ascii_user_attempts: 0,
-                    ascii_pass_attempts: 0,
-                })
-            }
-            AuthenPacket::Continue(cont) => AuthSessionState {
-                last_seq: cont.header.seq_no,
-                expect_client: false,
-                authen_type: None,
-                challenge: None,
-                username: None,
-                username_raw: None,
-                port_raw: None,
-                port: None,
-                rem_addr_raw: None,
-                rem_addr: None,
-                chap_id: None,
-                ascii_need_user: true,
-                ascii_need_pass: false,
-                ascii_attempts: 0,
-                ascii_user_attempts: 0,
-                ascii_pass_attempts: 0,
-                service: None,
-                action: None,
-            },
-        });
+    let state = auth_states.entry(session_id).or_insert_with(|| match packet {
+        AuthenPacket::Start(start) => create_state_from_start(start),
+        AuthenPacket::Continue(cont) => create_state_from_continue(cont),
+    });
 
     if let AuthenPacket::Continue(cont) = packet
         && let Err(err) = state.validate_client(&cont.header)
     {
-        warn!(error = %err, peer = %peer, "auth sequence invalid");
-        let reply = AuthenReply {
-            status: AUTHEN_STATUS_ERROR,
-            flags: 0,
-            server_msg: err.to_string(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
-        audit_event(
-            "authn_sequence_error",
-            peer,
-            state.username.as_deref().unwrap_or(""),
-            session_id,
-            "error",
-            "sequence",
-            &err.to_string(),
-        );
-        let _ = write_authen_reply(stream, &cont.header, &reply, secret).await;
+        handle_auth_sequence_error(stream, cont, state, session_id, secret, peer, err).await?;
         return Ok(None);
     }
 
@@ -2406,6 +2448,72 @@ async fn activate_single_connect_on_success(
     }
 }
 
+/// Extract packet header from authentication packet.
+fn extract_packet_header(packet: &AuthenPacket) -> &usg_tacacs_proto::Header {
+    match packet {
+        AuthenPacket::Start(start) => &start.header,
+        AuthenPacket::Continue(cont) => &cont.header,
+    }
+}
+
+/// Check if authentication status is terminal.
+fn is_terminal_status(status: u8) -> bool {
+    matches!(
+        status,
+        AUTHEN_STATUS_PASS
+            | AUTHEN_STATUS_FAIL
+            | AUTHEN_STATUS_ERROR
+            | AUTHEN_STATUS_FOLLOW
+            | AUTHEN_STATUS_RESTART
+    )
+}
+
+/// Enforce server message policy and log raw bytes if present.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AU-12 | Audit Generation - Log raw server message bytes |
+async fn enforce_server_msg_policy(
+    policy: &Arc<RwLock<PolicyEngine>>,
+    auth_states: &HashMap<u32, AuthSessionState>,
+    session_id: u32,
+    reply: &mut AuthenReply,
+    peer: &str,
+) {
+    if !reply.server_msg_raw.is_empty()
+        && let Some(state) = auth_states.get(&session_id)
+    {
+        enforce_server_msg(policy, state, reply).await;
+        debug!(
+            peer = %peer, session = session_id,
+            raw_len = reply.server_msg_raw.len(),
+            server_msg_raw_hex = %hex::encode(&reply.server_msg_raw),
+            "auth reply carried raw server_msg bytes"
+        );
+    }
+}
+
+/// Clean up terminal authentication state.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | SC-23 | Session Authenticity - Remove completed auth sessions |
+fn cleanup_terminal_auth_state(
+    auth_states: &mut HashMap<u32, AuthSessionState>,
+    single_connect: &mut SingleConnectState,
+    session_id: u32,
+    status: u8,
+) {
+    auth_states.remove(&session_id);
+    if status != AUTHEN_STATUS_PASS {
+        single_connect.reset();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn finalize_authentication<S>(
     stream: &mut S,
@@ -2425,42 +2533,24 @@ async fn finalize_authentication<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let header = match packet {
-        AuthenPacket::Start(start) => &start.header,
-        AuthenPacket::Continue(cont) => &cont.header,
-    };
-    let is_terminal = matches!(
-        reply.status,
-        AUTHEN_STATUS_PASS
-            | AUTHEN_STATUS_FAIL
-            | AUTHEN_STATUS_ERROR
-            | AUTHEN_STATUS_FOLLOW
-            | AUTHEN_STATUS_RESTART
-    );
+    let header = extract_packet_header(packet);
+    let is_terminal = is_terminal_status(reply.status);
     let single_user = state_snapshot.username.clone();
+
     if is_terminal {
         log_terminal_authen_status(&reply, &state_snapshot, session_id, peer);
     }
+
     write_authen_reply(stream, header, &reply, secret)
         .await
         .with_context(|| "sending TACACS+ auth reply")?;
-    if !reply.server_msg_raw.is_empty()
-        && let Some(state) = auth_states.get(&session_id)
-    {
-        enforce_server_msg(policy, state, &mut reply).await;
-        debug!(
-            peer = %peer, session = session_id,
-            raw_len = reply.server_msg_raw.len(),
-            server_msg_raw_hex = %hex::encode(&reply.server_msg_raw),
-            "auth reply carried raw server_msg bytes"
-        );
-    }
+
+    enforce_server_msg_policy(policy, auth_states, session_id, &mut reply, peer).await;
+
     if is_terminal {
-        auth_states.remove(&session_id);
-        if reply.status != AUTHEN_STATUS_PASS {
-            single_connect.reset();
-        }
+        cleanup_terminal_auth_state(auth_states, single_connect, session_id, reply.status);
     }
+
     activate_single_connect_on_success(
         &reply,
         single_connect_flag,
@@ -2472,6 +2562,7 @@ where
         peer,
     )
     .await;
+
     Ok(LoopControl::Continue)
 }
 
