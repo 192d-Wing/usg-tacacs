@@ -584,7 +584,14 @@ struct AuthzSemanticError {
     offending_index: Option<usize>,
 }
 
-fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
+/// Validate that exactly one service attribute exists with a known value.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AC-3 | Service-based access control validation |
+fn validate_service_attribute(req: &AuthorizationRequest) -> Result<String, AuthzSemanticError> {
     let attrs = req.attributes();
     let service_attrs: Vec<_> = attrs
         .iter()
@@ -609,7 +616,20 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
             offending_index: None,
         });
     }
+    Ok(service_val.to_string())
+}
 
+/// Validate shell service authorization requirements.
+///
+/// Shell authorization requires protocol attribute and must not have cmd/cmd-arg.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AC-3 | Shell service-specific validation |
+fn validate_shell_service(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
+    let attrs = req.attributes();
     let protocol_attr = attrs
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case("protocol"));
@@ -621,31 +641,43 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
         .iter()
         .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
         .collect();
-
-    if service_val.eq_ignore_ascii_case("shell") {
-        if protocol_attr.is_none() {
-            return Err(AuthzSemanticError {
-                msg: "shell authorization requires protocol attribute",
-                offending_index: None,
-            });
-        }
-        if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref())
-            && proto.is_empty()
-        {
-            return Err(AuthzSemanticError {
-                msg: "authorization protocol attribute must have a value",
-                offending_index: None,
-            });
-        }
-        if !cmd_attrs.is_empty() || !cmd_arg_attrs.is_empty() {
-            return Err(AuthzSemanticError {
-                msg: "shell authorization must not include cmd/cmd-arg attributes",
-                offending_index: None,
-            });
-        }
-        return Ok(());
+    if protocol_attr.is_none() {
+        return Err(AuthzSemanticError {
+            msg: "shell authorization requires protocol attribute",
+            offending_index: None,
+        });
     }
+    if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref())
+        && proto.is_empty()
+    {
+        return Err(AuthzSemanticError {
+            msg: "authorization protocol attribute must have a value",
+            offending_index: None,
+        });
+    }
+    if !cmd_attrs.is_empty() || !cmd_arg_attrs.is_empty() {
+        return Err(AuthzSemanticError {
+            msg: "shell authorization must not include cmd/cmd-arg attributes",
+            offending_index: None,
+        });
+    }
+    Ok(())
+}
 
+/// Validate protocol attribute for non-shell services.
+///
+/// At most one protocol attribute allowed, must have known value if present.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AC-3 | Protocol-based access control validation |
+fn validate_protocol_attribute(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
+    let attrs = req.attributes();
+    let protocol_attr = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("protocol"));
     let protocol_count = attrs
         .iter()
         .filter(|a| a.name.eq_ignore_ascii_case("protocol"))
@@ -673,6 +705,28 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
             });
         }
     }
+    Ok(())
+}
+
+/// Validate cmd and cmd-arg attributes for non-shell services.
+///
+/// Exactly one cmd required with a value, all cmd-args must have values.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AC-3 | Command-based access control validation |
+fn validate_cmd_attributes(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
+    let attrs = req.attributes();
+    let cmd_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd"))
+        .collect();
+    let cmd_arg_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
+        .collect();
     if cmd_attrs.len() != 1 {
         return Err(AuthzSemanticError {
             msg: "authorization must include exactly one cmd attribute for non-shell services",
@@ -694,7 +748,19 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
             offending_index: None,
         });
     }
-    // Enforce service attribute appears before command attributes in the arg list.
+    Ok(())
+}
+
+/// Validate attribute ordering in the authorization request.
+///
+/// Service attribute must appear before protocol and command attributes.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AC-3 | Enforce RFC 8907 attribute ordering requirements |
+fn validate_attribute_ordering(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
     let service_pos = req
         .args
         .iter()
@@ -726,7 +792,20 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
             offending_index: offending,
         });
     }
-    // Optional priv-lvl attribute must be numeric and match header priv.
+    Ok(())
+}
+
+/// Validate optional priv-lvl attribute if present.
+///
+/// Must be numeric, in range 0-15, and match the header privilege level.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AC-6 | Privilege level validation for least privilege |
+fn validate_priv_lvl(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
+    let attrs = req.attributes();
     if let Some(attr) = attrs
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case("priv-lvl"))
@@ -749,6 +828,22 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
             });
         }
     }
+    Ok(())
+}
+
+fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
+    let service_val = validate_service_attribute(req)?;
+
+    // Shell service has special validation rules
+    if service_val.eq_ignore_ascii_case("shell") {
+        return validate_shell_service(req);
+    }
+
+    // Non-shell services: validate all aspects
+    validate_protocol_attribute(req)?;
+    validate_cmd_attributes(req)?;
+    validate_attribute_ordering(req)?;
+    validate_priv_lvl(req)?;
     Ok(())
 }
 
