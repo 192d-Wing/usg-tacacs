@@ -153,7 +153,10 @@ fn build_ascii_prompts(
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | AU-12 | Audit Generation | Logs authentication abort event |
-async fn handle_abort(state: &mut AuthSessionState, policy: &Arc<RwLock<PolicyEngine>>) -> AuthenReply {
+async fn handle_abort(
+    state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+) -> AuthenReply {
     // Reset authentication state
     state.ascii_need_user = true;
     state.ascii_need_pass = false;
@@ -360,10 +363,7 @@ async fn handle_username_phase(
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | AC-7 | Unsuccessful Logon Attempts | Enforces global, username, and password attempt limits plus lockout threshold |
-fn check_attempt_limits(
-    state: &AuthSessionState,
-    config: &AsciiConfig,
-) -> Option<AuthenReply> {
+fn check_attempt_limits(state: &AuthSessionState, config: &AsciiConfig) -> Option<AuthenReply> {
     // Check global attempt limit
     if config.attempt_limit > 0 && state.ascii_attempts >= config.attempt_limit {
         return Some(AuthenReply {
@@ -468,7 +468,16 @@ pub async fn handle_ascii_continue(
     if state.ascii_need_user {
         handle_username_phase(cont_data, state, config, uname_prompt, pwd_prompt).await
     } else if state.ascii_need_pass {
-        handle_password_phase(cont_data, state, policy, credentials, config, ldap, pwd_prompt).await
+        handle_password_phase(
+            cont_data,
+            state,
+            policy,
+            credentials,
+            config,
+            ldap,
+            pwd_prompt,
+        )
+        .await
     } else {
         // Neither username nor password phase - reset and restart
         reset_authentication_state(state)

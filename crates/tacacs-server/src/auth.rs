@@ -124,7 +124,12 @@ fn ldap_find_user_dn(ldap: &mut LdapConn, cfg: &LdapConfig, username: &str) -> O
     // NIST SI-10: Escape username to prevent LDAP injection attacks
     let escaped_username = ldap_escape_filter_value(username);
     let filter = format!("({}={})", cfg.username_attr, escaped_username);
-    let search = ldap.search(&cfg.search_base, Scope::Subtree, &filter, vec!["dn", &cfg.group_attr]);
+    let search = ldap.search(
+        &cfg.search_base,
+        Scope::Subtree,
+        &filter,
+        vec!["dn", &cfg.group_attr],
+    );
     let (results, _res) = search.and_then(|r| r.success()).ok()?;
     let entry = results.into_iter().next()?;
     Some(SearchEntry::construct(entry).dn)
@@ -138,7 +143,12 @@ fn ldap_verify_group_membership(ldap: &mut LdapConn, cfg: &LdapConfig, username:
     let escaped_username = ldap_escape_filter_value(username);
     let filter = format!("({}={})", cfg.username_attr, escaped_username);
     let search = ldap
-        .search(&cfg.search_base, Scope::Subtree, &filter, vec![&cfg.group_attr])
+        .search(
+            &cfg.search_base,
+            Scope::Subtree,
+            &filter,
+            vec![&cfg.group_attr],
+        )
         .and_then(|r| r.success());
     if let Ok((entries, _)) = search
         && let Some(entry) = entries.into_iter().next()
