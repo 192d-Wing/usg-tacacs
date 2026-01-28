@@ -604,8 +604,7 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
     Ok(())
 }
 
-/// Validate an outgoing accounting request against RFC 8907 semantics.
-pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
+fn validate_acct_basic_fields(req: &AccountingRequest) -> Result<()> {
     ensure!(
         (1..=8).contains(&req.authen_method),
         "accounting authen_method invalid"
@@ -616,7 +615,10 @@ pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
         "accounting authen_service invalid"
     );
     ensure!(req.priv_lvl <= 0x0f, "accounting priv_lvl invalid");
+    Ok(())
+}
 
+fn validate_acct_flags(req: &AccountingRequest) -> Result<(bool, bool, bool)> {
     let valid_mask: u8 = ACCT_FLAG_START | ACCT_FLAG_STOP | ACCT_FLAG_WATCHDOG;
     ensure!(
         req.flags & !valid_mask == 0 && (req.flags & valid_mask).count_ones() == 1,
@@ -630,7 +632,15 @@ pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
         !(is_start || is_stop || is_watchdog) || !req.args.is_empty(),
         "accounting records require attributes"
     );
+    Ok((is_start, is_stop, is_watchdog))
+}
 
+fn validate_acct_required_attrs(
+    req: &AccountingRequest,
+    is_start: bool,
+    is_stop: bool,
+    is_watchdog: bool,
+) -> Result<()> {
     let attrs = req.attributes();
     let has_service_or_cmd = attrs.iter().any(|a| {
         let name = a.name.as_str();
@@ -671,8 +681,11 @@ pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
     if is_watchdog {
         ensure!(has_task, "watchdog accounting requires task_id attribute");
     }
+    Ok(())
+}
 
-    let mut status_val: Option<u32> = None;
+fn validate_acct_numeric_attrs(req: &AccountingRequest, is_stop: bool) -> Result<()> {
+    let attrs = req.attributes();
     let parse_u32 = |key: &str| -> Result<Option<u32>> {
         if let Some(attr) = attrs.iter().find(|a| a.name.eq_ignore_ascii_case(key)) {
             let val = attr.value.as_deref().unwrap_or("");
@@ -683,18 +696,14 @@ pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
         }
         Ok(None)
     };
-    if has_task {
-        parse_u32("task_id")?;
-    }
-    if has_elapsed {
-        parse_u32("elapsed_time")?;
-    }
-    if has_status {
-        status_val = parse_u32("status")?;
-    }
+
+    parse_u32("task_id")?;
+    parse_u32("elapsed_time")?;
+    let status_val = parse_u32("status")?;
     for key in ["bytes_in", "bytes_out", "elapsed_seconds"].iter() {
         parse_u32(key)?;
     }
+
     if let Some(code) = status_val {
         ensure!(code <= 0x0f, "accounting status code must be 0-15");
         ensure!(
@@ -702,6 +711,15 @@ pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
             "non-success accounting status is only valid on stop records"
         );
     }
+    Ok(())
+}
+
+/// Validate an outgoing accounting request against RFC 8907 semantics.
+pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
+    validate_acct_basic_fields(req)?;
+    let (is_start, is_stop, is_watchdog) = validate_acct_flags(req)?;
+    validate_acct_required_attrs(req, is_start, is_stop, is_watchdog)?;
+    validate_acct_numeric_attrs(req, is_stop)?;
     Ok(())
 }
 
