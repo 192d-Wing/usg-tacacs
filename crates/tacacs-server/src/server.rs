@@ -2212,6 +2212,145 @@ async fn handle_authen_start_ascii(
 /// | AU-12 | Audit Generation | Terminal authentication status audit logging |
 /// | SC-23 | Session Authenticity | Single-connect activation on successful authentication |
 #[allow(clippy::too_many_arguments)]
+/// Determine authentication failure reason from status and message.
+fn determine_authen_failure_reason(status: u8, server_msg: &str) -> &'static str {
+    match status {
+        AUTHEN_STATUS_PASS => "success",
+        AUTHEN_STATUS_FAIL => {
+            let msg_lc = server_msg.to_lowercase();
+            if msg_lc.contains("too many authentication attempts") {
+                "attempt-limit"
+            } else if msg_lc.contains("too many username attempts") {
+                "user-attempt-limit"
+            } else if msg_lc.contains("too many password attempts") {
+                "pass-attempt-limit"
+            } else if msg_lc.contains("authentication locked out") {
+                "lockout"
+            } else {
+                "credential-mismatch"
+            }
+        }
+        AUTHEN_STATUS_ERROR => "error",
+        AUTHEN_STATUS_FOLLOW => "follow",
+        AUTHEN_STATUS_RESTART => "restart",
+        _ => "other",
+    }
+}
+
+/// Build audit message data from authentication state and reply.
+fn build_authen_audit_message(reply: &AuthenReply, state_snapshot: &AuthStateSnapshot) -> String {
+    let msg_data = if !reply.server_msg.is_empty() {
+        reply.server_msg.clone()
+    } else if !reply.server_msg_raw.is_empty() {
+        format!("raw={}", hex::encode(&reply.server_msg_raw))
+    } else {
+        String::new()
+    };
+    let attempts = format!(
+        "attempts_total={};user_attempts={};pass_attempts={}",
+        state_snapshot.ascii_attempts,
+        state_snapshot.ascii_user_attempts,
+        state_snapshot.ascii_pass_attempts
+    );
+    let authn_type = match state_snapshot.authen_type {
+        Some(AUTHEN_TYPE_ASCII) => "ascii",
+        Some(AUTHEN_TYPE_PAP) => "pap",
+        Some(AUTHEN_TYPE_CHAP) => "chap",
+        Some(_) => "other",
+        None => "unknown",
+    };
+    let svc = state_snapshot
+        .service
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "-".into());
+    let action = state_snapshot
+        .action
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "-".into());
+    let reason = determine_authen_failure_reason(reply.status, &reply.server_msg);
+
+    if msg_data.is_empty() {
+        format!("{attempts};type={authn_type};service={svc};action={action};reason={reason}")
+    } else {
+        format!(
+            "{attempts};type={authn_type};service={svc};action={action};reason={reason};msg={msg_data}"
+        )
+    }
+}
+
+/// Log terminal authentication status with detailed audit information.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AU-12 | Audit Generation - Terminal authentication events |
+/// | AU-3 | Content of Audit Records - User, session, status, reason |
+fn log_terminal_authen_status(
+    reply: &AuthenReply,
+    state_snapshot: &AuthStateSnapshot,
+    session_id: u32,
+    peer: &str,
+) {
+    let status_label = match reply.status {
+        AUTHEN_STATUS_PASS => "pass",
+        AUTHEN_STATUS_FAIL => "fail",
+        AUTHEN_STATUS_ERROR => "error",
+        AUTHEN_STATUS_FOLLOW => "follow",
+        AUTHEN_STATUS_RESTART => "restart",
+        _ => "other",
+    };
+    let user_for_log = state_snapshot.username.as_deref().unwrap_or_else(|| {
+        state_snapshot
+            .username_raw
+            .as_ref()
+            .map(|_| "<raw>")
+            .unwrap_or("")
+    });
+    let msg_data = build_authen_audit_message(reply, state_snapshot);
+
+    audit_event(
+        "authn_terminal",
+        peer,
+        user_for_log,
+        session_id,
+        status_label,
+        "terminal",
+        &msg_data,
+    );
+}
+
+/// Activate single-connect mode on successful authentication.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | IA-11 | Re-authentication - Single-connect session binding |
+#[allow(clippy::too_many_arguments)]
+async fn activate_single_connect_on_success(
+    reply: &AuthenReply,
+    single_connect_flag: bool,
+    single_user: Option<String>,
+    single_connect: &mut SingleConnectState,
+    session_id: u32,
+    connection_id: u64,
+    registry: &Arc<SessionRegistry>,
+    peer: &str,
+) {
+    if matches!(reply.status, AUTHEN_STATUS_PASS)
+        && single_connect_flag
+        && let Some(user) = single_user
+    {
+        single_connect.activate(user.clone(), session_id);
+        registry
+            .update_authentication(connection_id, user.clone(), session_id)
+            .await;
+        info!(peer = %peer, user = %user, session = session_id, "single-connect established");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn finalize_authentication<S>(
     stream: &mut S,
     packet: &AuthenPacket,
@@ -2234,7 +2373,7 @@ where
         AuthenPacket::Start(start) => &start.header,
         AuthenPacket::Continue(cont) => &cont.header,
     };
-    let terminal = matches!(
+    let is_terminal = matches!(
         reply.status,
         AUTHEN_STATUS_PASS
             | AUTHEN_STATUS_FAIL
@@ -2243,123 +2382,40 @@ where
             | AUTHEN_STATUS_RESTART
     );
     let single_user = state_snapshot.username.clone();
-
-    if terminal {
-        let status_label = match reply.status {
-            AUTHEN_STATUS_PASS => "pass",
-            AUTHEN_STATUS_FAIL => "fail",
-            AUTHEN_STATUS_ERROR => "error",
-            AUTHEN_STATUS_FOLLOW => "follow",
-            AUTHEN_STATUS_RESTART => "restart",
-            _ => "other",
-        };
-        let user_for_log = state_snapshot.username.as_deref().unwrap_or_else(|| {
-            state_snapshot
-                .username_raw
-                .as_ref()
-                .map(|_| "<raw>")
-                .unwrap_or("")
-        });
-        let msg_data = if !reply.server_msg.is_empty() {
-            reply.server_msg.clone()
-        } else if !reply.server_msg_raw.is_empty() {
-            format!("raw={}", hex::encode(&reply.server_msg_raw))
-        } else {
-            String::new()
-        };
-        let attempts = format!(
-            "attempts_total={};user_attempts={};pass_attempts={}",
-            state_snapshot.ascii_attempts,
-            state_snapshot.ascii_user_attempts,
-            state_snapshot.ascii_pass_attempts
-        );
-        let authn_type = match state_snapshot.authen_type {
-            Some(AUTHEN_TYPE_ASCII) => "ascii",
-            Some(AUTHEN_TYPE_PAP) => "pap",
-            Some(AUTHEN_TYPE_CHAP) => "chap",
-            Some(_) => "other",
-            None => "unknown",
-        };
-        let svc = state_snapshot
-            .service
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "-".into());
-        let action = state_snapshot
-            .action
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "-".into());
-        let reason = match reply.status {
-            AUTHEN_STATUS_PASS => "success",
-            AUTHEN_STATUS_FAIL => {
-                let msg_lc = reply.server_msg.to_lowercase();
-                if msg_lc.contains("too many authentication attempts") {
-                    "attempt-limit"
-                } else if msg_lc.contains("too many username attempts") {
-                    "user-attempt-limit"
-                } else if msg_lc.contains("too many password attempts") {
-                    "pass-attempt-limit"
-                } else if msg_lc.contains("authentication locked out") {
-                    "lockout"
-                } else {
-                    "credential-mismatch"
-                }
-            }
-            AUTHEN_STATUS_ERROR => "error",
-            AUTHEN_STATUS_FOLLOW => "follow",
-            AUTHEN_STATUS_RESTART => "restart",
-            _ => "other",
-        };
-        let msg_data = if msg_data.is_empty() {
-            format!("{attempts};type={authn_type};service={svc};action={action};reason={reason}")
-        } else {
-            format!(
-                "{attempts};type={authn_type};service={svc};action={action};reason={reason};msg={msg_data}"
-            )
-        };
-        audit_event(
-            "authn_terminal",
-            peer,
-            user_for_log,
-            session_id,
-            status_label,
-            "terminal",
-            &msg_data,
-        );
+    if is_terminal {
+        log_terminal_authen_status(&reply, &state_snapshot, session_id, peer);
     }
-
     write_authen_reply(stream, header, &reply, secret)
         .await
         .with_context(|| "sending TACACS+ auth reply")?;
-
     if !reply.server_msg_raw.is_empty()
         && let Some(state) = auth_states.get(&session_id)
     {
         enforce_server_msg(policy, state, &mut reply).await;
         debug!(
-            peer = %peer,
-            session = session_id,
+            peer = %peer, session = session_id,
             raw_len = reply.server_msg_raw.len(),
             server_msg_raw_hex = %hex::encode(&reply.server_msg_raw),
             "auth reply carried raw server_msg bytes"
         );
     }
-    if terminal {
+    if is_terminal {
         auth_states.remove(&session_id);
         if reply.status != AUTHEN_STATUS_PASS {
             single_connect.reset();
         }
     }
-    if matches!(reply.status, AUTHEN_STATUS_PASS)
-        && single_connect_flag
-        && let Some(user) = single_user
-    {
-        single_connect.activate(user.clone(), session_id);
-        registry
-            .update_authentication(connection_id, user.clone(), session_id)
-            .await;
-        info!(peer = %peer, user = %user, session = session_id, "single-connect established");
-    }
-
+    activate_single_connect_on_success(
+        &reply,
+        single_connect_flag,
+        single_user,
+        single_connect,
+        session_id,
+        connection_id,
+        registry,
+        peer,
+    )
+    .await;
     Ok(LoopControl::Continue)
 }
 

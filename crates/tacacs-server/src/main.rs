@@ -451,7 +451,12 @@ fn resolve_tls_certificates<'a>(
 fn build_tls_contexts(
     args: &Args,
     state: &AppState,
-) -> (AuthContext, ConnectionConfig, TlsIdentityConfig, Arc<SessionRegistry>) {
+) -> (
+    AuthContext,
+    ConnectionConfig,
+    TlsIdentityConfig,
+    Arc<SessionRegistry>,
+) {
     let auth_ctx = AuthContext {
         policy: state.shared_policy.clone(),
         secret: state.shared_secret.clone(),
