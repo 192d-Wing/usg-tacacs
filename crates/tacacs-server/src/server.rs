@@ -1576,6 +1576,125 @@ fn log_accounting_success(request: &AccountingRequest, peer: &str) {
 /// |---------|------|----------------|
 /// | AU-12 | Audit Generation | Accounting record validation and logging |
 /// | SC-23 | Session Authenticity | Single-connect validation |
+/// Handle RFC validation failure for accounting request.
+async fn handle_acct_rfc_validation_error<S>(
+    stream: &mut S,
+    request: &AccountingRequest,
+    err: &str,
+    secret: Option<&[u8]>,
+    peer: &str,
+) -> Result<LoopControl>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "accounting request failed RFC validation");
+    let response = AccountingResponse {
+        status: ACCT_STATUS_ERROR,
+        server_msg: err.to_string(),
+        data: format!("reason=rfc-validate;detail={err}"),
+        args: Vec::new(),
+    };
+    let meta = format!("flags=0x{:02x};attrs={}", request.flags, request.args.len());
+    audit_event(
+        "acct_rfc_invalid",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "error",
+        "rfc-validate",
+        &meta,
+    );
+    let _ = write_accounting_response(stream, &request.header, &response, secret).await;
+    Ok(LoopControl::Break)
+}
+
+/// Handle task_id tracking rejection for accounting request.
+fn build_acct_task_id_error_response(
+    msg: &str,
+    request: &AccountingRequest,
+    peer: &str,
+) -> AccountingResponse {
+    warn!(
+        peer = %peer, user = %request.user, session = request.header.session_id, reason = %msg,
+        "accounting request rejected by task_id tracking (RFC 8907)"
+    );
+    audit_event(
+        "acct_task_id_reuse",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "error",
+        "task-id-reuse",
+        msg,
+    );
+    AccountingResponse {
+        status: ACCT_STATUS_ERROR,
+        server_msg: msg.to_string(),
+        data: format!("reason=task-id-reuse;detail={msg}"),
+        args: Vec::new(),
+    }
+}
+
+/// Handle semantic validation rejection for accounting request.
+fn build_acct_semantic_error_response(
+    msg: &str,
+    request: &AccountingRequest,
+    peer: &str,
+) -> AccountingResponse {
+    warn!(
+        peer = %peer, user = %request.user, session = request.header.session_id, reason = %msg,
+        "accounting request rejected by semantic checks"
+    );
+    let meta = format!(
+        "flags=0x{:02x};attrs={};reason={}",
+        request.flags,
+        request.args.len(),
+        msg
+    );
+    audit_event(
+        "acct_semantic_reject",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "error",
+        msg,
+        &meta,
+    );
+    let resp = AccountingResponse {
+        status: ACCT_STATUS_ERROR,
+        server_msg: msg.to_string(),
+        data: format!("reason=semantic-invalid;detail={msg}"),
+        args: Vec::new(),
+    };
+    audit_event(
+        "acct_error",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "error",
+        "acct-error",
+        &resp.data,
+    );
+    resp
+}
+
+/// Build accounting response based on validation results.
+fn build_acct_response_from_validation(
+    semantic_result: Result<(), &str>,
+    task_tracking_result: Result<(), &str>,
+    request: &AccountingRequest,
+    peer: &str,
+) -> AccountingResponse {
+    match semantic_result {
+        Ok(()) if task_tracking_result.is_ok() => accounting_success_response(request),
+        Ok(()) => {
+            let msg = task_tracking_result.unwrap_err();
+            build_acct_task_id_error_response(msg, request, peer)
+        }
+        Err(msg) => build_acct_semantic_error_response(msg, request, peer),
+    }
+}
+
 async fn handle_accounting_packet<S>(
     stream: &mut S,
     request: &AccountingRequest,
@@ -1588,25 +1707,8 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     if let Err(err) = usg_tacacs_proto::validate_accounting_request(request) {
-        warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "accounting request failed RFC validation");
-        let response = AccountingResponse {
-            status: ACCT_STATUS_ERROR,
-            server_msg: err.to_string(),
-            data: format!("reason=rfc-validate;detail={err}"),
-            args: Vec::new(),
-        };
-        let meta = format!("flags=0x{:02x};attrs={}", request.flags, request.args.len());
-        audit_event(
-            "acct_rfc_invalid",
-            peer,
-            &request.user,
-            request.header.session_id,
-            "error",
-            "rfc-validate",
-            &meta,
-        );
-        let _ = write_accounting_response(stream, &request.header, &response, secret).await;
-        return Ok(LoopControl::Break);
+        return handle_acct_rfc_validation_error(stream, request, &err.to_string(), secret, peer)
+            .await;
     }
 
     if let Some(err_msg) = validate_acct_single_connect(single_connect, request, peer) {
@@ -1624,79 +1726,10 @@ where
         warn!(error = %err, peer = %peer, "accounting header invalid");
     }
 
+    let semantic_result = validate_accounting_semantics(request);
     let task_tracking_result = track_task_id(task_tracker, request, peer);
-
-    let response = match validate_accounting_semantics(request) {
-        Ok(()) if task_tracking_result.is_ok() => accounting_success_response(request),
-        Ok(()) => {
-            let msg = task_tracking_result.unwrap_err();
-            warn!(
-                peer = %peer,
-                user = %request.user,
-                session = request.header.session_id,
-                reason = %msg,
-                "accounting request rejected by task_id tracking (RFC 8907)"
-            );
-            let resp = AccountingResponse {
-                status: ACCT_STATUS_ERROR,
-                server_msg: msg.to_string(),
-                data: format!("reason=task-id-reuse;detail={msg}"),
-                args: Vec::new(),
-            };
-            audit_event(
-                "acct_task_id_reuse",
-                peer,
-                &request.user,
-                request.header.session_id,
-                "error",
-                "task-id-reuse",
-                msg,
-            );
-            resp
-        }
-        Err(msg) => {
-            warn!(
-                peer = %peer,
-                user = %request.user,
-                session = request.header.session_id,
-                reason = %msg,
-                "accounting request rejected by semantic checks"
-            );
-            let resp = AccountingResponse {
-                status: ACCT_STATUS_ERROR,
-                server_msg: msg.to_string(),
-                data: format!("reason=semantic-invalid;detail={msg}"),
-                args: Vec::new(),
-            };
-            let meta = format!(
-                "flags=0x{:02x};attrs={};reason={}",
-                request.flags,
-                request.args.len(),
-                msg
-            );
-            audit_event(
-                "acct_semantic_reject",
-                peer,
-                &request.user,
-                request.header.session_id,
-                "error",
-                msg,
-                &meta,
-            );
-            if resp.status == ACCT_STATUS_ERROR {
-                audit_event(
-                    "acct_error",
-                    peer,
-                    &request.user,
-                    request.header.session_id,
-                    "error",
-                    "acct-error",
-                    &resp.data,
-                );
-            }
-            resp
-        }
-    };
+    let response =
+        build_acct_response_from_validation(semantic_result, task_tracking_result, request, peer);
 
     if response.status == ACCT_STATUS_SUCCESS {
         log_accounting_success(request, peer);
@@ -2056,13 +2089,121 @@ async fn handle_authen_start_chap(
 /// | IA-2 | Identification and Authentication | ASCII login flow with username/password prompts |
 /// | IA-5 | Authenticator Management | Password verification via static creds and LDAP |
 #[allow(clippy::too_many_arguments)]
-async fn handle_authen_start_ascii(
-    start: &AuthenStart,
-    state: &mut AuthSessionState,
+/// Fetch custom prompts from policy engine for ASCII authentication.
+async fn fetch_ascii_prompts_from_policy(
     policy: &Arc<RwLock<PolicyEngine>>,
+    state: &AuthSessionState,
+) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let policy = policy.read().await;
+    let policy_user =
+        username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
+    let policy_port = field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
+    let policy_rem = field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
+    (
+        policy
+            .prompt_username(
+                policy_user.as_deref(),
+                policy_port.as_deref(),
+                policy_rem.as_deref(),
+            )
+            .map(|s| s.as_bytes().to_vec()),
+        policy
+            .prompt_password(policy_user.as_deref())
+            .map(|s| s.as_bytes().to_vec()),
+    )
+}
+
+/// Build username prompt with policy override or default.
+fn build_ascii_username_prompt(policy_prompt: Option<&[u8]>, service: Option<u8>) -> Vec<u8> {
+    if let Some(custom) = policy_prompt {
+        custom.to_vec()
+    } else {
+        match service {
+            Some(s) => format!("Username (service {s}):").into_bytes(),
+            None => b"Username:".to_vec(),
+        }
+    }
+}
+
+/// Build password prompt with policy override or default.
+fn build_ascii_password_prompt(policy_prompt: Option<&[u8]>, service: Option<u8>) -> Vec<u8> {
+    if let Some(custom) = policy_prompt {
+        custom.to_vec()
+    } else {
+        match service {
+            Some(s) => format!("Password (service {s}):").into_bytes(),
+            None => b"Password:".to_vec(),
+        }
+    }
+}
+
+/// Verify ASCII credentials using all available sources (PAP bytes or password verification).
+async fn verify_ascii_credentials_all_sources(
+    username: Option<&str>,
+    username_raw: Option<&Vec<u8>>,
+    password_data: &[u8],
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
-    ascii_cfg: &AsciiConfig,
+) -> bool {
+    if let Some(raw) = username_raw {
+        if verify_pap_bytes_username(raw, password_data, credentials) {
+            return true;
+        }
+    } else if verify_pap_bytes(
+        username.unwrap_or_default(),
+        password_data,
+        credentials,
+    ) {
+        return true;
+    }
+    if let Some(user) = username {
+        verify_password_sources(Some(user), password_data, credentials, ldap.as_ref()).await
+    } else {
+        false
+    }
+}
+
+/// Build authentication result reply with policy messages.
+async fn build_ascii_auth_result_reply(
+    ok: bool,
+    service: Option<u8>,
+    action: Option<u8>,
+    policy: &Arc<RwLock<PolicyEngine>>,
+) -> AuthenReply {
+    let svc_str = service
+        .map(|svc| format!(" (service {svc})"))
+        .unwrap_or_default();
+    let act_str = action
+        .map(|act| format!(" action {act})"))
+        .unwrap_or_default();
+    let policy = policy.read().await;
+
+    AuthenReply {
+        status: if ok {
+            AUTHEN_STATUS_PASS
+        } else {
+            AUTHEN_STATUS_FAIL
+        },
+        flags: 0,
+        server_msg: if ok {
+            policy
+                .message_success()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("authentication succeeded{svc_str}{act_str}"))
+        } else {
+            policy
+                .message_failure()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("invalid credentials{svc_str}{act_str}"))
+        },
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    }
+}
+
+async fn handle_authen_start_ascii(
+    start: &AuthenStart, state: &mut AuthSessionState, policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>, ldap: &Option<Arc<LdapConfig>>, ascii_cfg: &AsciiConfig,
 ) -> AuthenReply {
     state.authen_type = Some(AUTHEN_TYPE_ASCII);
     state.service = Some(start.service);
@@ -2080,125 +2221,37 @@ async fn handle_authen_start_ascii(
         Some(start.user_raw.clone())
     };
 
-    let (policy_user_prompt, policy_pass_prompt) = {
-        let policy = policy.read().await;
-        let policy_user =
-            username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
-        let policy_port = field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
-        let policy_rem = field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
-        (
-            policy
-                .prompt_username(
-                    policy_user.as_deref(),
-                    policy_port.as_deref(),
-                    policy_rem.as_deref(),
-                )
-                .map(|s| s.as_bytes().to_vec()),
-            policy
-                .prompt_password(policy_user.as_deref())
-                .map(|s| s.as_bytes().to_vec()),
-        )
-    };
-
-    let build_username_prompt = |svc: Option<u8>| -> Vec<u8> {
-        if let Some(custom) = policy_user_prompt.as_ref() {
-            custom.clone()
-        } else {
-            match svc {
-                Some(s) => format!("Username (service {s}):").into_bytes(),
-                None => b"Username:".to_vec(),
-            }
-        }
-    };
-
-    let build_password_prompt = |svc: Option<u8>| -> Vec<u8> {
-        if let Some(custom) = policy_pass_prompt.as_ref() {
-            custom.clone()
-        } else {
-            match svc {
-                Some(s) => format!("Password (service {s}):").into_bytes(),
-                None => b"Password:".to_vec(),
-            }
-        }
-    };
+    let (policy_user_prompt, policy_pass_prompt) =
+        fetch_ascii_prompts_from_policy(policy, state).await;
 
     state.ascii_need_user = state.username.is_none();
     if state.ascii_need_user {
         return AuthenReply {
-            status: AUTHEN_STATUS_GETUSER,
-            flags: 0,
-            server_msg: String::new(),
+            status: AUTHEN_STATUS_GETUSER, flags: 0, server_msg: String::new(),
             server_msg_raw: Vec::new(),
-            data: build_username_prompt(state.service),
+            data: build_ascii_username_prompt(policy_user_prompt.as_deref(), state.service),
         };
     }
 
     if !start.data.is_empty() {
-        let ok = if let Some(raw) = state.username_raw.as_ref() {
-            verify_pap_bytes_username(raw, &start.data, credentials)
-        } else {
-            verify_pap_bytes(
-                state.username.as_deref().unwrap_or_default(),
-                &start.data,
-                credentials,
-            )
-        } || {
-            if let Some(user) = state.username.as_deref() {
-                verify_password_sources(Some(user), &start.data, credentials, ldap.as_ref()).await
-            } else {
-                false
-            }
-        };
+        let ok = verify_ascii_credentials_all_sources(
+            state.username.as_deref(), state.username_raw.as_ref(), &start.data,
+            credentials, ldap,
+        ).await;
 
-        if !ok
-            && let Some(delay) = calc_ascii_backoff_capped(
-                ascii_cfg.backoff_ms,
-                state.ascii_attempts,
-                ascii_cfg.backoff_max_ms,
-            )
-        {
+        if !ok && let Some(delay) = calc_ascii_backoff_capped(
+            ascii_cfg.backoff_ms, state.ascii_attempts, ascii_cfg.backoff_max_ms,
+        ) {
             sleep(delay).await;
         }
 
-        let svc_str = state
-            .service
-            .map(|svc| format!(" (service {svc})"))
-            .unwrap_or_default();
-        let act_str = state
-            .action
-            .map(|act| format!(" action {act})"))
-            .unwrap_or_default();
-        let policy = policy.read().await;
-
-        AuthenReply {
-            status: if ok {
-                AUTHEN_STATUS_PASS
-            } else {
-                AUTHEN_STATUS_FAIL
-            },
-            flags: 0,
-            server_msg: if ok {
-                policy
-                    .message_success()
-                    .map(|m| m.to_string())
-                    .unwrap_or_else(|| format!("authentication succeeded{svc_str}{act_str}"))
-            } else {
-                policy
-                    .message_failure()
-                    .map(|m| m.to_string())
-                    .unwrap_or_else(|| format!("invalid credentials{svc_str}{act_str}"))
-            },
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        }
+        build_ascii_auth_result_reply(ok, state.service, state.action, policy).await
     } else {
         state.ascii_need_pass = true;
         AuthenReply {
-            status: AUTHEN_STATUS_GETPASS,
-            flags: AUTHEN_FLAG_NOECHO,
-            server_msg: String::new(),
+            status: AUTHEN_STATUS_GETPASS, flags: AUTHEN_FLAG_NOECHO, server_msg: String::new(),
             server_msg_raw: Vec::new(),
-            data: build_password_prompt(state.service),
+            data: build_ascii_password_prompt(policy_pass_prompt.as_deref(), state.service),
         }
     }
 }
