@@ -1557,6 +1557,107 @@ fn track_task_id(
     Ok(())
 }
 
+/// Determine accounting type from flags.
+fn determine_acct_type(flags: u8) -> &'static str {
+    if flags & ACCT_FLAG_START != 0 {
+        "start"
+    } else if flags & ACCT_FLAG_STOP != 0 {
+        "stop"
+    } else if flags & ACCT_FLAG_WATCHDOG != 0 {
+        "watchdog"
+    } else {
+        "unknown"
+    }
+}
+
+/// Extracted accounting attributes for audit logging.
+struct AcctAttributes {
+    service: String,
+    cmd: String,
+    task_id: String,
+    status: String,
+    bytes_in: String,
+    bytes_out: String,
+}
+
+/// Extract key accounting attributes from request.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-3 | Content of Audit Records | Extract structured accounting data |
+fn extract_acct_attributes(request: &AccountingRequest) -> AcctAttributes {
+    let attrs = request.attributes();
+
+    let service = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("service"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-")
+        .to_string();
+    let cmd = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("cmd"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-")
+        .to_string();
+    let task_id = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("task_id"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-")
+        .to_string();
+    let status = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("status"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-")
+        .to_string();
+    let bytes_in = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("bytes_in"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-")
+        .to_string();
+    let bytes_out = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("bytes_out"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-")
+        .to_string();
+
+    AcctAttributes {
+        service,
+        cmd,
+        task_id,
+        status,
+        bytes_in,
+        bytes_out,
+    }
+}
+
+/// Build audit metadata string for accounting record.
+fn build_acct_audit_data(
+    acct_type: &str,
+    flags: u8,
+    attr_count: usize,
+    attrs: &AcctAttributes,
+) -> String {
+    format!(
+        "type={};flags=0x{:02x};attrs={};service={};cmd={};task_id={};status={};bytes_in={};bytes_out={}",
+        acct_type,
+        flags,
+        attr_count,
+        attrs.service,
+        attrs.cmd,
+        attrs.task_id,
+        attrs.status,
+        attrs.bytes_in,
+        attrs.bytes_out
+    )
+}
+
 /// Log successful accounting record with extracted attributes.
 ///
 /// # NIST Controls
@@ -1565,58 +1666,10 @@ fn track_task_id(
 /// |---------|------|----------------|
 /// | AU-12 | Audit Generation | Extracts and logs accounting attributes |
 fn log_accounting_success(request: &AccountingRequest, peer: &str) {
-    let acct_type = if request.flags & ACCT_FLAG_START != 0 {
-        "start"
-    } else if request.flags & ACCT_FLAG_STOP != 0 {
-        "stop"
-    } else if request.flags & ACCT_FLAG_WATCHDOG != 0 {
-        "watchdog"
-    } else {
-        "unknown"
-    };
-    let attrs = request.attributes();
-    let service = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("service"))
-        .and_then(|a| a.value.as_deref())
-        .unwrap_or("-");
-    let cmd = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("cmd"))
-        .and_then(|a| a.value.as_deref())
-        .unwrap_or("-");
-    let task = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("task_id"))
-        .and_then(|a| a.value.as_deref())
-        .unwrap_or("-");
-    let status_attr = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("status"))
-        .and_then(|a| a.value.as_deref())
-        .unwrap_or("-");
-    let bytes_in = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("bytes_in"))
-        .and_then(|a| a.value.as_deref())
-        .unwrap_or("-");
-    let bytes_out = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("bytes_out"))
-        .and_then(|a| a.value.as_deref())
-        .unwrap_or("-");
-    let data = format!(
-        "type={};flags=0x{:02x};attrs={};service={};cmd={};task_id={};status={};bytes_in={};bytes_out={}",
-        acct_type,
-        request.flags,
-        request.args.len(),
-        service,
-        cmd,
-        task,
-        status_attr,
-        bytes_in,
-        bytes_out
-    );
+    let acct_type = determine_acct_type(request.flags);
+    let attrs = extract_acct_attributes(request);
+    let data = build_acct_audit_data(acct_type, request.flags, request.args.len(), &attrs);
+
     audit_event(
         "acct_accept",
         peer,
@@ -3279,6 +3332,140 @@ pub async fn watch_certificate_changes(
     info!("certificate reload watcher stopped");
 }
 
+/// Update policy metrics after successful reload.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Record policy reload metrics |
+fn update_policy_metrics(rule_count: usize) {
+    crate::metrics::metrics()
+        .policy_rules_count
+        .set(rule_count as f64);
+    crate::metrics::metrics()
+        .policy_reload_total
+        .with_label_values(&["success"])
+        .inc();
+}
+
+/// Record policy reload failure in metrics.
+fn record_policy_failure() {
+    crate::metrics::metrics()
+        .policy_reload_total
+        .with_label_values(&["failure"])
+        .inc();
+}
+
+/// Reload policy from disk file.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | CM-3 | Configuration Change Control | Load policy from file with validation |
+async fn reload_policy_from_disk(
+    path: &PathBuf,
+    schema: &Option<PathBuf>,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    source: &str,
+) {
+    match PolicyEngine::from_path(path, schema.as_ref()) {
+        Ok(new_policy) => {
+            let rule_count = new_policy.rule_count();
+            *policy.write().await = new_policy;
+            update_policy_metrics(rule_count);
+            info!(source = source, rules = rule_count, "policy reloaded successfully");
+        }
+        Err(err) => {
+            record_policy_failure();
+            warn!(source = source, error = %err, "failed to reload policy");
+        }
+    }
+}
+
+/// Reload policy from JSON string.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | CM-3 | Configuration Change Control | Load policy from JSON with validation |
+async fn reload_policy_from_json(
+    content: &str,
+    schema: &Option<PathBuf>,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    source: &str,
+) {
+    match PolicyEngine::from_json_str(content, schema.as_ref()) {
+        Ok(new_policy) => {
+            let rule_count = new_policy.rule_count();
+            *policy.write().await = new_policy;
+            update_policy_metrics(rule_count);
+            info!(source = source, rules = rule_count, "policy uploaded successfully from JSON");
+        }
+        Err(err) => {
+            record_policy_failure();
+            warn!(source = source, error = %err, "failed to load policy from JSON");
+        }
+    }
+}
+
+/// Handle policy reload request from any source.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | CM-3 | Configuration Change Control | Dispatch reload to appropriate handler |
+async fn handle_policy_reload(
+    request: &PolicyReloadRequest,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    source: &str,
+) {
+    match request {
+        PolicyReloadRequest::FromDisk { path, schema } => {
+            reload_policy_from_disk(path, schema, policy, source).await;
+        }
+        PolicyReloadRequest::FromJson { content, schema } => {
+            reload_policy_from_json(content, schema, policy, source).await;
+        }
+    }
+}
+
+/// Run policy watch loop with SIGHUP and channel support.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | CM-3 | Configuration Change Control | Multi-source policy reload event loop |
+async fn run_policy_watch_loop(
+    initial_path: PathBuf,
+    schema: Option<PathBuf>,
+    policy: Arc<RwLock<PolicyEngine>>,
+    mut reload_rx: tokio::sync::mpsc::Receiver<PolicyReloadRequest>,
+    mut sighup_stream: tokio::signal::unix::Signal,
+) {
+    info!("policy reload watcher started (SIGHUP + channel)");
+    loop {
+        tokio::select! {
+            // Handle channel-based reload requests from API
+            Some(request) = reload_rx.recv() => {
+                handle_policy_reload(&request, &policy, "api").await;
+            }
+            // Handle SIGHUP for backward compatibility
+            Some(_) = sighup_stream.recv() => {
+                let request = PolicyReloadRequest::FromDisk {
+                    path: initial_path.clone(),
+                    schema: schema.clone(),
+                };
+                handle_policy_reload(&request, &policy, "sighup").await;
+            }
+        }
+    }
+}
+
 /// Watch for policy changes from SIGHUP or internal channel.
 ///
 /// This function handles both traditional SIGHUP-based reloads and
@@ -3297,103 +3484,15 @@ pub async fn watch_policy_changes(
     policy: Arc<RwLock<PolicyEngine>>,
     mut reload_rx: tokio::sync::mpsc::Receiver<PolicyReloadRequest>,
 ) {
-    // Helper to handle reload requests
-    async fn handle_reload(
-        request: &PolicyReloadRequest,
-        policy: &Arc<RwLock<PolicyEngine>>,
-        source: &str,
-    ) {
-        match request {
-            PolicyReloadRequest::FromDisk { path, schema } => {
-                match PolicyEngine::from_path(path, schema.as_ref()) {
-                    Ok(new_policy) => {
-                        let rule_count = new_policy.rule_count();
-                        *policy.write().await = new_policy;
-                        crate::metrics::metrics()
-                            .policy_rules_count
-                            .set(rule_count as f64);
-                        crate::metrics::metrics()
-                            .policy_reload_total
-                            .with_label_values(&["success"])
-                            .inc();
-                        info!(
-                            source = source,
-                            rules = rule_count,
-                            "policy reloaded successfully"
-                        );
-                    }
-                    Err(err) => {
-                        crate::metrics::metrics()
-                            .policy_reload_total
-                            .with_label_values(&["failure"])
-                            .inc();
-                        warn!(
-                            source = source,
-                            error = %err,
-                            "failed to reload policy"
-                        );
-                    }
-                }
-            }
-            PolicyReloadRequest::FromJson { content, schema } => {
-                match PolicyEngine::from_json_str(content, schema.as_ref()) {
-                    Ok(new_policy) => {
-                        let rule_count = new_policy.rule_count();
-                        *policy.write().await = new_policy;
-                        crate::metrics::metrics()
-                            .policy_rules_count
-                            .set(rule_count as f64);
-                        crate::metrics::metrics()
-                            .policy_reload_total
-                            .with_label_values(&["success"])
-                            .inc();
-                        info!(
-                            source = source,
-                            rules = rule_count,
-                            "policy uploaded successfully from JSON"
-                        );
-                    }
-                    Err(err) => {
-                        crate::metrics::metrics()
-                            .policy_reload_total
-                            .with_label_values(&["failure"])
-                            .inc();
-                        warn!(
-                            source = source,
-                            error = %err,
-                            "failed to load policy from JSON"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     match signal(SignalKind::hangup()) {
-        Ok(mut sighup_stream) => {
-            info!("policy reload watcher started (SIGHUP + channel)");
-            loop {
-                tokio::select! {
-                    // Handle channel-based reload requests from API
-                    Some(request) = reload_rx.recv() => {
-                        handle_reload(&request, &policy, "api").await;
-                    }
-                    // Handle SIGHUP for backward compatibility
-                    Some(_) = sighup_stream.recv() => {
-                        let request = PolicyReloadRequest::FromDisk {
-                            path: initial_path.clone(),
-                            schema: schema.clone(),
-                        };
-                        handle_reload(&request, &policy, "sighup").await;
-                    }
-                }
-            }
+        Ok(sighup_stream) => {
+            run_policy_watch_loop(initial_path, schema, policy, reload_rx, sighup_stream).await;
         }
         Err(err) => {
             warn!(error = %err, "failed to install SIGHUP handler, using channel-only mode");
             // Fall back to channel-only mode
             while let Some(request) = reload_rx.recv().await {
-                handle_reload(&request, &policy, "api").await;
+                handle_policy_reload(&request, &policy, "api").await;
             }
         }
     }
