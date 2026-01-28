@@ -2450,6 +2450,87 @@ where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     Ok(LoopControl::Continue)
 }
 
+/// Extract single-connect flag from authentication packet.
+fn extract_authen_single_connect_flag(packet: &AuthenPacket) -> bool {
+    match packet {
+        AuthenPacket::Start(start) => start.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0,
+        AuthenPacket::Continue(cont) => cont.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0,
+    }
+}
+
+/// Handle single-connect validation error for authentication.
+async fn handle_authen_single_connect_error<S>(
+    stream: &mut S, packet: &AuthenPacket, err_msg: String, secret: Option<&[u8]>,
+) -> Result<LoopControl>
+where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let header = match packet {
+        AuthenPacket::Start(start) => &start.header,
+        AuthenPacket::Continue(cont) => &cont.header,
+    };
+    let reply = AuthenReply {
+        status: AUTHEN_STATUS_ERROR, flags: 0, server_msg: err_msg,
+        server_msg_raw: Vec::new(), data: Vec::new(),
+    };
+    let _ = write_authen_reply(stream, header, &reply, secret).await;
+    Ok(LoopControl::Break)
+}
+
+/// Process AUTHEN_START packet and return reply.
+#[allow(clippy::too_many_arguments)]
+async fn process_authen_start_packet(
+    start: &AuthenStart, state: &mut AuthSessionState, policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>, ldap: &Option<Arc<LdapConfig>>,
+    ascii_cfg: &AsciiConfig, peer: &str,
+) -> Result<AuthenReply, LoopControl> {
+    match start.authen_type {
+        AUTHEN_TYPE_ASCII => {
+            Ok(handle_authen_start_ascii(start, state, policy, credentials, ldap, ascii_cfg).await)
+        }
+        AUTHEN_TYPE_PAP => handle_authen_start_pap(start, state, policy, credentials, ldap, peer)
+            .await.map_err(|_| LoopControl::Break),
+        AUTHEN_TYPE_CHAP => handle_authen_start_chap(start, state, peer)
+            .await.map_err(|_| LoopControl::Break),
+        _ => Ok(AuthenReply {
+            status: AUTHEN_STATUS_FOLLOW, flags: 0,
+            server_msg: "unsupported auth type - fallback".into(),
+            server_msg_raw: Vec::new(), data: Vec::new(),
+        }),
+    }
+}
+
+/// Process AUTHEN_CONTINUE packet and return reply.
+#[allow(clippy::too_many_arguments)]
+async fn process_authen_continue_packet(
+    cont: &usg_tacacs_proto::AuthenContinue, state: &mut AuthSessionState, policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>, ldap: &Option<Arc<LdapConfig>>, ascii_cfg: &AsciiConfig,
+) -> AuthenReply {
+    match state.authen_type {
+        Some(AUTHEN_TYPE_ASCII) => handle_ascii_continue(
+            cont.user_msg.as_slice(), cont.data.as_slice(), cont.flags, state, policy,
+            credentials, ascii_cfg, ldap.as_ref(),
+        ).await,
+        _ if state.challenge.is_some() => {
+            let user = state.username.clone().unwrap_or_default();
+            match state.authen_type {
+                Some(AUTHEN_TYPE_CHAP) => {
+                    handle_chap_continue(&user, cont.data.as_slice(), state, credentials)
+                }
+                _ => AuthenReply {
+                    status: AUTHEN_STATUS_FAIL, flags: 0, server_msg: "unexpected continue".into(),
+                    server_msg_raw: Vec::new(), data: Vec::new(),
+                },
+            }
+        }
+        _ => AuthenReply {
+            status: AUTHEN_STATUS_FAIL, flags: 0,
+            server_msg: format!("unexpected authentication continue (flags {:02x})", cont.flags),
+            server_msg_raw: Vec::new(), data: Vec::new(),
+        },
+    }
+}
+
+
 /// Handle authentication packet processing.
 ///
 /// Note: This function is large (600+ lines) and will be further decomposed in Phase 5
@@ -2465,18 +2546,10 @@ where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 /// | SC-23 | Session Authenticity | Single-connect validation and activation |
 #[allow(clippy::too_many_arguments)]
 async fn handle_authentication_packet<S>(
-    stream: &mut S,
-    packet: AuthenPacket,
-    auth_states: &mut HashMap<u32, AuthSessionState>,
-    single_connect: &mut SingleConnectState,
-    connection_id: u64,
-    registry: &Arc<SessionRegistry>,
-    policy: &Arc<RwLock<PolicyEngine>>,
-    credentials: &Arc<StaticCreds>,
-    ldap: &Option<Arc<LdapConfig>>,
-    ascii_cfg: &AsciiConfig,
-    secret: Option<&[u8]>,
-    peer: &str,
+    stream: &mut S, packet: AuthenPacket, auth_states: &mut HashMap<u32, AuthSessionState>,
+    single_connect: &mut SingleConnectState, connection_id: u64, registry: &Arc<SessionRegistry>,
+    policy: &Arc<RwLock<PolicyEngine>>, credentials: &Arc<StaticCreds>,
+    ldap: &Option<Arc<LdapConfig>>, ascii_cfg: &AsciiConfig, secret: Option<&[u8]>, peer: &str,
 ) -> Result<LoopControl>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -2488,122 +2561,99 @@ where
     if !validate_authen_rfc(stream, &packet, session_id, secret, peer).await? {
         return Ok(LoopControl::Break);
     }
-    if let Some(err_msg) = validate_authen_single_connect(single_connect, &packet, session_id, peer)
-    {
-        let header = match &packet {
-            AuthenPacket::Start(start) => &start.header,
-            AuthenPacket::Continue(cont) => &cont.header,
-        };
-        let reply = AuthenReply {
-            status: AUTHEN_STATUS_ERROR,
-            flags: 0,
-            server_msg: err_msg,
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
-        let _ = write_authen_reply(stream, header, &reply, secret).await;
-        return Ok(LoopControl::Break);
+    if let Some(err_msg) = validate_authen_single_connect(single_connect, &packet, session_id, peer) {
+        return handle_authen_single_connect_error(stream, &packet, err_msg, secret).await;
     }
 
-    let single_connect_flag = match &packet {
-        AuthenPacket::Start(start) => {
-            start.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
-        }
-        AuthenPacket::Continue(cont) => {
-            cont.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
-        }
+    let single_connect_flag = extract_authen_single_connect_flag(&packet);
+    let state = match get_or_create_auth_state(stream, &packet, auth_states, session_id, secret, peer).await? {
+        Some(s) => s,
+        None => return Ok(LoopControl::Break),
     };
 
-    let state =
-        match get_or_create_auth_state(stream, &packet, auth_states, session_id, secret, peer)
-            .await?
-        {
-            Some(s) => s,
-            None => return Ok(LoopControl::Break),
-        };
-
     let reply = match packet {
-        AuthenPacket::Start(ref start) => match start.authen_type {
-            AUTHEN_TYPE_ASCII => {
-                handle_authen_start_ascii(start, state, policy, credentials, ldap, ascii_cfg).await
-            }
-            AUTHEN_TYPE_PAP => {
-                match handle_authen_start_pap(start, state, policy, credentials, ldap, peer).await {
-                    Ok(reply) => reply,
-                    Err(_) => return Ok(LoopControl::Break),
-                }
-            }
-            AUTHEN_TYPE_CHAP => match handle_authen_start_chap(start, state, peer).await {
+        AuthenPacket::Start(ref start) => {
+            match process_authen_start_packet(start, state, policy, credentials, ldap, ascii_cfg, peer).await {
                 Ok(reply) => reply,
-                Err(_) => return Ok(LoopControl::Break),
-            },
-            _ => AuthenReply {
-                status: AUTHEN_STATUS_FOLLOW,
-                flags: 0,
-                server_msg: "unsupported auth type - fallback".into(),
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            },
-        },
-        AuthenPacket::Continue(ref cont) => match state.authen_type {
-            Some(AUTHEN_TYPE_ASCII) => {
-                handle_ascii_continue(
-                    cont.user_msg.as_slice(),
-                    cont.data.as_slice(),
-                    cont.flags,
-                    state,
-                    policy,
-                    credentials,
-                    ascii_cfg,
-                    ldap.as_ref(),
-                )
-                .await
+                Err(ctrl) => return Ok(ctrl),
             }
-            _ if state.challenge.is_some() => {
-                let user = state.username.clone().unwrap_or_default();
-                match state.authen_type {
-                    Some(AUTHEN_TYPE_CHAP) => {
-                        handle_chap_continue(&user, cont.data.as_slice(), state, credentials)
-                    }
-                    _ => AuthenReply {
-                        status: AUTHEN_STATUS_FAIL,
-                        flags: 0,
-                        server_msg: "unexpected continue".into(),
-                        server_msg_raw: Vec::new(),
-                        data: Vec::new(),
-                    },
-                }
-            }
-            _ => AuthenReply {
-                status: AUTHEN_STATUS_FAIL,
-                flags: 0,
-                server_msg: format!(
-                    "unexpected authentication continue (flags {:02x})",
-                    cont.flags
-                ),
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            },
-        },
+        }
+        AuthenPacket::Continue(ref cont) => {
+            process_authen_continue_packet(cont, state, policy, credentials, ldap, ascii_cfg).await
+        }
     };
 
     finalize_authentication(
-        stream,
-        &packet,
-        reply,
-        session_id,
-        AuthStateSnapshot::from_state(state),
-        auth_states,
-        single_connect,
-        single_connect_flag,
-        connection_id,
-        registry,
-        policy,
-        secret,
-        peer,
-    )
-    .await
+        stream, &packet, reply, session_id, AuthStateSnapshot::from_state(state), auth_states,
+        single_connect, single_connect_flag, connection_id, registry, policy, secret, peer,
+    ).await
 }
+
+
+/// Read packet with optional timeout for single-connect keepalive.
+async fn read_packet_with_keepalive<S>(
+    stream: &mut S, secret: Option<&[u8]>, single_connect: &SingleConnectState,
+    keepalive_deadline: u64, peer: &str,
+) -> Result<Option<Packet>, anyhow::Error>
+where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let read_future = read_packet(stream, secret);
+    if single_connect.active && keepalive_deadline > 0 {
+        match timeout(Duration::from_secs(keepalive_deadline), read_future).await {
+            Ok(res) => res,
+            Err(_) => {
+                warn!(peer = %peer, idle_secs = keepalive_deadline,
+                    "single-connect keepalive/idle timeout reached; closing");
+                audit_event(
+                    "conn_close", peer, "", 0, "error", "keepalive-timeout",
+                    &format!("idle_secs={keepalive_deadline}"),
+                );
+                Err(anyhow::anyhow!("keepalive timeout"))
+            }
+        }
+    } else {
+        read_future.await
+    }
+}
+
+/// Dispatch packet to appropriate handler and return loop control.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_packet_to_handler<S>(
+    stream: &mut S, packet: Packet, auth_states: &mut HashMap<u32, AuthSessionState>,
+    single_connect: &mut SingleConnectState, task_tracker: &mut TaskIdTracker,
+    connection_id: u64, registry: &Arc<SessionRegistry>, policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>, ldap: &Option<Arc<LdapConfig>>, ascii_cfg: &AsciiConfig,
+    secret: Option<&[u8]>, peer: &str,
+) -> Result<LoopControl>
+where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match packet {
+        Packet::Authorization(request) => {
+            handle_authorization_packet(stream, &request, single_connect, policy, ldap, secret, peer).await
+        }
+        Packet::Authentication(packet) => {
+            handle_authentication_packet(
+                stream, packet, auth_states, single_connect, connection_id, registry, policy,
+                credentials, ldap, ascii_cfg, secret, peer,
+            ).await
+        }
+        Packet::Capability(cap) => {
+            let _ = handle_capability_packet(stream, &cap, peer, secret).await;
+            Ok(LoopControl::Continue)
+        }
+        Packet::Accounting(request) => {
+            handle_accounting_packet(stream, &request, single_connect, task_tracker, secret, peer).await
+        }
+    }
+}
+
+/// Handle errors from packet reading (client close or read error).
+fn handle_packet_read_error(err: anyhow::Error, peer: &str) -> Result<()> {
+    warn!(error = %err, peer = %peer, "failed to read TACACS+ packet");
+    audit_event("conn_close", peer, "", 0, "error", "read-error", &err.to_string());
+    Ok(())
+}
+
 
 /// Main packet processing loop for a TACACS+ connection.
 ///
@@ -2615,106 +2665,33 @@ where
 /// | AU-12 | Audit Generation | Connection close events logged |
 #[allow(clippy::too_many_arguments)]
 async fn connection_loop<S>(
-    stream: &mut S,
-    connection_id: u64,
-    auth_states: &mut HashMap<u32, AuthSessionState>,
-    single_connect: &mut SingleConnectState,
-    task_tracker: &mut TaskIdTracker,
-    registry: &Arc<SessionRegistry>,
-    policy: &Arc<RwLock<PolicyEngine>>,
-    credentials: &Arc<StaticCreds>,
-    ldap: &Option<Arc<LdapConfig>>,
-    ascii_cfg: &AsciiConfig,
-    secret: Option<&[u8]>,
-    peer: &str,
-    single_connect_idle_secs: u64,
+    stream: &mut S, connection_id: u64, auth_states: &mut HashMap<u32, AuthSessionState>,
+    single_connect: &mut SingleConnectState, task_tracker: &mut TaskIdTracker,
+    registry: &Arc<SessionRegistry>, policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>, ldap: &Option<Arc<LdapConfig>>, ascii_cfg: &AsciiConfig,
+    secret: Option<&[u8]>, peer: &str, single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     loop {
-        let read_future = read_packet(stream, secret);
         let keepalive_deadline = if single_connect_keepalive_secs > 0 {
             single_connect_keepalive_secs
         } else {
             single_connect_idle_secs
         };
 
-        let packet_result = if single_connect.active && keepalive_deadline > 0 {
-            match timeout(Duration::from_secs(keepalive_deadline), read_future).await {
-                Ok(res) => res,
-                Err(_) => {
-                    warn!(peer = %peer, idle_secs = keepalive_deadline,
-                        "single-connect keepalive/idle timeout reached; closing");
-                    audit_event(
-                        "conn_close",
-                        peer,
-                        "",
-                        0,
-                        "error",
-                        "keepalive-timeout",
-                        &format!("idle_secs={keepalive_deadline}"),
-                    );
-                    break;
-                }
-            }
-        } else {
-            read_future.await
-        };
+        let packet_result = read_packet_with_keepalive(
+            stream, secret, single_connect, keepalive_deadline, peer
+        ).await;
 
         match packet_result {
-            Ok(Some(Packet::Authorization(request))) => {
-                match handle_authorization_packet(
-                    stream,
-                    &request,
-                    single_connect,
-                    policy,
-                    ldap,
-                    secret,
-                    peer,
-                )
-                .await
-                {
-                    Ok(LoopControl::Continue) => {}
-                    Ok(LoopControl::Break) | Err(_) => break,
-                }
-            }
-            Ok(Some(Packet::Authentication(packet))) => {
-                match handle_authentication_packet(
-                    stream,
-                    packet,
-                    auth_states,
-                    single_connect,
-                    connection_id,
-                    registry,
-                    policy,
-                    credentials,
-                    ldap,
-                    ascii_cfg,
-                    secret,
-                    peer,
-                )
-                .await
-                {
-                    Ok(LoopControl::Continue) => {}
-                    Ok(LoopControl::Break) | Err(_) => break,
-                }
-            }
-            Ok(Some(Packet::Capability(cap))) => {
-                let _ = handle_capability_packet(stream, &cap, peer, secret).await;
-            }
-            Ok(Some(Packet::Accounting(request))) => {
-                match handle_accounting_packet(
-                    stream,
-                    &request,
-                    single_connect,
-                    task_tracker,
-                    secret,
-                    peer,
-                )
-                .await
-                {
+            Ok(Some(packet)) => {
+                match dispatch_packet_to_handler(
+                    stream, packet, auth_states, single_connect, task_tracker, connection_id,
+                    registry, policy, credentials, ldap, ascii_cfg, secret, peer,
+                ).await {
                     Ok(LoopControl::Continue) => {}
                     Ok(LoopControl::Break) | Err(_) => break,
                 }
@@ -2725,16 +2702,7 @@ where
                 break;
             }
             Err(err) => {
-                warn!(error = %err, peer = %peer, "failed to read TACACS+ packet");
-                audit_event(
-                    "conn_close",
-                    peer,
-                    "",
-                    0,
-                    "error",
-                    "read-error",
-                    &err.to_string(),
-                );
+                handle_packet_read_error(err, peer)?;
                 break;
             }
         }
@@ -2743,12 +2711,7 @@ where
         if registry.is_termination_requested(connection_id).await {
             info!(peer = %peer, connection_id = connection_id, "session terminated via API");
             audit_event(
-                "conn_close",
-                peer,
-                "",
-                0,
-                "info",
-                "api-terminated",
+                "conn_close", peer, "", 0, "info", "api-terminated",
                 "session terminated via management API",
             );
             break;
@@ -2759,6 +2722,7 @@ where
 
     Ok(())
 }
+
 
 /// Handle a single TACACS+ connection.
 ///
