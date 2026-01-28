@@ -65,11 +65,7 @@ impl OpenBaoProvider {
         Ok(provider)
     }
 
-    /// Internal refresh that optionally notifies subscribers.
-    async fn refresh_internal(&self, notify: bool) -> Result<Vec<SecretChange>> {
-        let mut changes = Vec::new();
-
-        // Fetch shared secret
+    async fn fetch_shared_secret(&self, notify: bool) -> Result<Option<SecretChange>> {
         let secret_path = format!("{}/shared-secret", self.config.secret_path);
         match self.client.kv().read(&secret_path).await {
             Ok(Some(value)) => {
@@ -82,21 +78,26 @@ impl OpenBaoProvider {
                     .unwrap_or(true);
                 if changed {
                     info!("shared secret updated from OpenBao");
+                    cache.shared_secret = Some(secret.clone());
                     if notify {
-                        changes.push(SecretChange::SharedSecret(secret.data.clone()));
+                        return Ok(Some(SecretChange::SharedSecret(secret.data)));
                     }
                 }
                 cache.shared_secret = Some(secret);
+                Ok(None)
             }
             Ok(None) => {
                 debug!(path = %secret_path, "shared secret not found in OpenBao");
+                Ok(None)
             }
             Err(e) => {
                 warn!(error = %e, path = %secret_path, "failed to fetch shared secret");
+                Ok(None)
             }
         }
+    }
 
-        // Fetch LDAP bind password
+    async fn fetch_ldap_password(&self, notify: bool) -> Result<Option<SecretChange>> {
         let ldap_path = format!("{}/ldap-bind", self.config.secret_path);
         match self.client.kv().read(&ldap_path).await {
             Ok(Some(value)) => {
@@ -111,86 +112,114 @@ impl OpenBaoProvider {
                     .unwrap_or(true);
                 if changed {
                     info!("LDAP bind password updated from OpenBao");
+                    cache.ldap_bind_password = Some(secret.clone());
                     if notify {
-                        changes.push(SecretChange::LdapBindPassword(password));
+                        return Ok(Some(SecretChange::LdapBindPassword(password)));
                     }
                 }
                 cache.ldap_bind_password = Some(secret);
+                Ok(None)
             }
             Ok(None) => {
                 debug!(path = %ldap_path, "LDAP bind password not found in OpenBao");
+                Ok(None)
             }
             Err(e) => {
                 warn!(error = %e, path = %ldap_path, "failed to fetch LDAP bind password");
+                Ok(None)
             }
         }
+    }
 
-        // Fetch location-specific secret if location is configured
-        if let Some(ref location) = self.config.location {
-            let location_path = format!(
-                "{}/locations/{}/shared-secret",
-                self.config.secret_path, location
-            );
-            match self.client.kv().read(&location_path).await {
-                Ok(Some(value)) => {
-                    let secret = SecretValue::new(value);
-                    let mut cache = self.cache.write().await;
-                    cache.location_secrets.insert(location.clone(), secret);
-                    debug!(location = %location, "loaded location-specific secret");
-                }
-                Ok(None) => {
-                    debug!(location = %location, "no location-specific secret found");
-                }
-                Err(e) => {
-                    warn!(error = %e, location = %location, "failed to fetch location secret");
-                }
+    async fn fetch_location_secret(&self, location: &str) -> Result<()> {
+        let location_path = format!(
+            "{}/locations/{}/shared-secret",
+            self.config.secret_path, location
+        );
+        match self.client.kv().read(&location_path).await {
+            Ok(Some(value)) => {
+                let secret = SecretValue::new(value);
+                let mut cache = self.cache.write().await;
+                cache.location_secrets.insert(location.to_string(), secret);
+                debug!(location = %location, "loaded location-specific secret");
             }
+            Ok(None) => {
+                debug!(location = %location, "no location-specific secret found");
+            }
+            Err(e) => {
+                warn!(error = %e, location = %location, "failed to fetch location secret");
+            }
+        }
+        Ok(())
+    }
 
-            // Fetch NAD secrets for this location
-            let nad_path = format!(
-                "{}/locations/{}/nad-secrets",
-                self.config.secret_path, location
-            );
-            match self
-                .client
-                .kv()
-                .read_json::<HashMap<String, String>>(&nad_path)
-                .await
-            {
-                Ok(Some(nad_map)) => {
-                    let mut cache = self.cache.write().await;
-                    for (ip_str, secret_str) in nad_map {
-                        match ip_str.parse::<IpAddr>() {
-                            Ok(ip) => {
-                                let old_secret = cache.nad_secrets.get(&ip);
-                                let new_data = secret_str.as_bytes().to_vec();
-                                let changed =
-                                    old_secret.map(|s| s.data != new_data).unwrap_or(true);
-                                if changed && notify {
-                                    changes.push(SecretChange::NadSecret {
-                                        ip,
-                                        secret: new_data.clone(),
-                                    });
-                                }
-                                cache.nad_secrets.insert(ip, SecretValue::new(new_data));
+    async fn fetch_nad_secrets(
+        &self,
+        location: &str,
+        notify: bool,
+    ) -> Result<Vec<SecretChange>> {
+        let mut changes = Vec::new();
+        let nad_path = format!(
+            "{}/locations/{}/nad-secrets",
+            self.config.secret_path, location
+        );
+        match self
+            .client
+            .kv()
+            .read_json::<HashMap<String, String>>(&nad_path)
+            .await
+        {
+            Ok(Some(nad_map)) => {
+                let mut cache = self.cache.write().await;
+                for (ip_str, secret_str) in nad_map {
+                    match ip_str.parse::<IpAddr>() {
+                        Ok(ip) => {
+                            let old_secret = cache.nad_secrets.get(&ip);
+                            let new_data = secret_str.as_bytes().to_vec();
+                            let changed = old_secret.map(|s| s.data != new_data).unwrap_or(true);
+                            if changed && notify {
+                                changes.push(SecretChange::NadSecret {
+                                    ip,
+                                    secret: new_data.clone(),
+                                });
                             }
-                            Err(e) => {
-                                warn!(ip = %ip_str, error = %e, "invalid IP in NAD secrets");
-                            }
+                            cache.nad_secrets.insert(ip, SecretValue::new(new_data));
+                        }
+                        Err(e) => {
+                            warn!(ip = %ip_str, error = %e, "invalid IP in NAD secrets");
                         }
                     }
-                    debug!(count = cache.nad_secrets.len(), "loaded NAD secrets");
                 }
-                Ok(None) => {
-                    debug!(location = %location, "no NAD secrets found");
-                }
-                Err(e) => {
-                    warn!(error = %e, location = %location, "failed to fetch NAD secrets");
-                }
+                debug!(count = cache.nad_secrets.len(), "loaded NAD secrets");
+            }
+            Ok(None) => {
+                debug!(location = %location, "no NAD secrets found");
+            }
+            Err(e) => {
+                warn!(error = %e, location = %location, "failed to fetch NAD secrets");
             }
         }
+        Ok(changes)
+    }
 
-        // Notify subscribers of changes
+    /// Internal refresh that optionally notifies subscribers.
+    async fn refresh_internal(&self, notify: bool) -> Result<Vec<SecretChange>> {
+        let mut changes = Vec::new();
+
+        if let Some(change) = self.fetch_shared_secret(notify).await? {
+            changes.push(change);
+        }
+
+        if let Some(change) = self.fetch_ldap_password(notify).await? {
+            changes.push(change);
+        }
+
+        if let Some(ref location) = self.config.location {
+            self.fetch_location_secret(location).await?;
+            let nad_changes = self.fetch_nad_secrets(location, notify).await?;
+            changes.extend(nad_changes);
+        }
+
         for change in &changes {
             if let Err(e) = self.change_sender.send(change.clone()) {
                 debug!(error = %e, "no subscribers for secret change");
