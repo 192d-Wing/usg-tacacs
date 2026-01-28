@@ -412,8 +412,7 @@ pub fn validate_accounting_response_header(header: &Header) -> Result<()> {
     header::validate_response_header(header, Some(TYPE_ACCT), ALLOWED_FLAGS, true, VERSION >> 4)
 }
 
-/// Validate an outgoing authorization request against basic RFC 8907 semantics.
-pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
+fn validate_author_basic_fields(req: &AuthorizationRequest) -> Result<()> {
     ensure!(
         (1..=8).contains(&req.authen_method),
         "authorization authen_method invalid"
@@ -427,7 +426,10 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
         req.authen_service <= 0x07,
         "authorization authen_service invalid"
     );
+    Ok(())
+}
 
+fn validate_author_service_attr(req: &AuthorizationRequest) -> Result<String> {
     let attrs = req.attributes();
     let service_attrs: Vec<_> = attrs
         .iter()
@@ -446,7 +448,11 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
         crate::header::is_known_service(service_val),
         "authorization service attribute value unknown"
     );
+    Ok(service_val.to_string())
+}
 
+fn validate_author_shell_service(req: &AuthorizationRequest) -> Result<()> {
+    let attrs = req.attributes();
     let protocol_attr = attrs
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case("protocol"));
@@ -459,86 +465,113 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
         .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
         .collect();
 
-    if service_val.eq_ignore_ascii_case("shell") {
+    ensure!(
+        protocol_attr.is_some(),
+        "shell authorization requires protocol attribute"
+    );
+    if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
         ensure!(
-            protocol_attr.is_some(),
-            "shell authorization requires protocol attribute"
-        );
-        if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
-            ensure!(
-                !proto.is_empty(),
-                "authorization protocol attribute must have a value"
-            );
-        }
-        ensure!(
-            cmd_attrs.is_empty() && cmd_arg_attrs.is_empty(),
-            "shell authorization must not include cmd/cmd-arg attributes"
-        );
-    } else {
-        let protocol_count = attrs
-            .iter()
-            .filter(|a| a.name.eq_ignore_ascii_case("protocol"))
-            .count();
-        ensure!(
-            protocol_count <= 1,
-            "authorization must include at most one protocol attribute"
-        );
-        if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
-            ensure!(
-                !proto.is_empty(),
-                "authorization protocol attribute must have a value"
-            );
-            let allowed = [
-                "ip", "ipv6", "lat", "mop", "vpdn", "xremote", "pad", "shell", "ppp", "arap",
-                "none",
-            ];
-            ensure!(
-                allowed.iter().any(|p| proto.eq_ignore_ascii_case(p)),
-                "authorization protocol attribute value unknown"
-            );
-        }
-        ensure!(
-            cmd_attrs.len() == 1,
-            "authorization must include exactly one cmd attribute for non-shell services"
-        );
-        ensure!(
-            !cmd_attrs[0].value.as_deref().unwrap_or("").is_empty(),
-            "cmd attribute must have a value"
-        );
-        ensure!(
-            !cmd_arg_attrs
-                .iter()
-                .any(|a| a.value.as_deref().unwrap_or("").is_empty()),
-            "cmd-arg attributes must have values"
-        );
-        // Service must precede cmd/cmd-arg in the arg list.
-        let service_pos = req
-            .args
-            .iter()
-            .position(|a| a.to_lowercase().starts_with("service="))
-            .unwrap_or(0);
-        let protocol_positions = req
-            .args
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| a.to_lowercase().starts_with("protocol="))
-            .map(|(i, _)| i);
-        ensure!(
-            !protocol_positions.clone().any(|i| i < service_pos),
-            "service attribute must precede protocol attributes"
-        );
-        let cmd_positions = req
-            .args
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| a.to_lowercase().starts_with("cmd"))
-            .map(|(i, _)| i);
-        ensure!(
-            !cmd_positions.clone().any(|i| i < service_pos),
-            "service attribute must precede command attributes"
+            !proto.is_empty(),
+            "authorization protocol attribute must have a value"
         );
     }
+    ensure!(
+        cmd_attrs.is_empty() && cmd_arg_attrs.is_empty(),
+        "shell authorization must not include cmd/cmd-arg attributes"
+    );
+    Ok(())
+}
 
+fn validate_author_protocol_and_cmd(req: &AuthorizationRequest) -> Result<()> {
+    let attrs = req.attributes();
+    let protocol_attr = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("protocol"));
+    let cmd_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd"))
+        .collect();
+    let cmd_arg_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
+        .collect();
+
+    let protocol_count = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("protocol"))
+        .count();
+    ensure!(
+        protocol_count <= 1,
+        "authorization must include at most one protocol attribute"
+    );
+    if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
+        ensure!(
+            !proto.is_empty(),
+            "authorization protocol attribute must have a value"
+        );
+        let allowed = [
+            "ip", "ipv6", "lat", "mop", "vpdn", "xremote", "pad", "shell", "ppp", "arap",
+            "none",
+        ];
+        ensure!(
+            allowed.iter().any(|p| proto.eq_ignore_ascii_case(p)),
+            "authorization protocol attribute value unknown"
+        );
+    }
+    ensure!(
+        cmd_attrs.len() == 1,
+        "authorization must include exactly one cmd attribute for non-shell services"
+    );
+    ensure!(
+        !cmd_attrs[0].value.as_deref().unwrap_or("").is_empty(),
+        "cmd attribute must have a value"
+    );
+    ensure!(
+        !cmd_arg_attrs
+            .iter()
+            .any(|a| a.value.as_deref().unwrap_or("").is_empty()),
+        "cmd-arg attributes must have values"
+    );
+    Ok(())
+}
+
+fn validate_author_attr_ordering(req: &AuthorizationRequest) -> Result<()> {
+    let service_pos = req
+        .args
+        .iter()
+        .position(|a| a.to_lowercase().starts_with("service="))
+        .unwrap_or(0);
+    let protocol_positions = req
+        .args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.to_lowercase().starts_with("protocol="))
+        .map(|(i, _)| i);
+    ensure!(
+        !protocol_positions.clone().any(|i| i < service_pos),
+        "service attribute must precede protocol attributes"
+    );
+    let cmd_positions = req
+        .args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.to_lowercase().starts_with("cmd"))
+        .map(|(i, _)| i);
+    ensure!(
+        !cmd_positions.clone().any(|i| i < service_pos),
+        "service attribute must precede command attributes"
+    );
+    Ok(())
+}
+
+fn validate_author_nonshell_service(req: &AuthorizationRequest) -> Result<()> {
+    validate_author_protocol_and_cmd(req)?;
+    validate_author_attr_ordering(req)?;
+    Ok(())
+}
+
+fn validate_author_priv_lvl_attr(req: &AuthorizationRequest) -> Result<()> {
+    let attrs = req.attributes();
     if let Some(attr) = attrs
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case("priv-lvl"))
@@ -553,7 +586,21 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
             "priv-lvl attribute must match header priv_lvl"
         );
     }
+    Ok(())
+}
 
+/// Validate an outgoing authorization request against basic RFC 8907 semantics.
+pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
+    validate_author_basic_fields(req)?;
+    let service_val = validate_author_service_attr(req)?;
+
+    if service_val.eq_ignore_ascii_case("shell") {
+        validate_author_shell_service(req)?;
+    } else {
+        validate_author_nonshell_service(req)?;
+    }
+
+    validate_author_priv_lvl_attr(req)?;
     Ok(())
 }
 
