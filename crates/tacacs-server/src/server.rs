@@ -230,25 +230,17 @@ pub(crate) struct TlsIdentityConfig {
     pub allowed_san: Vec<String>,
 }
 
-/// Enforce client certificate identity policy (CN/SAN allowlists).
+/// Extract X509 certificate from TLS stream.
 ///
 /// # NIST Controls
 ///
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
-/// | IA-3 | Device Identification and Authentication | Validates client certificate CN/SAN against allowlists |
-/// | IA-4 | Identifier Management | Certificate-based device identity |
-/// | SC-23 | Session Authenticity | Ensures only authorized devices connect |
-fn enforce_client_cert_policy(
+/// | IA-3 | Device Identification and Authentication | Extract client certificate for validation |
+fn extract_cert_from_tls_stream(
     stream: &TlsStream<tokio::net::TcpStream>,
     peer: &SocketAddr,
-    allowed_cn: &[String],
-    allowed_san: &[String],
-) -> Result<()> {
-    // NIST IA-3: Skip if no allowlists configured (allow all valid certs)
-    if allowed_cn.is_empty() && allowed_san.is_empty() {
-        return Ok(());
-    }
+) -> Result<X509> {
     let (_, conn) = stream.get_ref();
     let certs = conn
         .peer_certificates()
@@ -256,14 +248,28 @@ fn enforce_client_cert_policy(
     let leaf = certs
         .first()
         .ok_or_else(|| anyhow::anyhow!("no client certificate presented"))?;
-    let x509 = X509::from_der(leaf.as_ref())
-        .with_context(|| format!("parsing client certificate from {peer}"))?;
+    X509::from_der(leaf.as_ref())
+        .with_context(|| format!("parsing client certificate from {peer}"))
+}
+
+/// Extract Common Names and Subject Alternative Names from certificate.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-4 | Identifier Management | Extract certificate-based device identities |
+fn extract_cert_names(x509: &X509) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
+
+    // Extract Common Name entries
     for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
         if let Ok(val) = entry.data().as_utf8() {
             names.push(val.to_string());
         }
     }
+
+    // Extract Subject Alternative Name entries
     if let Some(san) = x509.subject_alt_names() {
         for name in san {
             if let Some(dns) = name.dnsname() {
@@ -296,21 +302,59 @@ fn enforce_client_cert_policy(
             }
         }
     }
-    let mut allowed = false;
-    for n in &names {
-        if allowed_cn.iter().any(|a| a == n) || allowed_san.iter().any(|a| a == n) {
-            allowed = true;
-            break;
-        }
-    }
-    if !allowed {
+
+    names
+}
+
+/// Check if any certificate name matches allowlists.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-23 | Session Authenticity | Enforce only authorized devices can connect |
+fn check_cert_names_allowed(
+    names: &[String],
+    allowed_cn: &[String],
+    allowed_san: &[String],
+) -> Result<()> {
+    let allowed = names.iter().any(|n| {
+        allowed_cn.iter().any(|a| a == n) || allowed_san.iter().any(|a| a == n)
+    });
+
+    if allowed {
+        Ok(())
+    } else {
         Err(anyhow::anyhow!(
             "client certificate identity not allowed: {:?}",
             names
         ))
-    } else {
-        Ok(())
     }
+}
+
+/// Enforce client certificate identity policy (CN/SAN allowlists).
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-3 | Device Identification and Authentication | Validates client certificate CN/SAN against allowlists |
+/// | IA-4 | Identifier Management | Certificate-based device identity |
+/// | SC-23 | Session Authenticity | Ensures only authorized devices connect |
+fn enforce_client_cert_policy(
+    stream: &TlsStream<tokio::net::TcpStream>,
+    peer: &SocketAddr,
+    allowed_cn: &[String],
+    allowed_san: &[String],
+) -> Result<()> {
+    // NIST IA-3: Skip if no allowlists configured (allow all valid certs)
+    if allowed_cn.is_empty() && allowed_san.is_empty() {
+        return Ok(());
+    }
+
+    let x509 = extract_cert_from_tls_stream(stream, peer)?;
+    let names = extract_cert_names(&x509);
+    check_cert_names_allowed(&names, allowed_cn, allowed_san)
 }
 
 fn audit_event(
@@ -498,24 +542,25 @@ fn authz_semantic_detail(err: &AuthzSemanticError) -> (&'static str, String) {
     (code, detail)
 }
 
-fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static str> {
-    let is_start = req.flags & ACCT_FLAG_START != 0;
-    let is_stop = req.flags & ACCT_FLAG_STOP != 0;
-    let is_watchdog = req.flags & ACCT_FLAG_WATCHDOG != 0;
-    // RFC expects one of the flags; parse already enforced exclusivity.
-    if (is_start || is_stop || is_watchdog) && req.args.is_empty() {
-        return Err("accounting records require attributes");
-    }
+/// Check if accounting request has required service or command attributes.
+fn check_service_or_cmd_attrs(req: &AccountingRequest) -> bool {
     let attrs = req.attributes();
-    let has_service_or_cmd = attrs.iter().any(|a| {
+    attrs.iter().any(|a| {
         let name = a.name.as_str();
         name.eq_ignore_ascii_case("service")
             || name.eq_ignore_ascii_case("cmd")
             || name.eq_ignore_ascii_case("cmd-arg")
-    });
-    if !has_service_or_cmd {
-        return Err("accounting requires service or command attributes");
-    }
+    })
+}
+
+/// Validate required attributes for accounting record types.
+fn validate_acct_required_attrs(
+    is_start: bool,
+    is_stop: bool,
+    is_watchdog: bool,
+    req: &AccountingRequest,
+) -> Result<(), &'static str> {
+    let attrs = req.attributes();
     let has_task = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("task_id"));
     let has_elapsed = attrs
         .iter()
@@ -527,6 +572,7 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     let has_bytes_out = attrs
         .iter()
         .any(|a| a.name.eq_ignore_ascii_case("bytes_out"));
+
     if is_start && !has_task {
         return Err("start accounting requires task_id attribute");
     }
@@ -539,8 +585,12 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     if is_watchdog && !has_task {
         return Err("watchdog accounting requires task_id attribute");
     }
-    // Numeric fields should be valid unsigned integers and within expected ranges.
-    let mut status_val: Option<u32> = None;
+    Ok(())
+}
+
+/// Validate numeric accounting attributes and status code ranges.
+fn validate_acct_numeric_attrs(is_stop: bool, req: &AccountingRequest) -> Result<(), &'static str> {
+    let attrs = req.attributes();
     let parse_u32 = |key: &str| -> Result<Option<u32>, &'static str> {
         if let Some(attr) = attrs.iter().find(|a| a.name.eq_ignore_ascii_case(key)) {
             let val = attr.value.as_deref().unwrap_or("");
@@ -554,16 +604,12 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
         }
         Ok(None)
     };
-    if has_task {
-        parse_u32("task_id")?;
-    }
-    if has_elapsed {
-        parse_u32("elapsed_time")?;
-    }
-    if has_status {
-        status_val = parse_u32("status")?;
-    }
-    if let Some(code) = status_val {
+
+    // Validate required numeric fields
+    parse_u32("task_id")?;
+    parse_u32("elapsed_time")?;
+
+    if let Some(code) = parse_u32("status")? {
         if code > 0x0f {
             return Err("accounting status code must be 0-15");
         }
@@ -572,10 +618,31 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
             return Err("non-success accounting status is only valid on stop records");
         }
     }
+
     // Optional traffic/elapsed attrs: ensure numeric if present.
     for key in ["bytes_in", "bytes_out", "elapsed_seconds"].iter() {
         parse_u32(key)?;
     }
+    Ok(())
+}
+
+fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static str> {
+    let is_start = req.flags & ACCT_FLAG_START != 0;
+    let is_stop = req.flags & ACCT_FLAG_STOP != 0;
+    let is_watchdog = req.flags & ACCT_FLAG_WATCHDOG != 0;
+
+    // RFC expects one of the flags; parse already enforced exclusivity.
+    if (is_start || is_stop || is_watchdog) && req.args.is_empty() {
+        return Err("accounting records require attributes");
+    }
+
+    if !check_service_or_cmd_attrs(req) {
+        return Err("accounting requires service or command attributes");
+    }
+
+    validate_acct_required_attrs(is_start, is_stop, is_watchdog, req)?;
+    validate_acct_numeric_attrs(is_stop, req)?;
+
     Ok(())
 }
 
