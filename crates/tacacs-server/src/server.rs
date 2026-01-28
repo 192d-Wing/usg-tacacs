@@ -2211,7 +2211,6 @@ async fn handle_authen_start_ascii(
 /// |---------|------|----------------|
 /// | AU-12 | Audit Generation | Terminal authentication status audit logging |
 /// | SC-23 | Session Authenticity | Single-connect activation on successful authentication |
-#[allow(clippy::too_many_arguments)]
 /// Determine authentication failure reason from status and message.
 fn determine_authen_failure_reason(status: u8, server_msg: &str) -> &'static str {
     match status {
@@ -2352,22 +2351,13 @@ async fn activate_single_connect_on_success(
 
 #[allow(clippy::too_many_arguments)]
 async fn finalize_authentication<S>(
-    stream: &mut S,
-    packet: &AuthenPacket,
-    mut reply: AuthenReply,
-    session_id: u32,
-    state_snapshot: AuthStateSnapshot,
-    auth_states: &mut HashMap<u32, AuthSessionState>,
-    single_connect: &mut SingleConnectState,
-    single_connect_flag: bool,
-    connection_id: u64,
-    registry: &Arc<SessionRegistry>,
-    policy: &Arc<RwLock<PolicyEngine>>,
-    secret: Option<&[u8]>,
-    peer: &str,
+    stream: &mut S, packet: &AuthenPacket, mut reply: AuthenReply, session_id: u32,
+    state_snapshot: AuthStateSnapshot, auth_states: &mut HashMap<u32, AuthSessionState>,
+    single_connect: &mut SingleConnectState, single_connect_flag: bool, connection_id: u64,
+    registry: &Arc<SessionRegistry>, policy: &Arc<RwLock<PolicyEngine>>,
+    secret: Option<&[u8]>, peer: &str,
 ) -> Result<LoopControl>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let header = match packet {
         AuthenPacket::Start(start) => &start.header,
@@ -2375,11 +2365,8 @@ where
     };
     let is_terminal = matches!(
         reply.status,
-        AUTHEN_STATUS_PASS
-            | AUTHEN_STATUS_FAIL
-            | AUTHEN_STATUS_ERROR
-            | AUTHEN_STATUS_FOLLOW
-            | AUTHEN_STATUS_RESTART
+        AUTHEN_STATUS_PASS | AUTHEN_STATUS_FAIL | AUTHEN_STATUS_ERROR |
+        AUTHEN_STATUS_FOLLOW | AUTHEN_STATUS_RESTART
     );
     let single_user = state_snapshot.username.clone();
     if is_terminal {
@@ -2388,9 +2375,7 @@ where
     write_authen_reply(stream, header, &reply, secret)
         .await
         .with_context(|| "sending TACACS+ auth reply")?;
-    if !reply.server_msg_raw.is_empty()
-        && let Some(state) = auth_states.get(&session_id)
-    {
+    if !reply.server_msg_raw.is_empty() && let Some(state) = auth_states.get(&session_id) {
         enforce_server_msg(policy, state, &mut reply).await;
         debug!(
             peer = %peer, session = session_id,
@@ -2406,16 +2391,9 @@ where
         }
     }
     activate_single_connect_on_success(
-        &reply,
-        single_connect_flag,
-        single_user,
-        single_connect,
-        session_id,
-        connection_id,
-        registry,
-        peer,
-    )
-    .await;
+        &reply, single_connect_flag, single_user, single_connect,
+        session_id, connection_id, registry, peer,
+    ).await;
     Ok(LoopControl::Continue)
 }
 
