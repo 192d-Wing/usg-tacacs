@@ -320,7 +320,7 @@ impl AuthenStart {
     }
 }
 
-pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
+fn validate_authen_header(header: &Header, body: &[u8]) -> Result<()> {
     ensure!(body.len() >= 4, "authentication body too short");
     ensure!(
         header.seq_no % 2 == 1,
@@ -338,46 +338,47 @@ pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
             || body[2] == AUTHEN_TYPE_ARAP,
         "invalid authen_type"
     );
-    // service is opaque in RFC; only ensure it fits in a byte already done by parsing
-    if body.len() >= 8 {
-        let user_len = body[4] as usize;
-        let port_len = body[5] as usize;
-        let rem_addr_len = body[6] as usize;
-        let data_len = body[7] as usize;
-        let expected = 8 + user_len + port_len + rem_addr_len + data_len;
-        if expected <= body.len() {
-            let mut cursor = 8;
-            let (user_bytes, next) = read_bytes(body, cursor, user_len, "user")?;
-            let user_raw = user_bytes.clone();
-            let user = String::from_utf8(user_bytes).unwrap_or_default();
-            cursor = next;
-            let (port_bytes, next) = read_bytes(body, cursor, port_len, "port")?;
-            let port_raw = port_bytes.clone();
-            let port = String::from_utf8(port_bytes).unwrap_or_default();
-            cursor = next;
-            let (rem_addr_bytes, next) = read_bytes(body, cursor, rem_addr_len, "rem_addr")?;
-            let rem_addr_raw = rem_addr_bytes.clone();
-            let rem_addr = String::from_utf8(rem_addr_bytes).unwrap_or_default();
-            cursor = next;
-            let (data, _) = read_bytes(body, cursor, data_len, "data")?;
+    Ok(())
+}
 
-            return Ok(AuthenPacket::Start(AuthenStart {
-                header,
-                action: body[0],
-                priv_lvl: body[1],
-                authen_type: body[2],
-                service: body[3],
-                user_raw,
-                user,
-                port_raw,
-                port,
-                rem_addr_raw,
-                rem_addr,
-                data,
-            }));
-        }
-    }
+fn parse_authen_start_packet(header: Header, body: &[u8]) -> Result<AuthenPacket> {
+    let user_len = body[4] as usize;
+    let port_len = body[5] as usize;
+    let rem_addr_len = body[6] as usize;
+    let data_len = body[7] as usize;
+    let expected = 8 + user_len + port_len + rem_addr_len + data_len;
+    ensure!(expected <= body.len(), "authentication start exceeds body");
+    let mut cursor = 8;
+    let (user_bytes, next) = read_bytes(body, cursor, user_len, "user")?;
+    let user_raw = user_bytes.clone();
+    let user = String::from_utf8(user_bytes).unwrap_or_default();
+    cursor = next;
+    let (port_bytes, next) = read_bytes(body, cursor, port_len, "port")?;
+    let port_raw = port_bytes.clone();
+    let port = String::from_utf8(port_bytes).unwrap_or_default();
+    cursor = next;
+    let (rem_addr_bytes, next) = read_bytes(body, cursor, rem_addr_len, "rem_addr")?;
+    let rem_addr_raw = rem_addr_bytes.clone();
+    let rem_addr = String::from_utf8(rem_addr_bytes).unwrap_or_default();
+    cursor = next;
+    let (data, _) = read_bytes(body, cursor, data_len, "data")?;
+    Ok(AuthenPacket::Start(AuthenStart {
+        header,
+        action: body[0],
+        priv_lvl: body[1],
+        authen_type: body[2],
+        service: body[3],
+        user_raw,
+        user,
+        port_raw,
+        port,
+        rem_addr_raw,
+        rem_addr,
+        data,
+    }))
+}
 
+fn parse_authen_continue_packet(header: Header, body: &[u8]) -> Result<AuthenPacket> {
     ensure!(body.len() >= 5, "authentication continue body too short");
     let user_msg_len = u16::from_be_bytes([body[0], body[1]]) as usize;
     let data_len = u16::from_be_bytes([body[2], body[3]]) as usize;
@@ -386,13 +387,27 @@ pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
     ensure!(next <= body.len(), "authentication continue exceeds body");
     let (user_msg, next) = read_bytes(body, 5, user_msg_len, "user_msg")?;
     let (data, _) = read_bytes(body, next, data_len, "data")?;
-
     Ok(AuthenPacket::Continue(AuthenContinue {
         header,
         user_msg,
         data,
         flags,
     }))
+}
+
+pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
+    validate_authen_header(&header, body)?;
+    if body.len() >= 8 {
+        let user_len = body[4] as usize;
+        let port_len = body[5] as usize;
+        let rem_addr_len = body[6] as usize;
+        let data_len = body[7] as usize;
+        let expected = 8 + user_len + port_len + rem_addr_len + data_len;
+        if expected <= body.len() {
+            return parse_authen_start_packet(header, body);
+        }
+    }
+    parse_authen_continue_packet(header, body)
 }
 
 pub fn encode_authen_reply(reply: &AuthenReply) -> Result<Vec<u8>> {

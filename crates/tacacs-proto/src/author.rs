@@ -180,7 +180,7 @@ impl AuthorizationRequest {
     }
 }
 
-pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationRequest> {
+fn validate_author_basic_fields(body: &[u8]) -> Result<(u8, u8, u8, u8)> {
     ensure!(body.len() >= 8, "authorization body too short");
     let authen_method = body[0];
     let priv_lvl = body[1];
@@ -196,11 +196,16 @@ pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationReq
         "authorization authen_service invalid"
     );
     ensure!(priv_lvl <= 0x0f, "authorization priv_lvl invalid");
+    Ok((authen_method, priv_lvl, authen_type, authen_service))
+}
+
+fn parse_author_variable_fields(
+    body: &[u8],
+) -> Result<(String, String, String, usize, usize)> {
     let user_len = body[4] as usize;
     let port_len = body[5] as usize;
     let rem_addr_len = body[6] as usize;
     let arg_cnt = body[7] as usize;
-
     let mut cursor = 8;
     let (user, next) = read_string(body, cursor, user_len, "user")?;
     cursor = next;
@@ -208,18 +213,19 @@ pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationReq
     cursor = next;
     let (rem_addr, next) = read_string(body, cursor, rem_addr_len, "rem_addr")?;
     cursor = next;
+    Ok((user, port, rem_addr, cursor, arg_cnt))
+}
 
+fn parse_author_args(body: &[u8], cursor: usize, arg_cnt: usize) -> Result<Vec<String>> {
     let arg_lens = body
         .get(cursor..cursor + arg_cnt)
         .ok_or_else(|| anyhow!("authorization args length truncated"))?;
-    cursor += arg_cnt;
-
+    let mut cursor = cursor + arg_cnt;
     let total_args_len: usize = arg_lens.iter().map(|l| *l as usize).sum();
     ensure!(
         cursor + total_args_len <= body.len(),
         "authorization args exceed body length"
     );
-
     let mut args = Vec::with_capacity(arg_cnt);
     for (idx, len) in arg_lens.iter().enumerate() {
         ensure!(*len > 0, "authorization arg length invalid");
@@ -227,15 +233,20 @@ pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationReq
         cursor = next_cursor;
         args.push(arg);
     }
-
-    // Basic TACACS+ attr validation: require name=value, known prefixes, non-empty.
     validate_attributes(
         &args,
         &[
             "cmd", "cmd-arg", "service", "protocol", "acl", "addr", "priv-lvl",
         ],
     )?;
+    Ok(args)
+}
 
+pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationRequest> {
+    let (authen_method, priv_lvl, authen_type, authen_service) =
+        validate_author_basic_fields(body)?;
+    let (user, port, rem_addr, cursor, arg_cnt) = parse_author_variable_fields(body)?;
+    let args = parse_author_args(body, cursor, arg_cnt)?;
     Ok(AuthorizationRequest {
         header,
         authen_method,

@@ -32,7 +32,7 @@ pub struct AccountingResponse {
     pub args: Vec<String>,
 }
 
-pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRequest> {
+fn validate_acct_basic_fields(body: &[u8]) -> Result<(u8, u8, u8, u8, u8)> {
     ensure!(body.len() >= 9, "accounting body too short");
     let flags = body[0];
     let authen_method = body[1];
@@ -46,18 +46,26 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
     ensure!(authen_type <= 0x04, "accounting authen_type invalid");
     ensure!(authen_service <= 0x07, "accounting authen_service invalid");
     ensure!(priv_lvl <= 0x0f, "accounting priv_lvl invalid");
-    let user_len = body[5] as usize;
-    let port_len = body[6] as usize;
-    let rem_addr_len = body[7] as usize;
-    let arg_cnt = body[8] as usize;
+    Ok((flags, authen_method, priv_lvl, authen_type, authen_service))
+}
 
+fn validate_acct_flags(flags: u8) -> Result<()> {
     let valid_mask: u8 = ACCT_FLAG_START | ACCT_FLAG_STOP | ACCT_FLAG_WATCHDOG;
     let flag_bits: u8 = flags & valid_mask;
     ensure!(
         flag_bits.count_ones() == 1 && flags & !valid_mask == 0,
         "accounting flags invalid"
     );
+    Ok(())
+}
 
+fn parse_acct_variable_fields(
+    body: &[u8],
+) -> Result<(String, String, String, usize, usize)> {
+    let user_len = body[5] as usize;
+    let port_len = body[6] as usize;
+    let rem_addr_len = body[7] as usize;
+    let arg_cnt = body[8] as usize;
     let mut cursor: usize = 9;
     let (user, next) = read_string(body, cursor, user_len, "user")?;
     cursor = next;
@@ -65,18 +73,19 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
     cursor = next;
     let (rem_addr, next) = read_string(body, cursor, rem_addr_len, "rem_addr")?;
     cursor = next;
+    Ok((user, port, rem_addr, cursor, arg_cnt))
+}
 
+fn parse_acct_args(body: &[u8], cursor: usize, arg_cnt: usize) -> Result<Vec<String>> {
     let arg_lens: &[u8] = body
         .get(cursor..cursor + arg_cnt)
         .ok_or_else(|| anyhow!("accounting args length truncated"))?;
-    cursor += arg_cnt;
-
+    let mut cursor = cursor + arg_cnt;
     let total_args_len: usize = arg_lens.iter().map(|l| *l as usize).sum();
     ensure!(
         cursor + total_args_len <= body.len(),
         "accounting args exceed body length"
     );
-
     let mut args: Vec<String> = Vec::with_capacity(arg_cnt);
     for (idx, len) in arg_lens.iter().enumerate() {
         ensure!(*len > 0, "accounting arg length invalid");
@@ -84,7 +93,6 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
         cursor = next_cursor;
         args.push(arg);
     }
-
     validate_attributes(
         &args,
         &[
@@ -104,7 +112,15 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
             "bytes_out",
         ],
     )?;
+    Ok(args)
+}
 
+pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRequest> {
+    let (flags, authen_method, priv_lvl, authen_type, authen_service) =
+        validate_acct_basic_fields(body)?;
+    validate_acct_flags(flags)?;
+    let (user, port, rem_addr, cursor, arg_cnt) = parse_acct_variable_fields(body)?;
+    let args = parse_acct_args(body, cursor, arg_cnt)?;
     Ok(AccountingRequest {
         header,
         flags,
