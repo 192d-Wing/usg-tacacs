@@ -323,32 +323,7 @@ where
     Ok(Some(reply))
 }
 
-pub async fn read_author_response<R>(
-    reader: &mut R,
-    secret: Option<&[u8]>,
-) -> Result<Option<AuthorizationResponse>>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let header = match header::read_header(reader).await {
-        Ok(h) => h,
-        Err(err) if is_clean_eof(&err) => return Ok(None),
-        Err(err) => return Err(err),
-    };
-    if header.flags & FLAG_UNENCRYPTED != 0 {
-        bail!("unencrypted TACACS+ packet received (deprecated and refused)");
-    }
-    if secret.is_none() {
-        bail!("encrypted TACACS+ packet received without a shared secret");
-    }
-    validate_author_response_header(&header)?;
-    let mut body = vec![0u8; header.length as usize];
-    reader
-        .read_exact(&mut body)
-        .await
-        .with_context(|| "reading TACACS+ authorization response body")?;
-    crypto::apply_body_crypto(&header, &mut body, secret)?;
-
+fn parse_author_response_body(body: &[u8]) -> Result<AuthorizationResponse> {
     ensure!(body.len() >= 6, "authorization response too short");
     let status = body[0];
     ensure!(
@@ -362,13 +337,6 @@ where
         warn!("authorization response uses deprecated FOLLOW status");
         bail!("authorization response uses deprecated FOLLOW status");
     }
-    ensure!(
-        status == AUTHOR_STATUS_PASS_REPL
-            || status == AUTHOR_STATUS_PASS_ADD
-            || status == AUTHOR_STATUS_FAIL
-            || status == AUTHOR_STATUS_ERROR,
-        "authorization response status invalid"
-    );
     let arg_cnt = body[1] as usize;
     let server_msg_len = u16::from_be_bytes([body[2], body[3]]) as usize;
     let data_len = u16::from_be_bytes([body[4], body[5]]) as usize;
@@ -391,17 +359,62 @@ where
     let mut args = Vec::with_capacity(arg_cnt);
     for (idx, len) in arg_lens.iter().enumerate() {
         let (arg, next_cursor) =
-            util::read_string(&body, cursor, *len as usize, &format!("arg[{idx}]"))?;
+            util::read_string(body, cursor, *len as usize, &format!("arg[{idx}]"))?;
         cursor = next_cursor;
         args.push(arg);
     }
 
-    Ok(Some(AuthorizationResponse {
+    Ok(AuthorizationResponse {
         status,
         server_msg,
         data,
         args,
-    }))
+    })
+}
+
+async fn read_and_decrypt_body<R>(
+    reader: &mut R,
+    header: &Header,
+    secret: Option<&[u8]>,
+    context: String,
+) -> Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut body = vec![0u8; header.length as usize];
+    reader.read_exact(&mut body).await.with_context(|| context.clone())?;
+    crypto::apply_body_crypto(header, &mut body, secret)?;
+    Ok(body)
+}
+
+pub async fn read_author_response<R>(
+    reader: &mut R,
+    secret: Option<&[u8]>,
+) -> Result<Option<AuthorizationResponse>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let header = match header::read_header(reader).await {
+        Ok(h) => h,
+        Err(err) if is_clean_eof(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if header.flags & FLAG_UNENCRYPTED != 0 {
+        bail!("unencrypted TACACS+ packet received (deprecated and refused)");
+    }
+    if secret.is_none() {
+        bail!("encrypted TACACS+ packet received without a shared secret");
+    }
+    validate_author_response_header(&header)?;
+    let body = read_and_decrypt_body(
+        reader,
+        &header,
+        secret,
+        "reading TACACS+ authorization response body".to_string(),
+    )
+    .await?;
+    let response = parse_author_response_body(&body)?;
+    Ok(Some(response))
 }
 
 pub fn validate_author_response_header(header: &Header) -> Result<()> {
@@ -764,32 +777,7 @@ pub fn validate_authen_continue(req: &authen::AuthenContinue) -> Result<()> {
     Ok(())
 }
 
-pub async fn read_accounting_response<R>(
-    reader: &mut R,
-    secret: Option<&[u8]>,
-) -> Result<Option<accounting::AccountingResponse>>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let header = match header::read_header(reader).await {
-        Ok(h) => h,
-        Err(err) if is_clean_eof(&err) => return Ok(None),
-        Err(err) => return Err(err),
-    };
-    if header.flags & FLAG_UNENCRYPTED != 0 {
-        bail!("unencrypted TACACS+ packet received (deprecated and refused)");
-    }
-    if secret.is_none() {
-        bail!("encrypted TACACS+ packet received without a shared secret");
-    }
-    validate_accounting_response_header(&header)?;
-    let mut body = vec![0u8; header.length as usize];
-    reader
-        .read_exact(&mut body)
-        .await
-        .with_context(|| "reading TACACS+ accounting response body")?;
-    crypto::apply_body_crypto(&header, &mut body, secret)?;
-
+fn parse_acct_response_body(body: &[u8]) -> Result<accounting::AccountingResponse> {
     ensure!(body.len() >= 5, "accounting response too short");
     let status = body[0];
     ensure!(
@@ -827,17 +815,47 @@ where
     let mut args = Vec::with_capacity(arg_cnt);
     for (idx, len) in arg_lens.iter().enumerate() {
         let (arg, next_cursor) =
-            util::read_string(&body, cursor, *len as usize, &format!("arg[{idx}]"))?;
+            util::read_string(body, cursor, *len as usize, &format!("arg[{idx}]"))?;
         cursor = next_cursor;
         args.push(arg);
     }
 
-    Ok(Some(accounting::AccountingResponse {
+    Ok(accounting::AccountingResponse {
         status,
         server_msg,
         data,
         args,
-    }))
+    })
+}
+
+pub async fn read_accounting_response<R>(
+    reader: &mut R,
+    secret: Option<&[u8]>,
+) -> Result<Option<accounting::AccountingResponse>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let header = match header::read_header(reader).await {
+        Ok(h) => h,
+        Err(err) if is_clean_eof(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if header.flags & FLAG_UNENCRYPTED != 0 {
+        bail!("unencrypted TACACS+ packet received (deprecated and refused)");
+    }
+    if secret.is_none() {
+        bail!("encrypted TACACS+ packet received without a shared secret");
+    }
+    validate_accounting_response_header(&header)?;
+    let body = read_and_decrypt_body(
+        reader,
+        &header,
+        secret,
+        "reading TACACS+ accounting response body".to_string(),
+    )
+    .await?;
+    let response = parse_acct_response_body(&body)?;
+    Ok(Some(response))
 }
 
 fn is_clean_eof(err: &anyhow::Error) -> bool {
