@@ -121,10 +121,6 @@ pub fn build_api_router(
         config,
     });
 
-    // NIST AC-3: Build individual routers with appropriate RBAC middleware
-    // Each endpoint gets its own permission requirement
-
-    // GET /api/v1/status - requires read:status
     let status_router = Router::new()
         .route("/api/v1/status", get(get_status))
         .route_layer(middleware::from_fn(require_permission(
@@ -132,33 +128,28 @@ pub fn build_api_router(
             "read:status",
         )));
 
-    // GET /api/v1/sessions - requires read:sessions
-    let sessions_read_router = Router::new()
+    let sessions_read = Router::new()
         .route("/api/v1/sessions", get(get_sessions))
         .route_layer(middleware::from_fn(require_permission(
             &rbac,
             "read:sessions",
         )));
 
-    // DELETE /api/v1/sessions/:id - requires write:sessions
-    let sessions_write_router = Router::new()
+    let sessions_write = Router::new()
         .route("/api/v1/sessions/{id}", delete(delete_session))
         .route_layer(middleware::from_fn(require_permission(
             &rbac,
             "write:sessions",
         )));
 
-    // GET /api/v1/policy - requires read:policy
-    let policy_read_router = Router::new()
+    let policy_read = Router::new()
         .route("/api/v1/policy", get(get_policy))
         .route_layer(middleware::from_fn(require_permission(
             &rbac,
             "read:policy",
         )));
 
-    // POST /api/v1/policy/reload - requires write:policy
-    // POST /api/v1/policy - requires write:policy
-    let policy_write_router = Router::new()
+    let policy_write = Router::new()
         .route("/api/v1/policy/reload", post(reload_policy))
         .route("/api/v1/policy", post(upload_policy))
         .route_layer(middleware::from_fn(require_permission(
@@ -166,7 +157,6 @@ pub fn build_api_router(
             "write:policy",
         )));
 
-    // GET /api/v1/config - requires read:config
     let config_router = Router::new()
         .route("/api/v1/config", get(get_config))
         .route_layer(middleware::from_fn(require_permission(
@@ -174,7 +164,6 @@ pub fn build_api_router(
             "read:config",
         )));
 
-    // GET /api/v1/metrics - requires read:metrics
     let metrics_router = Router::new()
         .route("/api/v1/metrics", get(get_metrics))
         .route_layer(middleware::from_fn(require_permission(
@@ -182,13 +171,12 @@ pub fn build_api_router(
             "read:metrics",
         )));
 
-    // Merge all routers and attach shared state
     Router::new()
         .merge(status_router)
-        .merge(sessions_read_router)
-        .merge(sessions_write_router)
-        .merge(policy_read_router)
-        .merge(policy_write_router)
+        .merge(sessions_read)
+        .merge(sessions_write)
+        .merge(policy_read)
+        .merge(policy_write)
         .merge(config_router)
         .merge(metrics_router)
         .with_state(state)
@@ -387,66 +375,63 @@ async fn reload_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse 
 /// | AC-3 | Access Enforcement | Requires `write:policy` permission |
 /// | AU-12 | Audit Generation | Logs upload request and validation result |
 /// | CM-3 | Configuration Change Control | API-based policy upload with validation |
-async fn upload_policy(
-    State(state): State<Arc<ApiState>>,
-    Json(payload): Json<PolicyUploadRequest>,
-) -> impl IntoResponse {
-    info!(validate = payload.validate, "API request to upload policy");
-
-    // Parse the policy JSON to validate it's well-formed
-    let policy_doc: Result<usg_tacacs_policy::PolicyDocument, _> =
-        serde_json::from_str(&payload.policy);
-
-    let policy_doc = match policy_doc {
-        Ok(doc) => doc,
-        Err(e) => {
-            warn!(error = %e, "Invalid policy JSON in upload request");
-            let response = PolicyUploadResponse {
-                success: false,
-                message: format!("Invalid policy JSON: {}", e),
-                rule_count: None,
-            };
-            return (StatusCode::BAD_REQUEST, Json(response));
-        }
-    };
-
-    // If validation is requested, validate against schema
-    if payload.validate {
-        if let Some(schema_path) = &state.schema_path {
-            match usg_tacacs_policy::validate_policy_document(&policy_doc, schema_path) {
-                Ok(_) => {
-                    info!("Policy validated successfully against schema");
-                }
-                Err(e) => {
-                    warn!(error = %e, "Policy validation failed");
-                    let response = PolicyUploadResponse {
-                        success: false,
-                        message: format!("Policy validation failed: {}", e),
-                        rule_count: None,
-                    };
-                    return (StatusCode::BAD_REQUEST, Json(response));
-                }
-            }
-        } else {
-            warn!("Validation requested but no schema configured");
-            let response = PolicyUploadResponse {
-                success: false,
-                message: "Validation requested but no schema configured".to_string(),
-                rule_count: None,
-            };
-            return (StatusCode::BAD_REQUEST, Json(response));
-        }
+///
+/// Validate policy document against schema if validation is requested.
+///
+/// # NIST SP 800-53 Controls
+/// - CM-3: Configuration validation before acceptance
+fn validate_policy_if_requested(
+    policy_doc: &usg_tacacs_policy::PolicyDocument,
+    should_validate: bool,
+    schema_path: &Option<PathBuf>,
+) -> Result<(), (StatusCode, Json<PolicyUploadResponse>)> {
+    if !should_validate {
+        return Ok(());
     }
 
-    let rule_count = policy_doc.rules.len();
+    if let Some(schema) = schema_path {
+        match usg_tacacs_policy::validate_policy_document(policy_doc, schema) {
+            Ok(_) => {
+                info!("Policy validated successfully against schema");
+                Ok(())
+            }
+            Err(e) => {
+                warn!(error = %e, "Policy validation failed");
+                let response = PolicyUploadResponse {
+                    success: false,
+                    message: format!("Policy validation failed: {}", e),
+                    rule_count: None,
+                };
+                Err((StatusCode::BAD_REQUEST, Json(response)))
+            }
+        }
+    } else {
+        warn!("Validation requested but no schema configured");
+        let response = PolicyUploadResponse {
+            success: false,
+            message: "Validation requested but no schema configured".to_string(),
+            rule_count: None,
+        };
+        Err((StatusCode::BAD_REQUEST, Json(response)))
+    }
+}
 
-    // NIST CM-3: Send upload request through internal channel
+/// Queue policy upload request and build response.
+///
+/// # NIST SP 800-53 Controls
+/// - CM-3: Configuration change control via channel
+async fn queue_policy_upload(
+    reload_tx: &mpsc::Sender<PolicyReloadRequest>,
+    policy_json: String,
+    schema_path: Option<PathBuf>,
+    rule_count: usize,
+) -> (StatusCode, Json<PolicyUploadResponse>) {
     let request = PolicyReloadRequest::FromJson {
-        content: payload.policy,
-        schema: state.schema_path.clone(),
+        content: policy_json,
+        schema: schema_path,
     };
 
-    match state.reload_tx.send(request).await {
+    match reload_tx.send(request).await {
         Ok(_) => {
             info!(rules = rule_count, "Policy upload queued successfully");
             let response = PolicyUploadResponse {
@@ -466,6 +451,40 @@ async fn upload_policy(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(response))
         }
     }
+}
+
+async fn upload_policy(
+    State(state): State<Arc<ApiState>>,
+    Json(payload): Json<PolicyUploadRequest>,
+) -> impl IntoResponse {
+    info!(validate = payload.validate, "API request to upload policy");
+
+    let policy_doc: Result<usg_tacacs_policy::PolicyDocument, _> =
+        serde_json::from_str(&payload.policy);
+
+    let policy_doc = match policy_doc {
+        Ok(doc) => doc,
+        Err(e) => {
+            warn!(error = %e, "Invalid policy JSON in upload request");
+            let response = PolicyUploadResponse {
+                success: false,
+                message: format!("Invalid policy JSON: {}", e),
+                rule_count: None,
+            };
+            return (StatusCode::BAD_REQUEST, Json(response));
+        }
+    };
+
+    if let Err(response) =
+        validate_policy_if_requested(&policy_doc, payload.validate, &state.schema_path)
+    {
+        return response;
+    }
+
+    let rule_count = policy_doc.rules.len();
+
+    queue_policy_upload(&state.reload_tx, payload.policy, state.schema_path.clone(), rule_count)
+        .await
 }
 
 /// GET /api/v1/config - Get running configuration (sanitized).

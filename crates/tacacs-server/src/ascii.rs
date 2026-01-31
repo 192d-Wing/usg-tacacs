@@ -214,18 +214,14 @@ fn reset_authentication_state(state: &mut AuthSessionState) -> AuthenReply {
 ///
 /// # NIST SP 800-53 Controls
 /// - AC-7: Authentication delays on failed attempts
-fn handle_empty_password_with_backoff(
-    state: &AuthSessionState,
-    config: &AsciiConfig,
-    pwd_prompt: Vec<u8>,
-) -> Option<AuthenReply> {
-    Some(AuthenReply {
+fn handle_empty_password_with_backoff(pwd_prompt: Vec<u8>) -> AuthenReply {
+    AuthenReply {
         status: AUTHEN_STATUS_GETPASS,
         flags: AUTHEN_FLAG_NOECHO,
         server_msg: String::new(),
         server_msg_raw: Vec::new(),
         data: pwd_prompt,
-    })
+    }
 }
 
 /// Verify password against static credentials and LDAP.
@@ -319,7 +315,7 @@ async fn handle_password_phase(
         ) {
             sleep(delay).await;
         }
-        return handle_empty_password_with_backoff(state, config, pwd_prompt).unwrap();
+        return handle_empty_password_with_backoff(pwd_prompt);
     }
 
     state.ascii_need_pass = false;

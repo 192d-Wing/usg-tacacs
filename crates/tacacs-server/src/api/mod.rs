@@ -37,6 +37,52 @@ use tower::ServiceExt;
 use tracing::{error, info, warn};
 use usg_tacacs_policy::PolicyEngine;
 
+/// Handle single TLS connection for management API.
+///
+/// # NIST SP 800-53 Controls
+/// - SC-8: TLS handshake with mTLS client validation
+/// - AU-12: Log TLS handshake failures
+async fn handle_tls_connection(
+    stream: tokio::net::TcpStream,
+    peer_addr: SocketAddr,
+    acceptor: TlsAcceptor,
+    app: axum::Router,
+) {
+    match acceptor.accept(stream).await {
+        Ok(tls_stream) => {
+            let io = TokioIo::new(tls_stream);
+            let tower_service = app.clone();
+            let hyper_service = hyper::service::service_fn(
+                move |req: hyper::Request<hyper::body::Incoming>| {
+                    let tower_service = tower_service.clone();
+                    async move {
+                        let (parts, body) = req.into_parts();
+                        let body = Body::new(body);
+                        let axum_req = axum::http::Request::from_parts(parts, body);
+
+                        tower_service
+                            .oneshot(axum_req)
+                            .await
+                            .map_err(|err| match err {})
+                    }
+                },
+            );
+
+            if let Err(e) = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, hyper_service)
+                .await
+            {
+                if !e.is_incomplete_message() {
+                    error!(peer = %peer_addr, error = %e, "API connection error");
+                }
+            }
+        }
+        Err(e) => {
+            warn!(peer = %peer_addr, error = %e, "TLS handshake failed for API connection");
+        }
+    }
+}
+
 /// Start the management API server.
 ///
 /// # NIST Controls
@@ -75,7 +121,6 @@ pub async fn serve_api(
     let listener = TcpListener::bind(addr).await?;
 
     if let Some(tls_acceptor) = acceptor {
-        // NIST SC-8: TLS mode with mTLS client authentication
         info!(addr = %addr, tls = true, "Management API server listening (TLS enabled)");
 
         loop {
@@ -91,52 +136,10 @@ pub async fn serve_api(
             let app = app.clone();
 
             tokio::spawn(async move {
-                // NIST SC-8/SC-23: Perform TLS handshake with mTLS client validation
-                match acceptor.accept(stream).await {
-                    Ok(tls_stream) => {
-                        // Note: Client certificate CN extraction for RBAC happens via
-                        // the X-User-CN header. In production with mTLS, a reverse proxy
-                        // should extract the CN from the client certificate and set this
-                        // header, or this can be enhanced to extract directly from TLS session.
-                        let io = TokioIo::new(tls_stream);
-
-                        // Create a hyper service from the axum router
-                        let tower_service = app.clone();
-                        let hyper_service = hyper::service::service_fn(
-                            move |req: hyper::Request<hyper::body::Incoming>| {
-                                let tower_service = tower_service.clone();
-                                async move {
-                                    let (parts, body) = req.into_parts();
-                                    let body = Body::new(body);
-                                    let axum_req = axum::http::Request::from_parts(parts, body);
-
-                                    tower_service
-                                        .oneshot(axum_req)
-                                        .await
-                                        .map_err(|err| match err {})
-                                }
-                            },
-                        );
-
-                        if let Err(e) = hyper::server::conn::http1::Builder::new()
-                            .serve_connection(io, hyper_service)
-                            .await
-                        {
-                            // Only log actual errors, not normal connection closes
-                            if !e.is_incomplete_message() {
-                                error!(peer = %peer_addr, error = %e, "API connection error");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // NIST AU-12: Log TLS handshake failures for security monitoring
-                        warn!(peer = %peer_addr, error = %e, "TLS handshake failed for API connection");
-                    }
-                }
+                handle_tls_connection(stream, peer_addr, acceptor, app).await;
             });
         }
     } else {
-        // Plaintext mode - for development only
         warn!(
             addr = %addr,
             "Management API server listening in PLAINTEXT mode - NOT RECOMMENDED FOR PRODUCTION"
