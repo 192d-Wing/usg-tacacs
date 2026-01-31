@@ -2351,18 +2351,10 @@ async fn build_ascii_auth_result_reply(
     }
 }
 
-async fn handle_authen_start_ascii(
+fn extract_ascii_username_from_start(
     start: &AuthenStart,
     state: &mut AuthSessionState,
-    policy: &Arc<RwLock<PolicyEngine>>,
-    credentials: &Arc<StaticCreds>,
-    ldap: &Option<Arc<LdapConfig>>,
-    ascii_cfg: &AsciiConfig,
-) -> AuthenReply {
-    state.authen_type = Some(AUTHEN_TYPE_ASCII);
-    state.service = Some(start.service);
-    state.action = Some(start.action);
-
+) {
     let decoded_username = if start.user_raw.is_empty() || start.user.is_empty() {
         None
     } else {
@@ -2374,21 +2366,46 @@ async fn handle_authen_start_ascii(
     } else {
         Some(start.user_raw.clone())
     };
+}
 
+fn build_getuser_reply(prompt: Option<&[u8]>, service: Option<u8>) -> AuthenReply {
+    AuthenReply {
+        status: AUTHEN_STATUS_GETUSER,
+        flags: 0,
+        server_msg: String::new(),
+        server_msg_raw: Vec::new(),
+        data: build_ascii_username_prompt(prompt, service),
+    }
+}
+
+fn build_getpass_reply(prompt: Option<&[u8]>, service: Option<u8>) -> AuthenReply {
+    AuthenReply {
+        status: AUTHEN_STATUS_GETPASS,
+        flags: AUTHEN_FLAG_NOECHO,
+        server_msg: String::new(),
+        server_msg_raw: Vec::new(),
+        data: build_ascii_password_prompt(prompt, service),
+    }
+}
+
+async fn handle_authen_start_ascii(
+    start: &AuthenStart,
+    state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>,
+    ldap: &Option<Arc<LdapConfig>>,
+    ascii_cfg: &AsciiConfig,
+) -> AuthenReply {
+    state.authen_type = Some(AUTHEN_TYPE_ASCII);
+    state.service = Some(start.service);
+    state.action = Some(start.action);
+    extract_ascii_username_from_start(start, state);
     let (policy_user_prompt, policy_pass_prompt) =
         fetch_ascii_prompts_from_policy(policy, state).await;
-
     state.ascii_need_user = state.username.is_none();
     if state.ascii_need_user {
-        return AuthenReply {
-            status: AUTHEN_STATUS_GETUSER,
-            flags: 0,
-            server_msg: String::new(),
-            server_msg_raw: Vec::new(),
-            data: build_ascii_username_prompt(policy_user_prompt.as_deref(), state.service),
-        };
+        return build_getuser_reply(policy_user_prompt.as_deref(), state.service);
     }
-
     if !start.data.is_empty() {
         let ok = verify_ascii_credentials_all_sources(
             state.username.as_deref(),
@@ -2398,7 +2415,6 @@ async fn handle_authen_start_ascii(
             ldap,
         )
         .await;
-
         if !ok
             && let Some(delay) = calc_ascii_backoff_capped(
                 ascii_cfg.backoff_ms,
@@ -2408,17 +2424,10 @@ async fn handle_authen_start_ascii(
         {
             sleep(delay).await;
         }
-
         build_ascii_auth_result_reply(ok, state.service, state.action, policy).await
     } else {
         state.ascii_need_pass = true;
-        AuthenReply {
-            status: AUTHEN_STATUS_GETPASS,
-            flags: AUTHEN_FLAG_NOECHO,
-            server_msg: String::new(),
-            server_msg_raw: Vec::new(),
-            data: build_ascii_password_prompt(policy_pass_prompt.as_deref(), state.service),
-        }
+        build_getpass_reply(policy_pass_prompt.as_deref(), state.service)
     }
 }
 
@@ -2820,6 +2829,59 @@ async fn process_authen_continue_packet(
 /// | AU-12 | Audit Generation | Comprehensive authentication logging |
 /// | SC-23 | Session Authenticity | Single-connect validation and activation |
 #[allow(clippy::too_many_arguments)]
+fn extract_session_id(packet: &AuthenPacket) -> u32 {
+    match packet {
+        AuthenPacket::Start(start) => start.header.session_id,
+        AuthenPacket::Continue(cont) => cont.header.session_id,
+    }
+}
+
+async fn validate_authen_packet<S>(
+    stream: &mut S,
+    packet: &AuthenPacket,
+    single_connect: &mut SingleConnectState,
+    session_id: u32,
+    secret: Option<&[u8]>,
+    peer: &str,
+) -> Result<Option<LoopControl>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if !validate_authen_rfc(stream, packet, session_id, secret, peer).await? {
+        return Ok(Some(LoopControl::Break));
+    }
+    if let Some(err_msg) = validate_authen_single_connect(single_connect, packet, session_id, peer)
+    {
+        return Ok(Some(
+            handle_authen_single_connect_error(stream, packet, err_msg, secret).await?,
+        ));
+    }
+    Ok(None)
+}
+
+async fn process_authen_packet(
+    packet: &AuthenPacket,
+    state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &Arc<StaticCreds>,
+    ldap: &Option<Arc<LdapConfig>>,
+    ascii_cfg: &AsciiConfig,
+    peer: &str,
+) -> Result<AuthenReply, LoopControl> {
+    match packet {
+        AuthenPacket::Start(start) => {
+            process_authen_start_packet(start, state, policy, credentials, ldap, ascii_cfg, peer)
+                .await
+        }
+        AuthenPacket::Continue(cont) => {
+            let reply =
+                process_authen_continue_packet(cont, state, policy, credentials, ldap, ascii_cfg)
+                    .await;
+            Ok(reply)
+        }
+    }
+}
+
 async fn handle_authentication_packet<S>(
     stream: &mut S,
     packet: AuthenPacket,
@@ -2837,18 +2899,12 @@ async fn handle_authentication_packet<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let session_id = match &packet {
-        AuthenPacket::Start(start) => start.header.session_id,
-        AuthenPacket::Continue(cont) => cont.header.session_id,
-    };
-    if !validate_authen_rfc(stream, &packet, session_id, secret, peer).await? {
-        return Ok(LoopControl::Break);
-    }
-    if let Some(err_msg) = validate_authen_single_connect(single_connect, &packet, session_id, peer)
+    let session_id = extract_session_id(&packet);
+    if let Some(ctrl) =
+        validate_authen_packet(stream, &packet, single_connect, session_id, secret, peer).await?
     {
-        return handle_authen_single_connect_error(stream, &packet, err_msg, secret).await;
+        return Ok(ctrl);
     }
-
     let single_connect_flag = extract_authen_single_connect_flag(&packet);
     let state =
         match get_or_create_auth_state(stream, &packet, auth_states, session_id, secret, peer)
@@ -2857,29 +2913,12 @@ where
             Some(s) => s,
             None => return Ok(LoopControl::Break),
         };
-
-    let reply = match packet {
-        AuthenPacket::Start(ref start) => {
-            match process_authen_start_packet(
-                start,
-                state,
-                policy,
-                credentials,
-                ldap,
-                ascii_cfg,
-                peer,
-            )
-            .await
-            {
-                Ok(reply) => reply,
-                Err(ctrl) => return Ok(ctrl),
-            }
-        }
-        AuthenPacket::Continue(ref cont) => {
-            process_authen_continue_packet(cont, state, policy, credentials, ldap, ascii_cfg).await
-        }
+    let reply = match process_authen_packet(&packet, state, policy, credentials, ldap, ascii_cfg, peer)
+        .await
+    {
+        Ok(r) => r,
+        Err(ctrl) => return Ok(ctrl),
     };
-
     finalize_authentication(
         stream,
         &packet,
@@ -3018,6 +3057,44 @@ fn handle_packet_read_error(err: anyhow::Error, peer: &str) -> Result<()> {
 /// | AC-12 | Session Termination | Checks for API-initiated termination |
 /// | AU-12 | Audit Generation | Connection close events logged |
 #[allow(clippy::too_many_arguments)]
+fn calculate_keepalive_deadline(
+    single_connect_idle_secs: u64,
+    single_connect_keepalive_secs: u64,
+) -> u64 {
+    if single_connect_keepalive_secs > 0 {
+        single_connect_keepalive_secs
+    } else {
+        single_connect_idle_secs
+    }
+}
+
+fn handle_client_close(peer: &str) {
+    debug!(peer = %peer, "client closed connection");
+    audit_event("conn_close", peer, "", 0, "info", "client-close", "");
+}
+
+async fn check_api_termination(
+    registry: &Arc<SessionRegistry>,
+    connection_id: u64,
+    peer: &str,
+) -> bool {
+    if registry.is_termination_requested(connection_id).await {
+        info!(peer = %peer, connection_id = connection_id, "session terminated via API");
+        audit_event(
+            "conn_close",
+            peer,
+            "",
+            0,
+            "info",
+            "api-terminated",
+            "session terminated via management API",
+        );
+        true
+    } else {
+        false
+    }
+}
+
 async fn connection_loop<S>(
     stream: &mut S,
     connection_id: u64,
@@ -3038,42 +3115,31 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     loop {
-        let keepalive_deadline = if single_connect_keepalive_secs > 0 {
-            single_connect_keepalive_secs
-        } else {
-            single_connect_idle_secs
-        };
-
-        let packet_result =
-            read_packet_with_keepalive(stream, secret, single_connect, keepalive_deadline, peer)
-                .await;
-
-        match packet_result {
-            Ok(Some(packet)) => {
-                match dispatch_packet_to_handler(
-                    stream,
-                    packet,
-                    auth_states,
-                    single_connect,
-                    task_tracker,
-                    connection_id,
-                    registry,
-                    policy,
-                    credentials,
-                    ldap,
-                    ascii_cfg,
-                    secret,
-                    peer,
-                )
-                .await
-                {
-                    Ok(LoopControl::Continue) => {}
-                    Ok(LoopControl::Break) | Err(_) => break,
-                }
-            }
+        let deadline =
+            calculate_keepalive_deadline(single_connect_idle_secs, single_connect_keepalive_secs);
+        match read_packet_with_keepalive(stream, secret, single_connect, deadline, peer).await {
+            Ok(Some(packet)) => match dispatch_packet_to_handler(
+                stream,
+                packet,
+                auth_states,
+                single_connect,
+                task_tracker,
+                connection_id,
+                registry,
+                policy,
+                credentials,
+                ldap,
+                ascii_cfg,
+                secret,
+                peer,
+            )
+            .await
+            {
+                Ok(LoopControl::Continue) => {}
+                Ok(LoopControl::Break) | Err(_) => break,
+            },
             Ok(None) => {
-                debug!(peer = %peer, "client closed connection");
-                audit_event("conn_close", peer, "", 0, "info", "client-close", "");
+                handle_client_close(peer);
                 break;
             }
             Err(err) => {
@@ -3081,25 +3147,11 @@ where
                 break;
             }
         }
-
-        // NIST AC-12: Check for API-initiated session termination
-        if registry.is_termination_requested(connection_id).await {
-            info!(peer = %peer, connection_id = connection_id, "session terminated via API");
-            audit_event(
-                "conn_close",
-                peer,
-                "",
-                0,
-                "info",
-                "api-terminated",
-                "session terminated via management API",
-            );
+        if check_api_termination(registry, connection_id, peer).await {
             break;
         }
-
         registry.record_activity(connection_id).await;
     }
-
     Ok(())
 }
 
