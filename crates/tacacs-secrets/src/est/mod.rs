@@ -190,16 +190,29 @@ impl EstProvider {
     ///
     /// This method generates a CSR and enrolls with the EST server.
     /// If certificates already exist on disk, they are loaded instead.
+
+    /// Store bundle to disk and memory.
+    async fn store_bundle(&self, bundle: CertificateBundle) -> Result<()> {
+        bundle
+            .write_to_files(
+                &self.config.cert_path,
+                &self.config.key_path,
+                &self.config.ca_cert_path,
+            )
+            .await?;
+
+        *self.current_bundle.write().await = Some(bundle);
+        Ok(())
+    }
+
     pub async fn bootstrap_enrollment(&self) -> Result<CertificateBundle> {
         info!("starting EST bootstrap enrollment");
 
-        // Check if certificates already exist
         if self.config.cert_path.exists() && self.config.key_path.exists() {
             info!("certificates already exist, loading from disk");
             return self.load_existing_certificates().await;
         }
 
-        // Generate CSR
         let mut csr_builder = CsrBuilder::new().common_name(&self.config.common_name);
         if let Some(ref org) = self.config.organization {
             csr_builder = csr_builder.organization(org);
@@ -207,14 +220,13 @@ impl EstProvider {
 
         let (csr_der, key_pair) = csr_builder.build()?;
 
-        // Enroll with EST server
         info!(cn = %self.config.common_name, "submitting enrollment request to EST server");
         let response = self.client.simple_enroll(&csr_der).await?;
 
         let certificate = match response {
             EnrollmentResponse::Issued { certificate } => {
                 info!("EST enrollment successful");
-                certificate
+                *certificate
             }
             EnrollmentResponse::Pending { retry_after } => {
                 anyhow::bail!(
@@ -224,64 +236,26 @@ impl EstProvider {
             }
         };
 
-        // Convert certificate to PEM
         let cert_der = certificate.to_der()?;
         let cert_pem =
             pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &cert_der)
                 .map_err(|e| anyhow::anyhow!("failed to encode certificate to PEM: {}", e))?;
 
-        // Convert private key to PEM
         let key_pem = key_pair.serialize_pem();
+        let ca_chain = self.fetch_ca_chain().await?;
 
-        // Fetch CA certificates if ca_label is configured
-        let ca_chain = {
-            debug!("fetching CA certificates");
-            let ca_certs = self.client.get_ca_certs().await?;
-            let mut ca_pem = Vec::new();
-            for cert in ca_certs.into_iter() {
-                let der = cert.to_der()?;
-                let pem =
-                    pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &der)
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to encode CA certificate to PEM: {}", e)
-                        })?;
-                ca_pem.extend_from_slice(pem.as_bytes());
-            }
-            if ca_pem.is_empty() {
-                None
-            } else {
-                Some(ca_pem)
-            }
-        };
-
-        // Parse certificate to extract serial and expiration
-        let serial_number = hex::encode(certificate.tbs_certificate.serial_number.as_bytes());
-        let expires_at = certificate
-            .tbs_certificate
-            .validity
-            .not_after
-            .to_unix_duration()
-            .as_secs();
+        let serial = hex::encode(certificate.tbs_certificate.serial_number.as_bytes());
+        let expires = certificate.tbs_certificate.validity.not_after.to_unix_duration().as_secs();
 
         let bundle = CertificateBundle {
             cert_pem: cert_pem.into_bytes(),
             key_pem: key_pem.into_bytes(),
             ca_chain,
-            serial_number,
-            expires_at,
+            serial_number: serial,
+            expires_at: expires,
         };
 
-        // Write to disk
-        bundle
-            .write_to_files(
-                &self.config.cert_path,
-                &self.config.key_path,
-                &self.config.ca_cert_path,
-            )
-            .await?;
-
-        // Store in memory
-        *self.current_bundle.write().await = Some(bundle.clone());
+        self.store_bundle(bundle.clone()).await?;
 
         info!("bootstrap enrollment completed successfully");
         Ok(bundle)
@@ -438,20 +412,15 @@ impl EstProvider {
         let key_pem = key_pair.serialize_pem();
         let ca_chain = self.fetch_ca_chain().await?;
 
-        let serial_number = hex::encode(certificate.tbs_certificate.serial_number.as_bytes());
-        let expires_at = certificate
-            .tbs_certificate
-            .validity
-            .not_after
-            .to_unix_duration()
-            .as_secs();
+        let serial = hex::encode(certificate.tbs_certificate.serial_number.as_bytes());
+        let expires = certificate.tbs_certificate.validity.not_after.to_unix_duration().as_secs();
 
         let new_bundle = CertificateBundle {
             cert_pem: cert_pem.into_bytes(),
             key_pem: key_pem.into_bytes(),
             ca_chain,
-            serial_number,
-            expires_at,
+            serial_number: serial,
+            expires_at: expires,
         };
 
         self.update_bundle(new_bundle.clone()).await?;

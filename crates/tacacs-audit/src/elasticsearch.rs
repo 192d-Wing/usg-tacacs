@@ -33,6 +33,31 @@ pub struct ElasticsearchForwarder {
 }
 
 impl ElasticsearchForwarder {
+    /// Configure authentication credentials for Elasticsearch transport.
+    fn configure_auth(
+        transport_builder: TransportBuilder,
+        api_key: Option<&String>,
+        username: Option<&String>,
+        password: Option<&String>,
+    ) -> TransportBuilder {
+        if let Some(key) = api_key {
+            let parts: Vec<&str> = key.split(':').collect();
+            let (id, key_val) = if parts.len() == 2 {
+                (parts[0].to_string(), parts[1].to_string())
+            } else {
+                (key.clone(), String::new())
+            };
+            transport_builder.auth(elasticsearch::auth::Credentials::ApiKey(id, key_val))
+        } else if let (Some(user), Some(pass)) = (username, password) {
+            transport_builder.auth(elasticsearch::auth::Credentials::Basic(
+                user.clone(),
+                pass.clone(),
+            ))
+        } else {
+            transport_builder
+        }
+    }
+
     /// Create a new Elasticsearch forwarder.
     ///
     /// # NIST Controls
@@ -41,7 +66,6 @@ impl ElasticsearchForwarder {
     /// |---------|------|----------------|
     /// | SC-8 | Transmission Confidentiality | Configures TLS for Elasticsearch connections |
     pub async fn new(config: ElasticsearchConfig) -> Result<Self> {
-        // Parse Elasticsearch URLs
         let urls: Vec<Url> = config
             .hosts
             .iter()
@@ -53,46 +77,17 @@ impl ElasticsearchForwarder {
             anyhow::bail!("no Elasticsearch hosts configured");
         }
 
-        // Build transport
-        let mut transport_builder = if urls.len() == 1 {
-            let pool = SingleNodeConnectionPool::new(urls[0].clone());
-            TransportBuilder::new(pool)
-        } else {
-            // For multiple nodes, use CloudConnectionPool or SniffConnectionPool
-            // For simplicity, we'll just use the first node
-            let pool = SingleNodeConnectionPool::new(urls[0].clone());
-            TransportBuilder::new(pool)
-        };
+        let pool = SingleNodeConnectionPool::new(urls[0].clone());
+        let mut transport_builder = TransportBuilder::new(pool);
 
-        // Configure authentication
-        if let Some(ref api_key) = config.api_key {
-            // API key format expects (id, api_key) tuple
-            // We expect the config to have format "id:key" or base64-encoded
-            let parts: Vec<&str> = api_key.split(':').collect();
-            let (id, key) = if parts.len() == 2 {
-                (parts[0].to_string(), parts[1].to_string())
-            } else {
-                // Assume it's base64-encoded single string
-                (api_key.clone(), String::new())
-            };
-            transport_builder =
-                transport_builder.auth(elasticsearch::auth::Credentials::ApiKey(id, key));
-        } else if let (Some(ref username), Some(ref password)) =
-            (&config.username, &config.password)
-        {
-            transport_builder = transport_builder.auth(elasticsearch::auth::Credentials::Basic(
-                username.clone(),
-                password.clone(),
-            ));
-        }
+        transport_builder = Self::configure_auth(
+            transport_builder,
+            config.api_key.as_ref(),
+            config.username.as_ref(),
+            config.password.as_ref(),
+        );
 
-        // Set timeout
         transport_builder = transport_builder.timeout(Duration::from_secs(config.timeout_secs));
-
-        // TODO: Add CA certificate support
-        // if let Some(ref ca_file) = config.ca_cert_file {
-        //     // Load CA cert and configure rustls
-        // }
 
         let transport = transport_builder
             .build()
@@ -100,7 +95,6 @@ impl ElasticsearchForwarder {
 
         let client = Elasticsearch::new(transport);
 
-        // Test connection
         debug!("testing Elasticsearch connection");
         client
             .ping()
@@ -152,24 +146,13 @@ impl ElasticsearchForwarder {
         self.flush_events(events).await
     }
 
-    async fn flush_events(&self, events: Vec<AuditEvent>) -> Result<()> {
-        if events.is_empty() {
-            return Ok(());
-        }
-
-        debug!(
-            count = events.len(),
-            "flushing audit events to Elasticsearch"
-        );
-
-        // Build bulk request body as newline-delimited JSON
+    /// Build bulk request body as newline-delimited JSON.
+    fn build_bulk_body(&self, events: &[AuditEvent]) -> Result<Vec<String>> {
         let mut body_lines: Vec<String> = Vec::new();
 
-        for event in &events {
-            // Resolve index name with strftime formatting
+        for event in events {
             let index = self.resolve_index_name(&event.timestamp);
 
-            // Bulk index action
             let action = json!({
                 "index": {
                     "_index": index,
@@ -177,32 +160,20 @@ impl ElasticsearchForwarder {
             });
             body_lines.push(serde_json::to_string(&action).context("failed to serialize action")?);
 
-            // Event document
             let event_json =
                 serde_json::to_string(event).context("failed to serialize audit event")?;
             body_lines.push(event_json);
         }
 
-        // Send bulk request with Vec<String> (ndjson format)
-        let response = self
-            .client
-            .bulk(BulkParts::None)
-            .body(body_lines)
-            .send()
-            .await
-            .context("failed to send bulk request to Elasticsearch")?;
+        Ok(body_lines)
+    }
 
-        // Check for errors
-        let response_body = response
-            .json::<serde_json::Value>()
-            .await
-            .context("failed to parse Elasticsearch bulk response")?;
-
+    /// Log bulk indexing errors from Elasticsearch response.
+    fn log_bulk_errors(response_body: &serde_json::Value) {
         if let Some(errors) = response_body.get("errors") {
             if errors.as_bool() == Some(true) {
                 warn!("Elasticsearch bulk indexing encountered errors");
 
-                // Log specific errors
                 if let Some(items) = response_body.get("items").and_then(|i| i.as_array()) {
                     for item in items {
                         if let Some(index_result) = item.get("index") {
@@ -214,6 +185,34 @@ impl ElasticsearchForwarder {
                 }
             }
         }
+    }
+
+    async fn flush_events(&self, events: Vec<AuditEvent>) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        debug!(
+            count = events.len(),
+            "flushing audit events to Elasticsearch"
+        );
+
+        let body_lines = self.build_bulk_body(&events)?;
+
+        let response = self
+            .client
+            .bulk(BulkParts::None)
+            .body(body_lines)
+            .send()
+            .await
+            .context("failed to send bulk request to Elasticsearch")?;
+
+        let response_body = response
+            .json::<serde_json::Value>()
+            .await
+            .context("failed to parse Elasticsearch bulk response")?;
+
+        Self::log_bulk_errors(&response_body);
 
         debug!(
             count = events.len(),
