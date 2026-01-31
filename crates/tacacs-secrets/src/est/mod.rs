@@ -357,6 +357,44 @@ impl EstProvider {
     }
 
     /// Check certificate expiration and renew if necessary.
+    /// Fetch CA certificate chain from EST server.
+    async fn fetch_ca_chain(&self) -> Result<Option<Vec<u8>>> {
+        let ca_certs = self.client.get_ca_certs().await?;
+        let mut ca_pem = Vec::new();
+        for cert in ca_certs.into_iter() {
+            let der = cert.to_der()?;
+            let pem = pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &der)
+                .map_err(|e| anyhow::anyhow!("failed to encode CA certificate to PEM: {}", e))?;
+            ca_pem.extend_from_slice(pem.as_bytes());
+        }
+        Ok(if ca_pem.is_empty() {
+            None
+        } else {
+            Some(ca_pem)
+        })
+    }
+
+    /// Update certificate bundle on disk and in memory.
+    async fn update_bundle(&self, new_bundle: CertificateBundle) -> Result<()> {
+        new_bundle
+            .write_to_files(
+                &self.config.cert_path,
+                &self.config.key_path,
+                &self.config.ca_cert_path,
+            )
+            .await?;
+
+        *self.current_bundle.write().await = Some(new_bundle.clone());
+
+        let _ = self.change_tx.send(SecretChange::TlsCertificates {
+            cert_pem: new_bundle.cert_pem.clone(),
+            key_pem: new_bundle.key_pem.clone(),
+            ca_chain: new_bundle.ca_chain.clone(),
+        });
+
+        Ok(())
+    }
+
     async fn check_and_renew(&self) -> Result<Option<CertificateBundle>> {
         let bundle = self.current_bundle.read().await;
         let Some(ref current) = *bundle else {
@@ -369,24 +407,22 @@ impl EstProvider {
             return Ok(None);
         }
 
-        drop(bundle); // Release read lock
+        drop(bundle);
 
         info!("certificate has reached renewal threshold, initiating renewal");
 
-        // Generate new CSR
         let mut csr_builder = CsrBuilder::new().common_name(&self.config.common_name);
         if let Some(ref org) = self.config.organization {
             csr_builder = csr_builder.organization(org);
         }
         let (csr_der, key_pair) = csr_builder.build()?;
 
-        // Re-enroll with EST server
         let response = self.client.simple_reenroll(&csr_der).await?;
 
         let certificate = match response {
             EnrollmentResponse::Issued { certificate } => {
                 info!("EST renewal successful");
-                certificate
+                *certificate
             }
             EnrollmentResponse::Pending { retry_after } => {
                 warn!(retry_after, "EST renewal is pending - will retry later");
@@ -394,34 +430,13 @@ impl EstProvider {
             }
         };
 
-        // Convert certificate to PEM
         let cert_der = certificate.to_der()?;
         let cert_pem =
             pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &cert_der)
                 .map_err(|e| anyhow::anyhow!("failed to encode certificate to PEM: {}", e))?;
 
-        // Convert private key to PEM
         let key_pem = key_pair.serialize_pem();
-
-        // Fetch CA certificates
-        let ca_chain = {
-            let ca_certs = self.client.get_ca_certs().await?;
-            let mut ca_pem = Vec::new();
-            for cert in ca_certs.into_iter() {
-                let der = cert.to_der()?;
-                let pem =
-                    pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &der)
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to encode CA certificate to PEM: {}", e)
-                        })?;
-                ca_pem.extend_from_slice(pem.as_bytes());
-            }
-            if ca_pem.is_empty() {
-                None
-            } else {
-                Some(ca_pem)
-            }
-        };
+        let ca_chain = self.fetch_ca_chain().await?;
 
         let serial_number = hex::encode(certificate.tbs_certificate.serial_number.as_bytes());
         let expires_at = certificate
@@ -439,24 +454,7 @@ impl EstProvider {
             expires_at,
         };
 
-        // Write to disk
-        new_bundle
-            .write_to_files(
-                &self.config.cert_path,
-                &self.config.key_path,
-                &self.config.ca_cert_path,
-            )
-            .await?;
-
-        // Update in-memory bundle
-        *self.current_bundle.write().await = Some(new_bundle.clone());
-
-        // Broadcast change notification
-        let _ = self.change_tx.send(SecretChange::TlsCertificates {
-            cert_pem: new_bundle.cert_pem.clone(),
-            key_pem: new_bundle.key_pem.clone(),
-            ca_chain: new_bundle.ca_chain.clone(),
-        });
+        self.update_bundle(new_bundle.clone()).await?;
 
         info!("certificate renewal completed successfully");
         Ok(Some(new_bundle))

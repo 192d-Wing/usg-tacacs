@@ -52,6 +52,82 @@ impl SyslogForwarder {
         })
     }
 
+    /// Build TLS root certificate store from CA file or system certs.
+    fn build_tls_root_store(ca_file: Option<&std::path::Path>) -> Result<rustls::RootCertStore> {
+        let mut root_store = rustls::RootCertStore::empty();
+
+        if let Some(ca_path) = ca_file {
+            let ca_certs = load_certs(ca_path)?;
+            for cert in ca_certs {
+                root_store.add(cert).context("failed to add CA cert")?;
+            }
+        } else {
+            let cert_result = rustls_native_certs::load_native_certs();
+            for cert in cert_result.certs {
+                root_store
+                    .add(cert)
+                    .context("failed to add system CA cert")?;
+            }
+            if !cert_result.errors.is_empty() {
+                warn!(
+                    "encountered {} errors loading system CA certificates",
+                    cert_result.errors.len()
+                );
+            }
+        }
+
+        Ok(root_store)
+    }
+
+    /// Establish TLS connection to syslog server.
+    ///
+    /// # NIST SP 800-53 Controls
+    /// - AU-9: Protection of Audit Information via TLS encryption
+    async fn connect_tls(&self, addr: &str) -> Result<SyslogConnection> {
+        debug!("connecting to syslog server via TLS: {}", addr);
+
+        let root_store = Self::build_tls_root_store(
+            self.config.tls_ca_file.as_ref().map(|p| p.as_path()),
+        )?;
+
+        let config_builder = rustls::ClientConfig::builder().with_root_certificates(root_store);
+
+        let tls_config = if let (Some(ref cert_file), Some(ref key_file)) =
+            (&self.config.tls_client_cert, &self.config.tls_client_key)
+        {
+            let certs = load_certs(cert_file)?;
+            let key = load_private_key(key_file)?;
+            config_builder
+                .with_client_auth_cert(certs, key)
+                .context("failed to configure client auth")?
+        } else {
+            config_builder.with_no_client_auth()
+        };
+
+        let connector = TlsConnector::from(Arc::new(tls_config));
+        let server_name = rustls::pki_types::ServerName::try_from(self.config.host.clone())
+            .context("invalid server name for SNI")?
+            .to_owned();
+
+        let tcp_stream = tokio::time::timeout(
+            std::time::Duration::from_secs(self.config.timeout_secs),
+            TcpStream::connect(addr),
+        )
+        .await
+        .context("TCP connection timeout")?
+        .context("failed to connect to syslog server")?;
+
+        let tls_stream = tokio::time::timeout(
+            std::time::Duration::from_secs(self.config.timeout_secs),
+            connector.connect(server_name, tcp_stream),
+        )
+        .await
+        .context("TLS handshake timeout")?
+        .context("TLS handshake failed")?;
+
+        Ok(SyslogConnection::TcpTls(Box::new(tls_stream)))
+    }
+
     /// Connect to the syslog server.
     ///
     /// # NIST Controls
@@ -75,76 +151,7 @@ impl SyslogForwarder {
 
                 SyslogConnection::Tcp(stream)
             }
-            SyslogProtocol::TcpTls => {
-                debug!("connecting to syslog server via TLS: {}", addr);
-
-                // Build TLS configuration
-                let mut root_store = rustls::RootCertStore::empty();
-
-                if let Some(ref ca_file) = self.config.tls_ca_file {
-                    let ca_certs = load_certs(ca_file)?;
-                    for cert in ca_certs {
-                        root_store.add(cert).context("failed to add CA cert")?;
-                    }
-                } else {
-                    // Use system CA certificates
-                    let cert_result = rustls_native_certs::load_native_certs();
-                    for cert in cert_result.certs {
-                        root_store
-                            .add(cert)
-                            .context("failed to add system CA cert")?;
-                    }
-                    if !cert_result.errors.is_empty() {
-                        warn!(
-                            "encountered {} errors loading system CA certificates",
-                            cert_result.errors.len()
-                        );
-                    }
-                }
-
-                let config_builder =
-                    rustls::ClientConfig::builder().with_root_certificates(root_store);
-
-                // Add client certificate if provided (mTLS)
-                let tls_config = if let (Some(ref cert_file), Some(ref key_file)) =
-                    (&self.config.tls_client_cert, &self.config.tls_client_key)
-                {
-                    let certs = load_certs(cert_file)?;
-                    let key = load_private_key(key_file)?;
-                    config_builder
-                        .with_client_auth_cert(certs, key)
-                        .context("failed to configure client auth")?
-                } else {
-                    config_builder.with_no_client_auth()
-                };
-
-                let connector = TlsConnector::from(Arc::new(tls_config));
-
-                // Extract server name for SNI
-                let server_name = rustls::pki_types::ServerName::try_from(self.config.host.clone())
-                    .context("invalid server name for SNI")?
-                    .to_owned();
-
-                // Connect TCP first
-                let tcp_stream = tokio::time::timeout(
-                    std::time::Duration::from_secs(self.config.timeout_secs),
-                    TcpStream::connect(&addr),
-                )
-                .await
-                .context("TCP connection timeout")?
-                .context("failed to connect to syslog server")?;
-
-                // TLS handshake
-                let tls_stream = tokio::time::timeout(
-                    std::time::Duration::from_secs(self.config.timeout_secs),
-                    connector.connect(server_name, tcp_stream),
-                )
-                .await
-                .context("TLS handshake timeout")?
-                .context("TLS handshake failed")?;
-
-                SyslogConnection::TcpTls(Box::new(tls_stream))
-            }
+            SyslogProtocol::TcpTls => self.connect_tls(&addr).await?,
             SyslogProtocol::Udp => {
                 debug!("connecting to syslog server via UDP: {}", addr);
                 let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
