@@ -1,6 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Authentication module for TACACS+ server.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-2 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AU-12 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | IA-2 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-5 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-6 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | SC-13 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-8 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SI-10 | System and Information Integrity | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "AU",
+//!     "IA",
+//!     "SC",
+//!     "SI"
+//!   ],
+//!   "total_controls": 9,
+//!   "file_path": "crates/tacacs-server/src/auth.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! This module implements the following NIST security controls:

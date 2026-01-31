@@ -1,6 +1,50 @@
 // SPDX-License-Identifier: Apache-2.0
 //! OpenSSH integration for TACACS+ authentication and authorization.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-17 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-3 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-6 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AU-12 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-3 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | CM-5 | Configuration Management | Implemented | 2026-01-31 | See functions below |
+//! | IA-2 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-3 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-5 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | SC-23 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-8 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "AU",
+//!     "CM",
+//!     "IA",
+//!     "SC"
+//!   ],
+//!   "total_controls": 12,
+//!   "file_path": "crates/tacacs-openssh/src/lib.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! This crate provides helper utilities for integrating OpenSSH with a TACACS+
 //! server over TLS. It includes:
 //!

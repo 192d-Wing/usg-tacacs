@@ -1,6 +1,57 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TACACS+ server connection handling and session management.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-10 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-11 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-12 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-3 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-6 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-7 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AU-12 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-3 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | CM-3 | Configuration Management | Implemented | 2026-01-31 | See functions below |
+//! | IA-11 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-2 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-3 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-4 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-5 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | SC-17 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-23 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-7 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-8 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "AU",
+//!     "CM",
+//!     "IA",
+//!     "SC"
+//!   ],
+//!   "total_controls": 19,
+//!   "file_path": "crates/tacacs-server/src/server.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! This module implements the following NIST security controls:

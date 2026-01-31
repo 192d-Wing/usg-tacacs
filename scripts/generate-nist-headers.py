@@ -213,6 +213,68 @@ class NistHeaderGenerator:
             print(self.generate_header(file_path, controls))
             print("")
 
+    def apply_header_to_file(self, file_path: Path, controls: Set[str]) -> bool:
+        """Apply NIST header to a file. Returns True if successful."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Check if file already has formal NIST header
+            if "# NIST SP 800-53 Rev. 5 Security Controls" in content:
+                print(f"  ⏭️  Skipping {file_path.name} (already has formal header)")
+                return False
+
+            # Find insertion point (after module docstring start)
+            lines = content.split('\n')
+            insert_idx = None
+
+            # Look for //! pattern (module docstring)
+            for i, line in enumerate(lines):
+                if line.strip().startswith('//!') and i > 0:
+                    # Find end of first paragraph or description
+                    for j in range(i, min(i + 20, len(lines))):
+                        if lines[j].strip() == '//!' or (
+                            j > i and not lines[j].strip().startswith('//!')
+                        ):
+                            insert_idx = j
+                            break
+                    break
+
+            if insert_idx is None:
+                print(f"  ⚠️  Could not find insertion point in {file_path.name}")
+                return False
+
+            # Generate header
+            header = self.generate_header(file_path, controls)
+
+            # Insert header
+            header_lines = header.split('\n')
+            new_lines = lines[:insert_idx] + ['//!'] + header_lines + lines[insert_idx:]
+
+            # Write back
+            new_content = '\n'.join(new_lines)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            print(f"  ✅ Applied header to {file_path.name} ({len(controls)} controls)")
+            return True
+
+        except Exception as e:
+            print(f"  ❌ Error applying header to {file_path}: {e}")
+            return False
+
+    def apply_headers(self, top_n: int = 10) -> int:
+        """Apply headers to top N files. Returns count of files modified."""
+        print(f"\n📝 Applying NIST headers to top {top_n} files...\n")
+
+        modified = 0
+        for file_path, controls in self.scanner.get_top_files(top_n):
+            if self.apply_header_to_file(file_path, controls):
+                modified += 1
+
+        print(f"\n✅ Applied headers to {modified} files")
+        return modified
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -274,9 +336,13 @@ def main():
             generator.preview_headers(args.top)
 
         if args.apply:
-            print("ERROR: --apply not yet implemented", file=sys.stderr)
-            print("Use --dry-run to preview headers first", file=sys.stderr)
-            sys.exit(1)
+            modified = generator.apply_headers(args.top)
+            if modified > 0:
+                print(f"\n⚠️  {modified} files modified. Review changes and run tests before committing.")
+                sys.exit(0)
+            else:
+                print("\n✅ No files needed modification")
+                sys.exit(0)
 
     if args.validate:
         # Check if files with control references have proper headers

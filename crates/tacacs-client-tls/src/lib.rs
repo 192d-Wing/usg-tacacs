@@ -1,6 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TLS-only TACACS+ client library.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-3 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AU-12 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | IA-2 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-3 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | SC-13 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-17 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-23 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-8 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "AU",
+//!     "IA",
+//!     "SC"
+//!   ],
+//!   "total_controls": 9,
+//!   "file_path": "crates/tacacs-client-tls/src/lib.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! This crate provides a secure TACACS+ client that uses TLS 1.3 exclusively
 //! for transport security, per RFC 9887. Unlike legacy TACACS+, this client
 //! does not use MD5 body obfuscation - all security is provided by the TLS layer.
