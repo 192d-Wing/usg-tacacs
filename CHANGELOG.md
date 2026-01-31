@@ -34,11 +34,12 @@ This release achieves full NASA Power of 10 compliance for safety-critical syste
   - Safe error propagation with `?` operator throughout
   - Proper error handling in all authentication flows (PAP, CHAP, ASCII)
 
-- **COMPLIANT**: NASA Power of 10 Rule #11 (Formal Control Markings)
-  - Formal NIST SP 800-53 Rev. 5 security control headers in all 35 files
+- **✅ COMPLIANT**: NASA Power of 10 Rule #11 (Formal Control Markings)
+  - **100% coverage**: Formal NIST SP 800-53 Rev. 5 headers in all 31 files with control references
   - Machine-readable JSON validation metadata for audit compliance
   - Traceable references to master [NIST-CONTROLS-MAPPING.md](docs/NIST-CONTROLS-MAPPING.md)
   - 37 unique controls documented across 6 families (AC, AU, CM, IA, SC, SI)
+  - Automated scanner and generator: [scripts/generate-nist-headers.py](scripts/generate-nist-headers.py)
 
 #### Documentation & Tooling
 - **NEW**: NIST control header template ([docs/templates/nist-header-template.md](docs/templates/nist-header-template.md))
@@ -46,10 +47,11 @@ This release achieves full NASA Power of 10 compliance for safety-critical syste
   - Machine-readable JSON metadata for automated scanning
   - Examples for simple (1-2 controls) and complex (5+ controls) files
 
-- **NEW**: NIST control analysis tool ([scripts/analyze-nist-controls.py](scripts/analyze-nist-controls.py))
-  - Automated scanning of 62 Rust files for control references
-  - Generates markdown and JSON reports for audit compliance
-  - Identifies files needing headers, tracks control coverage
+- **NEW**: NIST control header generator ([scripts/generate-nist-headers.py](scripts/generate-nist-headers.py))
+  - Automated scanning of 35 Rust files for control references
+  - Generates formal headers with markdown tables and JSON metadata
+  - Validates 100% header coverage across codebase
+  - Applies headers automatically with `--generate --apply`
 
 - **NEW**: Analysis reports
   - [docs/nist-control-analysis.md](docs/nist-control-analysis.md) - Human-readable summary
