@@ -1,6 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TACACS+ authorization operations for TLS client.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-17 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-3 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-6 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | CM-5 | Configuration Management | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "CM"
+//!   ],
+//!   "total_controls": 4,
+//!   "file_path": "crates/tacacs-client-tls/src/author.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! This module provides authorization methods for checking user permissions
 //! to execute commands or access services.
 //!

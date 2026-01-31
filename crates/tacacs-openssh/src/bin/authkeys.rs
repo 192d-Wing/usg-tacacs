@@ -1,6 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 //! AuthorizedKeysCommand helper for TACACS+ over TLS.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../../docs/NIST-CONTROLS-MAPPING.md](../../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-17 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-3 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | CM-3 | Configuration Management | Implemented | 2026-01-31 | See functions below |
+//! | IA-2 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-5 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | SC-17 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-8 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "CM",
+//!     "IA",
+//!     "SC"
+//!   ],
+//!   "total_controls": 7,
+//!   "file_path": "crates/tacacs-openssh/src/bin/authkeys.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! This binary is designed to be used as OpenSSH's AuthorizedKeysCommand.
 //! It queries a TACACS+ server for a user's authorized SSH public keys.
 //!

@@ -1,6 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Main audit forwarder that orchestrates syslog and Elasticsearch forwarding.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AU-12 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-4 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | CM-6 | Configuration Management | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AU",
+//!     "CM"
+//!   ],
+//!   "total_controls": 4,
+//!   "file_path": "crates/tacacs-audit/src/forwarder.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! Implements AU-2, AU-4, AU-12 (comprehensive audit event forwarding).

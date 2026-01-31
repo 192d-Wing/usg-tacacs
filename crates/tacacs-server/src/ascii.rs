@@ -1,6 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 //! ASCII (interactive) authentication handler with brute-force protection.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-7 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AU-12 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | IA-2 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-5 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | IA-6 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "AU",
+//!     "IA"
+//!   ],
+//!   "total_controls": 6,
+//!   "file_path": "crates/tacacs-server/src/ascii.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! This module implements the following NIST security controls:

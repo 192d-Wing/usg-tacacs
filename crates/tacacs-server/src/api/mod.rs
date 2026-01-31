@@ -1,6 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Management API server with RBAC.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../../docs/NIST-CONTROLS-MAPPING.md](../../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-10 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-12 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-3 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AU-12 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | CM-3 | Configuration Management | Implemented | 2026-01-31 | See functions below |
+//! | SC-8 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "AU",
+//!     "CM",
+//!     "SC"
+//!   ],
+//!   "total_controls": 7,
+//!   "file_path": "crates/tacacs-server/src/api/mod.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! Provides REST API endpoints for runtime management of the TACACS+ server,
 //! including session management, policy reload, and monitoring.
 //!

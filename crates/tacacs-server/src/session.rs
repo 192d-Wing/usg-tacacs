@@ -1,6 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Session state management for TACACS+ connections.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-3 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | SC-23 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SI-7 | System and Information Integrity | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AU",
+//!     "SC",
+//!     "SI"
+//!   ],
+//!   "total_controls": 4,
+//!   "file_path": "crates/tacacs-server/src/session.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! This module implements the following NIST security controls:

@@ -1,6 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TACACS+ shared-secret body obfuscation (MD5 pad).
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | SC-12 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-13 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-8 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "SC"
+//!   ],
+//!   "total_controls": 3,
+//!   "file_path": "crates/tacacs-proto/src/crypto.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # Security Notice: MD5 Usage (CWE-327)
 //!
 //! This module uses MD5 for TACACS+ body obfuscation as required by RFC 8907.

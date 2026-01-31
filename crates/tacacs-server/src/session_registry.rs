@@ -1,6 +1,45 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Session registry for tracking active TACACS+ connections.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-10 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-11 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AC-12 | Access Control | Implemented | 2026-01-31 | See functions below |
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-3 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | SC-23 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-7 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SI-4 | System and Information Integrity | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AC",
+//!     "AU",
+//!     "SC",
+//!     "SI"
+//!   ],
+//!   "total_controls": 8,
+//!   "file_path": "crates/tacacs-server/src/session_registry.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! This module provides centralized, thread-safe session tracking for the TACACS+
 //! server. It enables the Management API to list active connections, enforce
 //! session limits, and support administrative session termination.

@@ -1,6 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Elasticsearch forwarder for audit log storage and analysis.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AU-4 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-6 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | SC-8 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AU",
+//!     "SC"
+//!   ],
+//!   "total_controls": 3,
+//!   "file_path": "crates/tacacs-audit/src/elasticsearch.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! Implements AU-4 (Audit Log Storage) and AU-6 (Audit Review).

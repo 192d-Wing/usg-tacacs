@@ -1,6 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Audit event types and structures.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AU-2 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-3 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//! | AU-8 | Audit and Accountability | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "AU"
+//!   ],
+//!   "total_controls": 3,
+//!   "file_path": "crates/tacacs-audit/src/event.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! Implements AU-3 (Content of Audit Records) by defining comprehensive

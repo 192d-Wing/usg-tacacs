@@ -1,5 +1,39 @@
 //! EST (RFC 7030) provider for zero-touch certificate provisioning.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../../docs/NIST-CONTROLS-MAPPING.md](../../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | CM-3 | Configuration Management | Implemented | 2026-01-31 | See functions below |
+//! | IA-5 | Identification and Authentication | Implemented | 2026-01-31 | See functions below |
+//! | SC-12 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//! | SC-17 | System and Communications Protection | Implemented | 2026-01-31 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-01-31",
+//!   "control_families": [
+//!     "CM",
+//!     "IA",
+//!     "SC"
+//!   ],
+//!   "total_controls": 4,
+//!   "file_path": "crates/tacacs-secrets/src/est/mod.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! # NIST SP 800-53 Security Controls
 //!
 //! This module implements the following NIST security controls:
