@@ -184,16 +184,16 @@ impl PolicyEngine {
         for (order, rule) in document.rules.into_iter().enumerate() {
             let regex = compile_pattern(&rule.pattern)
                 .with_context(|| format!("compiling rule {} pattern {}", rule.id, rule.pattern))?;
-            let users = rule
+            let users: Vec<String> = rule
                 .users
                 .into_iter()
                 .map(|u| u.to_lowercase())
-                .collect::<Vec<_>>();
-            let groups = rule
+                .collect();
+            let groups: Vec<String> = rule
                 .groups
                 .into_iter()
                 .map(|g| g.to_lowercase())
-                .collect::<Vec<_>>();
+                .collect();
             rules.push(Rule {
                 id: rule.id,
                 priority: rule.priority,
@@ -205,10 +205,11 @@ impl PolicyEngine {
             });
         }
 
-        let mut shell_start = HashMap::with_capacity(document.shell_start.len());
-        for (user, attrs) in document.shell_start {
-            shell_start.insert(user.to_lowercase(), attrs);
-        }
+        let shell_start: HashMap<String, Vec<String>> = document
+            .shell_start
+            .into_iter()
+            .map(|(u, v)| (u.to_lowercase(), v))
+            .collect();
 
         Ok(Self {
             default_allow: document.default_allow,
@@ -350,6 +351,54 @@ impl PolicyEngine {
     }
 
     /// Hook for observing/enforcing raw server messages from auth replies.
+    /// Check user-specific override policy for raw server messages.
+    fn check_user_override(
+        override_policy: &RawServerMsgOverride,
+        service: Option<u8>,
+        action: Option<u8>,
+        hex: &str,
+    ) -> bool {
+        if let Some(allow) = override_policy.allow
+            && !allow
+        {
+            return false;
+        }
+        if !override_policy.allow_services.is_empty() {
+            if let Some(svc) = service {
+                if !override_policy.allow_services.contains(&svc) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        if !override_policy.allow_actions.is_empty() {
+            if let Some(act) = action {
+                if !override_policy.allow_actions.contains(&act) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        if override_policy
+            .deny_prefixes
+            .iter()
+            .any(|p: &String| hex.starts_with(&p.to_lowercase()))
+        {
+            return false;
+        }
+        if !override_policy.allow_prefixes.is_empty()
+            && !override_policy
+                .allow_prefixes
+                .iter()
+                .any(|p: &String| hex.starts_with(&p.to_lowercase()))
+        {
+            return false;
+        }
+        true
+    }
+
     pub fn observe_server_msg(
         &self,
         user: Option<&str>,
@@ -370,42 +419,7 @@ impl PolicyEngine {
             && let Some(override_policy) =
                 self.raw_server_msg_user_overrides.get(&user.to_lowercase())
         {
-            if let Some(allow) = override_policy.allow
-                && !allow
-            {
-                return false;
-            }
-            if !override_policy.allow_services.is_empty() {
-                if let Some(svc) = service {
-                    if !override_policy.allow_services.contains(&svc) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            if !override_policy.allow_actions.is_empty() {
-                if let Some(act) = action {
-                    if !override_policy.allow_actions.contains(&act) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            if override_policy
-                .deny_prefixes
-                .iter()
-                .any(|p| hex.starts_with(&p.to_lowercase()))
-            {
-                return false;
-            }
-            if !override_policy.allow_prefixes.is_empty()
-                && !override_policy
-                    .allow_prefixes
-                    .iter()
-                    .any(|p| hex.starts_with(&p.to_lowercase()))
-            {
+            if !Self::check_user_override(override_policy, service, action, &hex) {
                 return false;
             }
         }

@@ -39,6 +39,73 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Verify bundle SHA256 checksum if provided in headers.
+fn verify_bundle_checksum(
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<(), (StatusCode, String)> {
+    if let Some(expected) = header_optional(headers, "X-Bundle-SHA256") {
+        let mut hasher = Sha256::new();
+        hasher.update(body);
+        let got = hex::encode(hasher.finalize());
+        if !got.eq_ignore_ascii_case(expected.trim()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("bundle sha256 mismatch (got {got})"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Store and validate all policies from parsed bundle.
+async fn store_policies(
+    state: &AppState,
+    repo_id: &str,
+    commit_sha: &str,
+    policies: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<(), (StatusCode, String)> {
+    for (loc, pol) in policies.iter() {
+        if let Err(e) = state.schemas.validate_policy(pol) {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("policy invalid for {loc}: {e}"),
+            ));
+        }
+        if let Err(e) = state.store.upsert_policy(repo_id, commit_sha, loc, pol).await {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db upsert policy failed for {loc}: {e}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Store and validate all configs from parsed bundle.
+async fn store_configs(
+    state: &AppState,
+    repo_id: &str,
+    commit_sha: &str,
+    configs: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<(), (StatusCode, String)> {
+    for (loc, cfg) in configs.iter() {
+        if let Err(e) = state.schemas.validate_config(cfg) {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("config invalid for {loc}: {e}"),
+            ));
+        }
+        if let Err(e) = state.store.upsert_config(repo_id, commit_sha, loc, cfg).await {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db upsert config failed for {loc}: {e}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub async fn ingest(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -60,16 +127,8 @@ pub async fn ingest(
         return (StatusCode::FORBIDDEN, "repo not allowed".to_string());
     }
 
-    if let Some(expected) = header_optional(&headers, "X-Bundle-SHA256") {
-        let mut hasher = Sha256::new();
-        hasher.update(&body);
-        let got = hex::encode(hasher.finalize());
-        if !got.eq_ignore_ascii_case(expected.trim()) {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("bundle sha256 mismatch (got {got})"),
-            );
-        }
+    if let Err(e) = verify_bundle_checksum(&headers, &body) {
+        return e;
     }
 
     let parsed = match bundle::parse_tar_gz(&body) {
@@ -81,42 +140,12 @@ pub async fn ingest(
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {e}"));
     }
 
-    for (loc, pol) in parsed.policies.iter() {
-        if let Err(e) = state.schemas.validate_policy(pol) {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("policy invalid for {loc}: {e}"),
-            );
-        }
-        if let Err(e) = state
-            .store
-            .upsert_policy(&repo_id, &commit_sha, loc, pol)
-            .await
-        {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("db upsert policy failed for {loc}: {e}"),
-            );
-        }
+    if let Err(e) = store_policies(&state, &repo_id, &commit_sha, &parsed.policies).await {
+        return e;
     }
 
-    for (loc, cfg) in parsed.configs.iter() {
-        if let Err(e) = state.schemas.validate_config(cfg) {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("config invalid for {loc}: {e}"),
-            );
-        }
-        if let Err(e) = state
-            .store
-            .upsert_config(&repo_id, &commit_sha, loc, cfg)
-            .await
-        {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("db upsert config failed for {loc}: {e}"),
-            );
-        }
+    if let Err(e) = store_configs(&state, &repo_id, &commit_sha, &parsed.configs).await {
+        return e;
     }
 
     (StatusCode::OK, "staged".to_string())
