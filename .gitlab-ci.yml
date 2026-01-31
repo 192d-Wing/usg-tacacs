@@ -162,15 +162,14 @@ nasa-power-of-10-rule4:
     - cat /tmp/function-length.txt
     - echo ""
     - |
-      # Check current compliance (production code should be 100%)
+      # Check for 100% compliance (zero violations allowed)
       VIOLATIONS=$(grep -c "exceeding 60" /tmp/function-length.txt || echo "0")
-      if [ "$VIOLATIONS" -le 13 ]; then
-        echo "✅ PASS: NASA Power of 10 Rule #4 compliance maintained"
-        echo "   Current: ≥99.0% compliance (≤13 violations allowed, all in test code)"
-        echo "   Production code: 100% compliant"
+      if [ "$VIOLATIONS" -eq 0 ]; then
+        echo "✅ PASS: NASA Power of 10 Rule #4 - 100% COMPLIANT"
+        echo "   All functions ≤60 lines (zero violations)"
       else
-        echo "❌ FAIL: Regression detected - violations increased above threshold"
-        echo "   Found: $VIOLATIONS violations (threshold: 13)"
+        echo "❌ FAIL: Regression detected - 100% compliance required"
+        echo "   Found: $VIOLATIONS violations (must be 0)"
         echo "   Run './scripts/ci/validate-function-length.sh --all' locally to identify violations"
         exit 1
       fi
@@ -298,7 +297,7 @@ full-compliance-report:
     - echo "=== Generating Comprehensive NASA Power of 10 Compliance Report ==="
     - echo ""
     - echo "=== NASA Power of 10 Compliance Status ==="
-    - echo "✅ Rule #4: Functions ≤60 lines - 99.1% COMPLIANT (100% production code)"
+    - echo "✅ Rule #4: Functions ≤60 lines - 100% COMPLIANT (659/659 functions)"
     - echo "✅ Rule #5: No assertions in production - COMPLIANT"
     - echo "✅ Rule #7: Check return values - COMPLIANT"
     - echo "✅ Rule #11: Formal control markings - 100% COMPLIANT"
