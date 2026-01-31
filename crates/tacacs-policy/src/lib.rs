@@ -216,36 +216,24 @@ impl PolicyEngine {
         for (order, rule) in document.rules.into_iter().enumerate() {
             let regex = compile_pattern(&rule.pattern)
                 .with_context(|| format!("compiling rule {} pattern {}", rule.id, rule.pattern))?;
-            let users: Vec<String> = rule
-                .users
-                .into_iter()
-                .map(|u| u.to_lowercase())
-                .collect();
-            let groups: Vec<String> = rule
-                .groups
-                .into_iter()
-                .map(|g| g.to_lowercase())
-                .collect();
             rules.push(Rule {
                 id: rule.id,
                 priority: rule.priority,
                 effect: rule.effect,
-                users,
-                groups,
+                users: rule.users.into_iter().map(|u| u.to_lowercase()).collect(),
+                groups: rule.groups.into_iter().map(|g| g.to_lowercase()).collect(),
                 regex,
                 order,
             });
         }
 
-        let shell_start: HashMap<String, Vec<String>> = document
-            .shell_start
-            .into_iter()
-            .map(|(u, v)| (u.to_lowercase(), v))
-            .collect();
-
         Ok(Self {
             default_allow: document.default_allow,
-            shell_start,
+            shell_start: document
+                .shell_start
+                .into_iter()
+                .map(|(u, v)| (u.to_lowercase(), v))
+                .collect(),
             ascii_prompts: document.ascii_prompts,
             ascii_user_prompts: document
                 .ascii_user_prompts

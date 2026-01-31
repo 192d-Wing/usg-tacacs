@@ -159,64 +159,43 @@ pub fn build_api_router(
         config,
     });
 
-    let status_router = Router::new()
-        .route("/api/v1/status", get(get_status))
-        .route_layer(middleware::from_fn(require_permission(
-            &rbac,
-            "read:status",
-        )));
-
-    let sessions_read = Router::new()
-        .route("/api/v1/sessions", get(get_sessions))
-        .route_layer(middleware::from_fn(require_permission(
-            &rbac,
-            "read:sessions",
-        )));
-
-    let sessions_write = Router::new()
-        .route("/api/v1/sessions/{id}", delete(delete_session))
-        .route_layer(middleware::from_fn(require_permission(
-            &rbac,
-            "write:sessions",
-        )));
-
-    let policy_read = Router::new()
-        .route("/api/v1/policy", get(get_policy))
-        .route_layer(middleware::from_fn(require_permission(
-            &rbac,
-            "read:policy",
-        )));
-
-    let policy_write = Router::new()
-        .route("/api/v1/policy/reload", post(reload_policy))
-        .route("/api/v1/policy", post(upload_policy))
-        .route_layer(middleware::from_fn(require_permission(
-            &rbac,
-            "write:policy",
-        )));
-
-    let config_router = Router::new()
-        .route("/api/v1/config", get(get_config))
-        .route_layer(middleware::from_fn(require_permission(
-            &rbac,
-            "read:config",
-        )));
-
-    let metrics_router = Router::new()
-        .route("/api/v1/metrics", get(get_metrics))
-        .route_layer(middleware::from_fn(require_permission(
-            &rbac,
-            "read:metrics",
-        )));
-
     Router::new()
-        .merge(status_router)
-        .merge(sessions_read)
-        .merge(sessions_write)
-        .merge(policy_read)
-        .merge(policy_write)
-        .merge(config_router)
-        .merge(metrics_router)
+        .merge(
+            Router::new()
+                .route("/api/v1/status", get(get_status))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "read:status"))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/sessions", get(get_sessions))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "read:sessions"))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/sessions/{id}", delete(delete_session))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "write:sessions"))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/policy", get(get_policy))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "read:policy"))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/policy/reload", post(reload_policy))
+                .route("/api/v1/policy", post(upload_policy))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "write:policy"))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/config", get(get_config))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "read:config"))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/metrics", get(get_metrics))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "read:metrics"))),
+        )
         .with_state(state)
 }
 
