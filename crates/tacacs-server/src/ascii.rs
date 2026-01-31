@@ -210,66 +210,63 @@ fn reset_authentication_state(state: &mut AuthSessionState) -> AuthenReply {
 /// | AC-7 | Unsuccessful Logon Attempts | Applies exponential backoff on empty or invalid password |
 /// | IA-6 | Authenticator Feedback | Returns NOECHO flag for password prompts |
 #[allow(clippy::too_many_arguments)]
-async fn handle_password_phase(
-    cont_data: &[u8],
-    state: &mut AuthSessionState,
-    policy: &Arc<RwLock<PolicyEngine>>,
-    credentials: &crate::config::StaticCreds,
+/// Handle empty password by applying backoff and re-prompting.
+///
+/// # NIST SP 800-53 Controls
+/// - AC-7: Authentication delays on failed attempts
+fn handle_empty_password_with_backoff(
+    state: &AuthSessionState,
     config: &AsciiConfig,
-    ldap: Option<&Arc<LdapConfig>>,
     pwd_prompt: Vec<u8>,
-) -> AuthenReply {
-    state.ascii_pass_attempts = state.ascii_pass_attempts.saturating_add(1);
+) -> Option<AuthenReply> {
+    Some(AuthenReply {
+        status: AUTHEN_STATUS_GETPASS,
+        flags: AUTHEN_FLAG_NOECHO,
+        server_msg: String::new(),
+        server_msg_raw: Vec::new(),
+        data: pwd_prompt,
+    })
+}
 
-    if cont_data.is_empty() {
-        // Empty password - apply backoff and re-prompt
-        if let Some(delay) = calc_ascii_backoff_capped(
-            config.backoff_ms,
-            state.ascii_attempts,
-            config.backoff_max_ms,
-        ) {
-            sleep(delay).await;
-        }
-        return AuthenReply {
-            status: AUTHEN_STATUS_GETPASS,
-            flags: AUTHEN_FLAG_NOECHO,
-            server_msg: String::new(),
-            server_msg_raw: Vec::new(),
-            data: pwd_prompt,
-        };
-    }
-
-    // Password provided - attempt authentication
-    state.ascii_need_pass = false;
-
+/// Verify password against static credentials and LDAP.
+///
+/// # NIST SP 800-53 Controls
+/// - IA-2: User identification and authentication
+/// - IA-5: Authenticator management
+async fn verify_password_all_sources(
+    state: &AuthSessionState,
+    password: &[u8],
+    credentials: &crate::config::StaticCreds,
+    ldap: Option<&Arc<LdapConfig>>,
+) -> bool {
     // Try static credentials first
     let mut ok = if let Some(raw_user) = state.username_raw.as_ref() {
-        verify_pap_bytes_username(raw_user, cont_data, credentials)
+        verify_pap_bytes_username(raw_user, password, credentials)
     } else {
         let user = state.username.clone().unwrap_or_default();
-        verify_pap_bytes(&user, cont_data, credentials)
+        verify_pap_bytes(&user, password, credentials)
     };
 
     // Try LDAP if static credentials failed
     if !ok
         && let (Some(user), Some(ldap_cfg)) = (state.username.as_deref(), ldap)
-        && let Ok(pwd) = std::str::from_utf8(cont_data)
+        && let Ok(pwd) = std::str::from_utf8(password)
     {
         ok = ldap_cfg.authenticate(user, pwd).await;
     }
 
-    // Apply backoff on authentication failure
-    if !ok
-        && let Some(delay) = calc_ascii_backoff_capped(
-            config.backoff_ms,
-            state.ascii_attempts,
-            config.backoff_max_ms,
-        )
-    {
-        sleep(delay).await;
-    }
+    ok
+}
 
-    // Build context for success/failure messages
+/// Build authentication result reply with policy messages.
+///
+/// # NIST SP 800-53 Controls
+/// - AU-2: Audit event content
+async fn build_password_auth_result(
+    ok: bool,
+    state: &AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+) -> AuthenReply {
     let svc_str = state
         .service
         .map(|svc| format!(" (service {svc})"))
@@ -279,7 +276,6 @@ async fn handle_password_phase(
         .map(|act| format!(" action {act}"))
         .unwrap_or_default();
 
-    // Get policy messages and build final reply
     let policy = policy.read().await;
     AuthenReply {
         status: if ok {
@@ -302,6 +298,45 @@ async fn handle_password_phase(
         server_msg_raw: Vec::new(),
         data: Vec::new(),
     }
+}
+
+async fn handle_password_phase(
+    cont_data: &[u8],
+    state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &crate::config::StaticCreds,
+    config: &AsciiConfig,
+    ldap: Option<&Arc<LdapConfig>>,
+    pwd_prompt: Vec<u8>,
+) -> AuthenReply {
+    state.ascii_pass_attempts = state.ascii_pass_attempts.saturating_add(1);
+
+    if cont_data.is_empty() {
+        if let Some(delay) = calc_ascii_backoff_capped(
+            config.backoff_ms,
+            state.ascii_attempts,
+            config.backoff_max_ms,
+        ) {
+            sleep(delay).await;
+        }
+        return handle_empty_password_with_backoff(state, config, pwd_prompt).unwrap();
+    }
+
+    state.ascii_need_pass = false;
+
+    let ok = verify_password_all_sources(state, cont_data, credentials, ldap).await;
+
+    if !ok
+        && let Some(delay) = calc_ascii_backoff_capped(
+            config.backoff_ms,
+            state.ascii_attempts,
+            config.backoff_max_ms,
+        )
+    {
+        sleep(delay).await;
+    }
+
+    build_password_auth_result(ok, state, policy).await
 }
 
 /// Handle username input phase of ASCII authentication.
@@ -417,6 +452,26 @@ fn check_attempt_limits(state: &AuthSessionState, config: &AsciiConfig) -> Optio
 /// | IA-2 | Identification and Authentication | Processes interactive authentication with username/password prompts |
 /// | IA-6 | Authenticator Feedback | Uses NOECHO flag for password entry |
 #[allow(clippy::too_many_arguments)]
+/// Check and update attempt counters, returning lockout reply if needed.
+///
+/// # NIST SP 800-53 Controls
+/// - AC-7: Unsuccessful logon attempts
+fn check_and_update_attempts(state: &mut AuthSessionState, config: &AsciiConfig) -> Option<AuthenReply> {
+    if config.attempt_limit > 0 {
+        state.ascii_attempts = state.ascii_attempts.saturating_add(1);
+    }
+    if config.lockout_limit > 0 && state.ascii_attempts >= config.lockout_limit {
+        return Some(AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: "authentication locked out".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        });
+    }
+    None
+}
+
 pub async fn handle_ascii_continue(
     cont_user_msg: &[u8],
     cont_data: &[u8],
@@ -442,27 +497,16 @@ pub async fn handle_ascii_continue(
         )
     };
 
-    // Handle ABORT flag - reset and fail authentication
     if cont_flags & AUTHEN_CONT_ABORT != 0 {
         return handle_abort(state, policy).await;
     }
 
-    // NIST AC-7: Check if authentication blocked due to attempt limits
     if let Some(reply) = check_attempt_limits(state, config) {
         return reply;
     }
 
-    if config.attempt_limit > 0 {
-        state.ascii_attempts = state.ascii_attempts.saturating_add(1);
-    }
-    if config.lockout_limit > 0 && state.ascii_attempts >= config.lockout_limit {
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: "authentication locked out".into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
+    if let Some(reply) = check_and_update_attempts(state, config) {
+        return reply;
     }
 
     if state.ascii_need_user {
@@ -479,7 +523,6 @@ pub async fn handle_ascii_continue(
         )
         .await
     } else {
-        // Neither username nor password phase - reset and restart
         reset_authentication_state(state)
     }
 }

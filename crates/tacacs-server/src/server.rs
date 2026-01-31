@@ -2107,6 +2107,47 @@ where
     Ok(Some(state))
 }
 
+/// Build PAP authentication result reply with policy messages.
+///
+/// # NIST SP 800-53 Controls
+/// - AU-2: Audit event content
+async fn build_pap_auth_result(
+    ok: bool,
+    service: u8,
+    action: u8,
+    policy: &Arc<RwLock<PolicyEngine>>,
+) -> AuthenReply {
+    let policy = policy.read().await;
+    let svc_str = service.to_string();
+    let act_str = action.to_string();
+
+    AuthenReply {
+        status: if ok {
+            AUTHEN_STATUS_PASS
+        } else {
+            AUTHEN_STATUS_FAIL
+        },
+        flags: 0,
+        server_msg: if ok {
+            policy
+                .message_success()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| {
+                    format!("authentication succeeded (service {svc_str} action {act_str})")
+                })
+        } else {
+            policy
+                .message_failure()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| {
+                    format!("invalid credentials (service {svc_str} action {act_str})")
+                })
+        },
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    }
+}
+
 /// Handle PAP authentication START packet.
 ///
 /// # NIST Controls
@@ -2148,35 +2189,7 @@ async fn handle_authen_start_pap(
         )
         .await;
 
-    let policy = policy.read().await;
-    let svc_str = start.service.to_string();
-    let act_str = start.action.to_string();
-
-    Ok(AuthenReply {
-        status: if ok {
-            AUTHEN_STATUS_PASS
-        } else {
-            AUTHEN_STATUS_FAIL
-        },
-        flags: 0,
-        server_msg: if ok {
-            policy
-                .message_success()
-                .map(|m| m.to_string())
-                .unwrap_or_else(|| {
-                    format!("authentication succeeded (service {svc_str} action {act_str})")
-                })
-        } else {
-            policy
-                .message_failure()
-                .map(|m| m.to_string())
-                .unwrap_or_else(|| {
-                    format!("invalid credentials (service {svc_str} action {act_str})")
-                })
-        },
-        server_msg_raw: Vec::new(),
-        data: Vec::new(),
-    })
+    Ok(build_pap_auth_result(ok, start.service, start.action, policy).await)
 }
 
 /// Handle CHAP authentication START packet.
