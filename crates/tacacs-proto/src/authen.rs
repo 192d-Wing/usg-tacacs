@@ -276,10 +276,15 @@ impl AuthSessionState {
     }
 
     pub fn validate_client(&mut self, header: &Header) -> Result<()> {
+        ensure!(header.seq_no != 0, "seq_no must not be zero");
         ensure!(self.expect_client, "unexpected client packet order");
         ensure!(header.seq_no % 2 == 1, "client packets must be odd seq");
         ensure!(
-            header.seq_no == self.last_seq.wrapping_add(1),
+            header.seq_no
+                == self
+                    .last_seq
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("seq_no overflow"))?,
             "client seq out of order"
         );
         self.last_seq = header.seq_no;
@@ -288,9 +293,14 @@ impl AuthSessionState {
     }
 
     pub fn prepare_server_reply(&mut self, header: &Header) -> Result<()> {
+        ensure!(header.seq_no != 0, "seq_no must not be zero");
         ensure!(!self.expect_client, "unexpected server turn");
         ensure!(
-            header.seq_no == self.last_seq.wrapping_add(1),
+            header.seq_no
+                == self
+                    .last_seq
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("seq_no overflow"))?,
             "server reply seq mismatch"
         );
         ensure!(

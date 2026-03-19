@@ -1545,12 +1545,15 @@ async fn execute_authorization_decision(
     ldap: &Option<Arc<LdapConfig>>,
     peer: &str,
 ) -> AuthorizationResponse {
-    let policy_guard = policy.read().await;
+    // Fetch LDAP groups BEFORE acquiring policy lock to avoid holding
+    // the lock across a potentially slow network call.
     let ldap_groups = if let Some(ldap_cfg) = ldap.as_ref() {
         ldap_fetch_groups(ldap_cfg, &request.user).await
     } else {
         Vec::new()
     };
+
+    let policy_guard = policy.read().await;
 
     if request.is_shell_start() {
         authorize_shell_command(request, &policy_guard, peer)
@@ -2275,7 +2278,7 @@ async fn handle_authen_start_pap(
         }
     };
 
-    let ok = verify_pap(&start.user, &password, credentials)
+    let ok = verify_pap(&start.user, &password, credentials).await
         || verify_password_sources(
             Some(&start.user),
             password.as_bytes(),
@@ -2411,7 +2414,7 @@ async fn verify_ascii_credentials_all_sources(
         if verify_pap_bytes_username(raw, password_data, credentials) {
             return true;
         }
-    } else if verify_pap_bytes(username.unwrap_or_default(), password_data, credentials) {
+    } else if verify_pap_bytes(username.unwrap_or_default(), password_data, credentials).await {
         return true;
     }
     if let Some(user) = username {

@@ -276,7 +276,7 @@ async fn verify_password_all_sources(
         verify_pap_bytes_username(raw_user, password, credentials)
     } else {
         let user = state.username.clone().unwrap_or_default();
-        verify_pap_bytes(&user, password, credentials)
+        verify_pap_bytes(&user, password, credentials).await
     };
 
     // Try LDAP if static credentials failed

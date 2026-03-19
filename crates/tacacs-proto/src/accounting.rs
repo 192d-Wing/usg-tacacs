@@ -260,10 +260,6 @@ pub fn encode_accounting_response(response: &AccountingResponse) -> Result<Vec<u
         "accounting response status invalid"
     );
     ensure!(
-        response.args.len() <= u8::MAX as usize,
-        "too many accounting response args"
-    );
-    ensure!(
         response.server_msg.len() <= u16::MAX as usize,
         "accounting server_msg too long"
     );
@@ -271,23 +267,14 @@ pub fn encode_accounting_response(response: &AccountingResponse) -> Result<Vec<u
         response.data.len() <= u16::MAX as usize,
         "accounting data too long"
     );
-    // RFC 8907 Section 7.2: server_msg_len(2) + data_len(2) + status(1)
-    let total_arg_data_len: usize = response.args.iter().map(|a| a.len()).sum();
-    let total_len =
-        6 + response.args.len() + response.server_msg.len() + response.data.len() + total_arg_data_len;
+    // RFC 8907 Section 7.2: reply format is server_msg_len(2) + data_len(2) + status(1) + server_msg + data
+    let total_len = 5 + response.server_msg.len() + response.data.len();
     let mut buf = Vec::with_capacity(total_len);
     buf.extend_from_slice(&(response.server_msg.len() as u16).to_be_bytes());
     buf.extend_from_slice(&(response.data.len() as u16).to_be_bytes());
     buf.push(response.status);
-    buf.push(response.args.len() as u8);
-    for arg in &response.args {
-        buf.push(arg.len() as u8);
-    }
     buf.extend_from_slice(response.server_msg.as_bytes());
     buf.extend_from_slice(response.data.as_bytes());
-    for arg in &response.args {
-        buf.extend_from_slice(arg.as_bytes());
-    }
     Ok(buf)
 }
 
@@ -722,7 +709,8 @@ mod tests {
     }
 
     #[test]
-    fn encode_accounting_response_with_args() {
+    fn encode_accounting_response_ignores_args() {
+        // RFC 8907 Section 7.2: accounting reply has no args field
         let response = AccountingResponse {
             status: ACCT_STATUS_SUCCESS,
             server_msg: String::new(),
@@ -732,8 +720,8 @@ mod tests {
 
         let encoded = encode_accounting_response(&response).unwrap();
 
-        // status(1) + server_msg_len(2) + data_len(2) + arg_cnt(1) + arg_lens(1) + args(9)
-        assert_eq!(encoded[5], 1); // arg count
+        // server_msg_len(2) + data_len(2) + status(1) = 5 bytes, no args serialized
+        assert_eq!(encoded.len(), 5);
     }
 
     // ==================== Flag Combination Tests ====================

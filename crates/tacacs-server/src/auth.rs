@@ -317,7 +317,7 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
 /// characteristics of real credential verification, making statistical timing analysis
 /// ineffective for username enumeration.
 #[tracing::instrument(skip(password, creds))]
-pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
+pub async fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
     // Dummy Argon2id hash for constant-time username enumeration protection.
     // Generated with: echo -n "dummy" | argon2 somesalt -id -t 2 -m 19 -p 1 -l 32
     const DUMMY_ARGON2_HASH: &str =
@@ -325,35 +325,39 @@ pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
 
     let mut authenticated = false;
 
-    // Check plaintext credentials with constant-time comparison
+    // Check plaintext credentials with constant-time comparison (fast, stays inline)
+    let has_plain_user = creds.plain.contains_key(user);
     if let Some(stored) = creds.plain.get(user)
         && constant_time_eq_str(stored, password)
     {
         authenticated = true;
     }
 
-    // Check Argon2 credentials (always execute to prevent timing leak via early return)
-    if let Some(hash) = creds.argon.get(user)
-        && verify_argon_hash(hash, password.as_bytes())
-    {
-        authenticated = true;
-    }
+    // Offload Argon2 work to blocking thread pool to avoid stalling async runtime.
+    // N6 FIX: Always run Argon2 (real or dummy) regardless of credential store,
+    // preventing timing differences between plain-only and argon users (CWE-208).
+    let argon_hash = creds.argon.get(user).cloned();
+    let password_owned = password.to_string();
 
-    // If username doesn't exist in either store, perform dummy work to match timing
-    // of legitimate authentication attempts. This prevents username enumeration via
-    // timing analysis (CWE-208, NIST IA-6).
-    if !creds.plain.contains_key(user) && !creds.argon.contains_key(user) {
-        // Dummy plaintext comparison (matches timing of real comparison)
+    let argon_result = tokio::task::spawn_blocking(move || {
+        if let Some(hash) = argon_hash {
+            verify_argon_hash(&hash, password_owned.as_bytes())
+        } else {
+            // User not in argon store: dummy work to match timing (NIST IA-6)
+            let _ = verify_argon_hash(DUMMY_ARGON2_HASH, password_owned.as_bytes());
+            false
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    // Dummy plaintext comparison for non-existent users
+    if !has_plain_user && !creds.argon.contains_key(user) {
         let dummy_stored = "dummy_password_for_constant_time_protection";
         let _ = constant_time_eq_str(dummy_stored, password);
-
-        // Dummy Argon2 verification (matches timing of real Argon2 verification)
-        // This is critical - Argon2 verification takes ~10-100ms, so skipping it
-        // for non-existent users would create a massive timing difference.
-        let _ = verify_argon_hash(DUMMY_ARGON2_HASH, password.as_bytes());
     }
 
-    authenticated
+    authenticated || argon_result
 }
 
 /// Constant-time string comparison to prevent timing side-channel attacks.
@@ -398,34 +402,45 @@ fn verify_argon_hash(hash: &str, password: &[u8]) -> bool {
 /// # Security
 /// Uses constant-time comparison and dummy operations to prevent timing side-channel
 /// attacks and username enumeration (CWE-208, NIST IA-6).
-pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) -> bool {
+pub async fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) -> bool {
     const DUMMY_ARGON2_HASH: &str =
         "$argon2id$v=19$m=524288,t=2,p=1$c29tZXNhbHQ$FI/eVGRPKMwh+VURMA0dFXZJbqKHBvS9lnVJYmFWyeI";
 
     let mut authenticated = false;
 
-    // Check plaintext credentials with constant-time comparison
+    // Check plaintext credentials with constant-time comparison (fast, stays inline)
+    let has_plain_user = creds.plain.contains_key(user);
     if let Some(stored) = creds.plain.get(user)
         && constant_time_eq_bytes(stored.as_bytes(), password)
     {
         authenticated = true;
     }
 
-    // Check Argon2 credentials
-    if let Some(hash) = creds.argon.get(user)
-        && verify_argon_hash(hash, password)
-    {
-        authenticated = true;
-    }
+    // Offload Argon2 work to blocking thread pool to avoid stalling async runtime.
+    // N6 FIX: Always run Argon2 (real or dummy) regardless of credential store,
+    // preventing timing differences between plain-only and argon users (CWE-208).
+    let argon_hash = creds.argon.get(user).cloned();
+    let password_owned = password.to_vec();
 
-    // Dummy work if username doesn't exist (prevents timing enumeration)
-    if !creds.plain.contains_key(user) && !creds.argon.contains_key(user) {
+    let argon_result = tokio::task::spawn_blocking(move || {
+        if let Some(hash) = argon_hash {
+            verify_argon_hash(&hash, &password_owned)
+        } else {
+            // User not in argon store: dummy work to match timing (NIST IA-6)
+            let _ = verify_argon_hash(DUMMY_ARGON2_HASH, &password_owned);
+            false
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    // Dummy plaintext comparison for non-existent users
+    if !has_plain_user && !creds.argon.contains_key(user) {
         let dummy_stored = b"dummy_password_for_constant_time_protection";
         let _ = constant_time_eq_bytes(dummy_stored, password);
-        let _ = verify_argon_hash(DUMMY_ARGON2_HASH, password);
     }
 
-    authenticated
+    authenticated || argon_result
 }
 
 /// Verify PAP authentication with byte username and password.
@@ -457,7 +472,7 @@ pub async fn verify_password_sources(
 ) -> bool {
     // Prefer raw-byte match against static credentials.
     if let Some(user) = username
-        && verify_pap_bytes(user, password, creds)
+        && verify_pap_bytes(user, password, creds).await
     {
         tracing::debug!("authenticated via static credentials");
         return true;
@@ -726,48 +741,48 @@ mod tests {
 
     // ==================== verify_pap Tests ====================
 
-    #[test]
-    fn verify_pap_valid_plain() {
+    #[tokio::test]
+    async fn verify_pap_valid_plain() {
         let creds = make_creds();
-        assert!(verify_pap("admin", "secret123", &creds));
+        assert!(verify_pap("admin", "secret123", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_invalid_password() {
+    #[tokio::test]
+    async fn verify_pap_invalid_password() {
         let creds = make_creds();
-        assert!(!verify_pap("admin", "wrongpassword", &creds));
+        assert!(!verify_pap("admin", "wrongpassword", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_unknown_user() {
+    #[tokio::test]
+    async fn verify_pap_unknown_user() {
         let creds = make_creds();
-        assert!(!verify_pap("unknown", "secret123", &creds));
+        assert!(!verify_pap("unknown", "secret123", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_empty_password() {
+    #[tokio::test]
+    async fn verify_pap_empty_password() {
         let mut creds = StaticCreds::default();
         creds.plain.insert("emptypass".into(), "".into());
-        assert!(verify_pap("emptypass", "", &creds));
+        assert!(verify_pap("emptypass", "", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_case_sensitive() {
+    #[tokio::test]
+    async fn verify_pap_case_sensitive() {
         let creds = make_creds();
-        assert!(!verify_pap("ADMIN", "secret123", &creds));
-        assert!(!verify_pap("admin", "SECRET123", &creds));
+        assert!(!verify_pap("ADMIN", "secret123", &creds).await);
+        assert!(!verify_pap("admin", "SECRET123", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_argon_invalid_hash() {
+    #[tokio::test]
+    async fn verify_pap_argon_invalid_hash() {
         // Invalid argon2 hash format should return false
         let mut creds = StaticCreds::default();
         creds.argon.insert("user".into(), "not-a-valid-hash".into());
-        assert!(!verify_pap("user", "anypassword", &creds));
+        assert!(!verify_pap("user", "anypassword", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_timing_protection_nonexistent_user() {
+    #[tokio::test]
+    async fn verify_pap_timing_protection_nonexistent_user() {
         // Test that non-existent usernames still perform cryptographic work
         // This prevents username enumeration via timing analysis (CWE-208)
         let creds = make_creds();
@@ -775,15 +790,15 @@ mod tests {
         // Verify that both existent and non-existent users complete without panic
         // The actual timing verification would require statistical analysis, but
         // this ensures the code path executes the dummy operations
-        assert!(!verify_pap("nonexistent_user", "any_password", &creds));
-        assert!(!verify_pap("another_fake_user", "test123", &creds));
+        assert!(!verify_pap("nonexistent_user", "any_password", &creds).await);
+        assert!(!verify_pap("another_fake_user", "test123", &creds).await);
 
         // Verify valid user still works
-        assert!(verify_pap("admin", "secret123", &creds));
+        assert!(verify_pap("admin", "secret123", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_bytes_timing_protection_nonexistent_user() {
+    #[tokio::test]
+    async fn verify_pap_bytes_timing_protection_nonexistent_user() {
         // Test timing protection for byte-based verification
         let creds = make_creds();
 
@@ -791,40 +806,41 @@ mod tests {
             "nonexistent_user",
             b"any_password",
             &creds
-        ));
-        assert!(!verify_pap_bytes("another_fake_user", b"test123", &creds));
-        assert!(verify_pap_bytes("admin", b"secret123", &creds));
+        )
+        .await);
+        assert!(!verify_pap_bytes("another_fake_user", b"test123", &creds).await);
+        assert!(verify_pap_bytes("admin", b"secret123", &creds).await);
     }
 
     // ==================== verify_pap_bytes Tests ====================
 
-    #[test]
-    fn verify_pap_bytes_valid() {
+    #[tokio::test]
+    async fn verify_pap_bytes_valid() {
         let creds = make_creds();
-        assert!(verify_pap_bytes("admin", b"secret123", &creds));
+        assert!(verify_pap_bytes("admin", b"secret123", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_bytes_invalid() {
+    #[tokio::test]
+    async fn verify_pap_bytes_invalid() {
         let creds = make_creds();
-        assert!(!verify_pap_bytes("admin", b"wrong", &creds));
+        assert!(!verify_pap_bytes("admin", b"wrong", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_bytes_with_null() {
+    #[tokio::test]
+    async fn verify_pap_bytes_with_null() {
         let mut creds = StaticCreds::default();
         // Password with embedded null byte
         creds.plain.insert("user".into(), "pass\0word".into());
-        assert!(verify_pap_bytes("user", b"pass\0word", &creds));
+        assert!(verify_pap_bytes("user", b"pass\0word", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_bytes_binary() {
+    #[tokio::test]
+    async fn verify_pap_bytes_binary() {
         let mut creds = StaticCreds::default();
         // Use String::from_utf8_lossy for binary data
         let binary_pass = String::from_utf8_lossy(&[0x7f, 0x00, 0x7e]).to_string();
         creds.plain.insert("user".into(), binary_pass.clone());
-        assert!(verify_pap_bytes("user", binary_pass.as_bytes(), &creds));
+        assert!(verify_pap_bytes("user", binary_pass.as_bytes(), &creds).await);
     }
 
     // ==================== verify_pap_bytes_username Tests ====================
@@ -1196,43 +1212,43 @@ mod tests {
 
     // ==================== verify_argon_hash Tests ====================
 
-    #[test]
-    fn verify_argon_hash_invalid_format() {
+    #[tokio::test]
+    async fn verify_argon_hash_invalid_format() {
         // verify_argon_hash is private, test via verify_pap
         let mut creds = StaticCreds::default();
         creds.argon.insert("user".into(), "not-argon2-hash".into());
-        assert!(!verify_pap("user", "anypassword", &creds));
+        assert!(!verify_pap("user", "anypassword", &creds).await);
     }
 
-    #[test]
-    fn verify_argon_hash_empty_hash() {
+    #[tokio::test]
+    async fn verify_argon_hash_empty_hash() {
         let mut creds = StaticCreds::default();
         creds.argon.insert("user".into(), "".into());
-        assert!(!verify_pap("user", "anypassword", &creds));
+        assert!(!verify_pap("user", "anypassword", &creds).await);
     }
 
-    #[test]
-    fn verify_argon_hash_malformed_params() {
+    #[tokio::test]
+    async fn verify_argon_hash_malformed_params() {
         let mut creds = StaticCreds::default();
         creds
             .argon
             .insert("user".into(), "$argon2id$v=19$invalid".into());
-        assert!(!verify_pap("user", "anypassword", &creds));
+        assert!(!verify_pap("user", "anypassword", &creds).await);
     }
 
     // ==================== verify_pap_bytes with argon Tests ====================
 
-    #[test]
-    fn verify_pap_bytes_argon_invalid_hash() {
+    #[tokio::test]
+    async fn verify_pap_bytes_argon_invalid_hash() {
         let mut creds = StaticCreds::default();
         creds.argon.insert("user".into(), "not-a-valid-hash".into());
-        assert!(!verify_pap_bytes("user", b"anypassword", &creds));
+        assert!(!verify_pap_bytes("user", b"anypassword", &creds).await);
     }
 
-    #[test]
-    fn verify_pap_bytes_unknown_user_no_argon() {
+    #[tokio::test]
+    async fn verify_pap_bytes_unknown_user_no_argon() {
         let creds = StaticCreds::default();
-        assert!(!verify_pap_bytes("unknown", b"password", &creds));
+        assert!(!verify_pap_bytes("unknown", b"password", &creds).await);
     }
 
     // ==================== verify_pap_bytes_username with argon Tests ====================

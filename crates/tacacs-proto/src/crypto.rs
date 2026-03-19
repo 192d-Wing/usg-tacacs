@@ -107,7 +107,7 @@ pub fn apply_body_crypto(header: &Header, body: &mut [u8], secret: Option<&[u8]>
         // heap allocation.  XOR each MD5 block directly into the body to
         // eliminate the separate pad accumulation vector.
         let mut seed = Zeroizing::new(Vec::with_capacity(4 + secret.len() + 2 + 16));
-        let mut prev: Option<[u8; 16]> = None;
+        let mut prev: Option<Zeroizing<[u8; 16]>> = None;
         let mut offset = 0;
 
         while offset < body.len() {
@@ -117,9 +117,9 @@ pub fn apply_body_crypto(header: &Header, body: &mut [u8], secret: Option<&[u8]>
             seed.push(header.version);
             seed.push(header.seq_no);
             if let Some(ref prev_block) = prev {
-                seed.extend_from_slice(prev_block);
+                seed.extend_from_slice(&**prev_block);
             }
-            let block: [u8; 16] = Md5::digest(&*seed).into();
+            let block = Zeroizing::new(<[u8; 16]>::from(Md5::digest(&*seed)));
             let remaining = body.len() - offset;
             let chunk = remaining.min(16);
             for i in 0..chunk {

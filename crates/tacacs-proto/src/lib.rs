@@ -7,7 +7,6 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use log::warn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-#[cfg_attr(feature = "_bench_internals", allow(unused))]
 #[cfg(not(feature = "_bench_internals"))]
 mod accounting;
 #[cfg(feature = "_bench_internals")]
@@ -798,7 +797,7 @@ pub fn validate_authen_continue(req: &authen::AuthenContinue) -> Result<()> {
 // NIST 800-53 Rev5: SI-10 Information Input Validation
 fn parse_acct_response_body(body: &[u8]) -> Result<accounting::AccountingResponse> {
     // RFC 8907 Section 7.2: server_msg_len(2) + data_len(2) + status(1)
-    ensure!(body.len() >= 6, "accounting response too short");
+    ensure!(body.len() >= 5, "accounting response too short");
     let server_msg_len = u16::from_be_bytes([body[0], body[1]]) as usize;
     let data_len = u16::from_be_bytes([body[2], body[3]]) as usize;
     let status = body[4];
@@ -812,39 +811,22 @@ fn parse_acct_response_body(body: &[u8]) -> Result<accounting::AccountingRespons
         warn!("accounting response uses deprecated FOLLOW status");
         bail!("accounting response uses deprecated FOLLOW status");
     }
-    let arg_cnt = body[5] as usize;
-    let mut cursor = 6;
-    let arg_lens = body
-        .get(cursor..cursor + arg_cnt)
-        .ok_or_else(|| anyhow!("accounting response args length truncated"))?;
-    cursor += arg_cnt;
-    for (idx, len) in arg_lens.iter().enumerate() {
-        ensure!(*len > 0, "accounting response arg[{idx}] length invalid");
-    }
-    let total_args_len: usize = arg_lens.iter().map(|l| *l as usize).sum();
+    let cursor = 5;
     ensure!(
-        cursor + server_msg_len + data_len + total_args_len <= body.len(),
+        cursor + server_msg_len + data_len <= body.len(),
         "accounting response exceeds body length"
     );
     let server_msg = String::from_utf8(body[cursor..cursor + server_msg_len].to_vec())
         .context("decoding accounting server_msg")?;
-    cursor += server_msg_len;
-    let data = String::from_utf8(body[cursor..cursor + data_len].to_vec())
-        .context("decoding accounting data")?;
-    cursor += data_len;
-    let mut args = Vec::with_capacity(arg_cnt);
-    for (idx, len) in arg_lens.iter().enumerate() {
-        let (arg, next_cursor) =
-            util::read_string(body, cursor, *len as usize, &format!("arg[{idx}]"))?;
-        cursor = next_cursor;
-        args.push(arg);
-    }
+    let data =
+        String::from_utf8(body[cursor + server_msg_len..cursor + server_msg_len + data_len].to_vec())
+            .context("decoding accounting data")?;
 
     Ok(accounting::AccountingResponse {
         status,
         server_msg,
         data,
-        args,
+        args: Vec::new(),
     })
 }
 
