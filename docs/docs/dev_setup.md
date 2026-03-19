@@ -15,7 +15,7 @@ This project is Rust-first, with a small docs site under `docs/`. Below are step
 ## Clone and build
 
 ```sh
-git clone https://github.com/192d-Cyberspace-Control-Squadron/usg-tacacs.git
+git clone https://github.com/192d-Wing/usg-tacacs.git
 cd usg-tacacs
 cargo build --locked
 cargo test --locked

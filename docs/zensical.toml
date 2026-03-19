@@ -4,8 +4,8 @@ site_description = "Documentation for USG TACACS"
 site_author = "John Edward Willman V <mailto:john.willman.1@us.af.mil>"
 docs_dir = "docs"
 site_dir = "site"
-repo_url = "https://github.com/192d-Cyberspace-Control-Squadron/usg-tacacs"
-repo_name = "192d-CYCS/usg-tacacs"
+repo_url = "https://github.com/192d-Wing/usg-tacacs"
+repo_name = "192d-Wing/usg-tacacs"
 
 
 [project.theme]
@@ -90,6 +90,18 @@ path = "operations.md"
 [[project.nav.children]]
 title = "Container Deployment"
 path = "container.md"
+
+[[project.nav.children]]
+title = "Management API"
+path = "admin/management-api.md"
+
+[[project.nav.children]]
+title = "Reverse Proxy mTLS"
+path = "admin/reverse-proxy-mtls.md"
+
+[[project.nav.children]]
+title = "EST Provisioning"
+path = "est-provisioning.md"
 
 [[project.nav]]
 title = "User Guide"

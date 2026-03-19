@@ -90,7 +90,7 @@ tacacs-rs/
 
 ```sh
 # Clone the repository
-git clone https://github.com/192d-Cyberspace-Control-Squadron/usg-tacacs.git
+git clone https://github.com/192d-Wing/usg-tacacs.git
 cd usg-tacacs
 
 # Build all crates
@@ -124,7 +124,7 @@ cargo deny check
 ```sh
 # Start server with example config
 cargo run -p tacacs-server -- \
-  --listen-tls 127.0.0.1:3000 \
+  --listen-tls 127.0.0.1:300 \
   --tls-cert ./test-certs/server.pem \
   --tls-key ./test-certs/server-key.pem \
   --client-ca ./test-certs/client-ca.pem \

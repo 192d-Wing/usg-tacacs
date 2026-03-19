@@ -28,7 +28,7 @@ usg-tacacs-server \
   --est-username bootstrap-user \
   --est-password secret123 \
   --est-common-name tacacs-01.internal \
-  --listen-tls 0.0.0.0:49 \
+  --listen-tls 0.0.0.0:300 \
   --client-ca /etc/tacacs/client-ca.pem \
   --policy /etc/tacacs/policy.json
 ```
@@ -78,7 +78,7 @@ export EST_USERNAME=bootstrap-user
 export EST_PASSWORD=secret123
 export EST_COMMON_NAME=tacacs-01.internal
 
-usg-tacacs-server --listen-tls 0.0.0.0:49 --client-ca /etc/tacacs/client-ca.pem --policy /etc/tacacs/policy.json
+usg-tacacs-server --listen-tls 0.0.0.0:300 --client-ca /etc/tacacs/client-ca.pem --policy /etc/tacacs/policy.json
 ```
 
 ### Configuration File
@@ -247,7 +247,7 @@ curl http://localhost:8080/ready
 curl http://localhost:8080/health/detailed
 {
   "status": "ready",
-  "certificate_expiry": "2025-02-15T10:30:00Z",
+  "certificate_expiry": "2027-02-15T10:30:00Z",
   "certificate_source": "est",
   "est_enabled": true
 }
@@ -277,7 +277,7 @@ ENV EST_CA_CERT_PATH=/data/ca.crt
 ENV EST_PASSWORD_FILE=/run/secrets/est-password
 
 CMD ["usg-tacacs-server", \
-     "--listen-tls", "0.0.0.0:49", \
+     "--listen-tls", "0.0.0.0:300", \
      "--client-ca", "/etc/tacacs/client-ca.pem", \
      "--policy", "/etc/tacacs/policy.json"]
 ```
@@ -393,7 +393,7 @@ Environment="EST_KEY_PATH=/var/lib/tacacs/certs/server.key"
 Environment="EST_CA_CERT_PATH=/var/lib/tacacs/certs/ca.crt"
 
 ExecStart=/usr/local/bin/usg-tacacs-server \
-  --listen-tls 0.0.0.0:49 \
+  --listen-tls 0.0.0.0:300 \
   --client-ca /etc/tacacs/client-ca.pem \
   --policy /etc/tacacs/policy.json
 
@@ -522,7 +522,7 @@ openssl x509 -in /etc/tacacs/server.crt -enddate -noout
 **Test TLS connection**:
 ```bash
 # Test TLS handshake
-openssl s_client -connect localhost:49 \
+openssl s_client -connect localhost:300 \
   -cert /etc/tacacs/client.crt \
   -key /etc/tacacs/client.key \
   -CAfile /etc/tacacs/ca.crt
