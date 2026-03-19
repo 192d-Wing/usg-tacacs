@@ -1,0 +1,235 @@
+# SPDX-License-Identifier: Apache-2.0
+# CI/CD Pipeline for usg-tacacs
+# Migrated from .gitlab-ci.yml — preserves all stages and compliance checks.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch: # manual trigger for benchmarks
+  schedule:
+    - cron: "0 3 * * *" # nightly at 03:00 UTC
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # ==========================================================================
+  # Stage 1: Validation (Fast Checks)
+  # ==========================================================================
+
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ==========================================================================
+  # Stage 2: Build
+  # ==========================================================================
+
+  build-debug:
+    name: Build (Debug)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-features
+
+  build-release:
+    name: Build (Release)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --all-features
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usg-tacacs-server
+          path: target/release/usg-tacacs-server
+          retention-days: 7
+
+  # ==========================================================================
+  # Stage 3: Testing
+  # ==========================================================================
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features --lib
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features --test '*'
+
+  doc-tests:
+    name: Doc Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features --doc
+
+  # ==========================================================================
+  # Stage 4: NASA Power of 10 & NIST Compliance
+  # ==========================================================================
+
+  nist-control-coverage:
+    name: NIST Control Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate NIST headers
+        run: |
+          echo "=== NIST SP 800-53 Rev. 5 Control Coverage Validation ==="
+          python3 scripts/generate-nist-headers.py --scan
+          echo ""
+          echo "=== Validating Header Coverage ==="
+          python3 scripts/generate-nist-headers.py --validate > /tmp/nist-validation.txt 2>&1
+          cat /tmp/nist-validation.txt
+          if grep -q "missing NIST headers" /tmp/nist-validation.txt; then
+            echo "FAIL: Some files with NIST control references are missing formal headers"
+            exit 1
+          else
+            echo "PASS: All files with NIST controls have formal headers"
+          fi
+
+  nasa-rule4-function-length:
+    name: NASA Rule 4 (Function Length)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate all functions <= 60 lines
+        run: |
+          chmod +x scripts/ci/validate-function-length.sh
+          ./scripts/ci/validate-function-length.sh --all 60 crates > /tmp/function-length.txt 2>&1 || true
+          cat /tmp/function-length.txt
+          VIOLATIONS=$(grep -c "exceeding 60" /tmp/function-length.txt || echo "0")
+          if [ "$VIOLATIONS" -eq 0 ]; then
+            echo "PASS: NASA Power of 10 Rule #4 - 100% COMPLIANT"
+          else
+            echo "FAIL: $VIOLATIONS violations found (must be 0)"
+            exit 1
+          fi
+
+  runtime-unwrap-check:
+    name: Runtime Unwrap Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for unwrap in critical paths
+        run: |
+          chmod +x scripts/ci/validate-runtime-unwraps.sh
+          ./scripts/ci/validate-runtime-unwraps.sh \
+            crates/tacacs-server/src/auth.rs \
+            crates/tacacs-server/src/server.rs \
+            crates/tacacs-server/src/policy.rs
+
+  rustdoc:
+    name: Documentation Build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustdoc
+          path: target/doc/
+          retention-days: 7
+
+  # ==========================================================================
+  # Stage 5: Security Audits
+  # ==========================================================================
+
+  cargo-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --quiet cargo-audit
+      - run: cargo audit --deny warnings
+
+  cargo-deny:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # ==========================================================================
+  # Benchmarks (manual trigger)
+  # ==========================================================================
+
+  benchmark:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench --all-features
+      - uses: actions/upload-artifact@v4
+        with:
+          name: criterion-reports
+          path: target/criterion/
+          retention-days: 7
+
+  # ==========================================================================
+  # Nightly Full Suite
+  # ==========================================================================
+
+  nightly:
+    name: Nightly Full Suite
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features --all-targets
+      - run: cargo install --quiet cargo-audit && cargo audit
