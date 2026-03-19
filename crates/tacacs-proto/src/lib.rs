@@ -399,7 +399,10 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut body = vec![0u8; header.length as usize];
-    reader.read_exact(&mut body).await.with_context(|| context.clone())?;
+    reader
+        .read_exact(&mut body)
+        .await
+        .with_context(|| context.clone())?;
     crypto::apply_body_crypto(header, &mut body, secret)?;
     Ok(body)
 }
@@ -540,8 +543,7 @@ fn validate_author_protocol_and_cmd(req: &AuthorizationRequest) -> Result<()> {
             "authorization protocol attribute must have a value"
         );
         let allowed = [
-            "ip", "ipv6", "lat", "mop", "vpdn", "xremote", "pad", "shell", "ppp", "arap",
-            "none",
+            "ip", "ipv6", "lat", "mop", "vpdn", "xremote", "pad", "shell", "ppp", "arap", "none",
         ];
         ensure!(
             allowed.iter().any(|p| proto.eq_ignore_ascii_case(p)),
@@ -818,9 +820,10 @@ fn parse_acct_response_body(body: &[u8]) -> Result<accounting::AccountingRespons
     );
     let server_msg = String::from_utf8(body[cursor..cursor + server_msg_len].to_vec())
         .context("decoding accounting server_msg")?;
-    let data =
-        String::from_utf8(body[cursor + server_msg_len..cursor + server_msg_len + data_len].to_vec())
-            .context("decoding accounting data")?;
+    let data = String::from_utf8(
+        body[cursor + server_msg_len..cursor + server_msg_len + data_len].to_vec(),
+    )
+    .context("decoding accounting data")?;
 
     Ok(accounting::AccountingResponse {
         status,

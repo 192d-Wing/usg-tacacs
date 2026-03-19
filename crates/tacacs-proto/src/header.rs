@@ -150,9 +150,18 @@ pub fn validate_response_header(
 }
 
 pub fn is_known_service(service: &str) -> bool {
-    ["shell", "login", "enable", "ppp", "arap", "tty-daemon", "connection", "none"]
-        .iter()
-        .any(|s| service.eq_ignore_ascii_case(s))
+    [
+        "shell",
+        "login",
+        "enable",
+        "ppp",
+        "arap",
+        "tty-daemon",
+        "connection",
+        "none",
+    ]
+    .iter()
+    .any(|s| service.eq_ignore_ascii_case(s))
 }
 
 #[cfg(test)]

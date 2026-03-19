@@ -53,9 +53,15 @@ struct SecretsCache {
 /// - **AC-3 (Access Enforcement)**: Prevents unauthorized path traversal
 fn validate_path_segment(segment: &str) -> Result<()> {
     ensure!(!segment.is_empty(), "path segment must not be empty");
-    ensure!(!segment.contains(".."), "path segment must not contain '..'");
+    ensure!(
+        !segment.contains(".."),
+        "path segment must not contain '..'"
+    );
     ensure!(!segment.contains('/'), "path segment must not contain '/'");
-    ensure!(!segment.contains('\\'), "path segment must not contain '\\\\'");
+    ensure!(
+        !segment.contains('\\'),
+        "path segment must not contain '\\\\'"
+    );
     Ok(())
 }
 
@@ -167,11 +173,7 @@ impl OpenBaoProvider {
         Ok(())
     }
 
-    async fn fetch_nad_secrets(
-        &self,
-        location: &str,
-        notify: bool,
-    ) -> Result<Vec<SecretChange>> {
+    async fn fetch_nad_secrets(&self, location: &str, notify: bool) -> Result<Vec<SecretChange>> {
         validate_path_segment(location)?;
         let mut changes = Vec::new();
         let nad_path = format!(

@@ -58,9 +58,7 @@ fn validate_acct_flags(flags: u8) -> Result<()> {
     Ok(())
 }
 
-fn parse_acct_variable_fields(
-    body: &[u8],
-) -> Result<(String, String, String, usize, usize)> {
+fn parse_acct_variable_fields(body: &[u8]) -> Result<(String, String, String, usize, usize)> {
     let user_len = body[5] as usize;
     let port_len = body[6] as usize;
     let rem_addr_len = body[7] as usize;

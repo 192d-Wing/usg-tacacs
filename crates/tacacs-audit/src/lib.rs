@@ -68,8 +68,8 @@ pub use event::{AuditEvent, AuditEventType, AuditOutcome};
 pub use forwarder::AuditForwarder;
 
 use anyhow::Result;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -98,8 +98,7 @@ pub fn try_send_audit_event(tx: &mpsc::Sender<AuditEvent>, event: AuditEvent) ->
             let dropped = AUDIT_EVENTS_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
             warn!(
                 total_dropped = dropped,
-                "audit event dropped: channel full (capacity={})",
-                AUDIT_CHANNEL_CAPACITY
+                "audit event dropped: channel full (capacity={})", AUDIT_CHANNEL_CAPACITY
             );
             false
         }
@@ -124,10 +123,7 @@ pub fn try_send_audit_event(tx: &mpsc::Sender<AuditEvent>, event: AuditEvent) ->
 /// | AU-4 | Audit Log Storage | Bounded channel prevents memory exhaustion |
 pub async fn init_audit_system(
     config: AuditConfig,
-) -> Result<(
-    mpsc::Sender<AuditEvent>,
-    tokio::task::JoinHandle<()>,
-)> {
+) -> Result<(mpsc::Sender<AuditEvent>, tokio::task::JoinHandle<()>)> {
     let (tx, rx) = mpsc::channel(AUDIT_CHANNEL_CAPACITY);
     let forwarder = Arc::new(AuditForwarder::new(config).await?);
 

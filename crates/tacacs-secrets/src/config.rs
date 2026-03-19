@@ -280,9 +280,15 @@ impl std::fmt::Debug for EstConfig {
             .field("key_path", &self.key_path)
             .field("ca_cert_path", &self.ca_cert_path)
             .field("renewal_threshold_percent", &self.renewal_threshold_percent)
-            .field("renewal_check_interval_secs", &self.renewal_check_interval_secs)
+            .field(
+                "renewal_check_interval_secs",
+                &self.renewal_check_interval_secs,
+            )
             .field("bootstrap_timeout_secs", &self.bootstrap_timeout_secs)
-            .field("initial_enrollment_required", &self.initial_enrollment_required)
+            .field(
+                "initial_enrollment_required",
+                &self.initial_enrollment_required,
+            )
             .finish()
     }
 }

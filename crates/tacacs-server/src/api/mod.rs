@@ -114,8 +114,7 @@ async fn handle_tls_connection(
     match acceptor.accept(stream).await {
         Ok(tls_stream) => {
             // NIST IA-3: Extract client identity from TLS certificate
-            let client_identity = extract_client_cn(&tls_stream)
-                .map(|cn| TlsClientIdentity { cn });
+            let client_identity = extract_client_cn(&tls_stream).map(|cn| TlsClientIdentity { cn });
             serve_tls_api_connection(tls_stream, peer_addr, app, client_identity).await;
         }
         Err(e) => {
@@ -139,8 +138,8 @@ async fn serve_tls_api_connection(
 ) {
     let io = TokioIo::new(tls_stream);
     let tower_service = app.clone();
-    let hyper_service = hyper::service::service_fn(
-        move |req: hyper::Request<hyper::body::Incoming>| {
+    let hyper_service =
+        hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
             let tower_service = tower_service.clone();
             let identity = client_identity.clone();
             async move {
@@ -157,8 +156,7 @@ async fn serve_tls_api_connection(
                     .await
                     .map_err(|err| match err {})
             }
-        },
-    );
+        });
 
     if let Err(e) = hyper::server::conn::http1::Builder::new()
         .serve_connection(io, hyper_service)

@@ -198,9 +198,7 @@ fn validate_author_basic_fields(body: &[u8]) -> Result<(u8, u8, u8, u8)> {
     Ok((authen_method, priv_lvl, authen_type, authen_service))
 }
 
-fn parse_author_variable_fields(
-    body: &[u8],
-) -> Result<(String, String, String, usize, usize)> {
+fn parse_author_variable_fields(body: &[u8]) -> Result<(String, String, String, usize, usize)> {
     let user_len = body[4] as usize;
     let port_len = body[5] as usize;
     let rem_addr_len = body[6] as usize;
@@ -286,8 +284,11 @@ pub fn encode_author_response(response: &AuthorizationResponse) -> Result<Vec<u8
         "authorization data too long"
     );
     let total_arg_data_len: usize = response.args.iter().map(|a| a.len()).sum();
-    let total_len =
-        6 + response.args.len() + response.server_msg.len() + response.data.len() + total_arg_data_len;
+    let total_len = 6
+        + response.args.len()
+        + response.server_msg.len()
+        + response.data.len()
+        + total_arg_data_len;
     let mut buf = Vec::with_capacity(total_len);
     buf.push(response.status);
     buf.push(response.args.len() as u8);

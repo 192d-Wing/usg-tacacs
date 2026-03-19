@@ -24,8 +24,8 @@ fn build_pap_authen_start(user: &str, password: &str) -> Vec<u8> {
         0x02, // authen_type = PAP
         0x01, // service = login
         user.len() as u8,
-        4,    // port_len
-        9,    // rem_addr_len
+        4, // port_len
+        9, // rem_addr_len
         password.len() as u8,
     ];
     body.extend_from_slice(user.as_bytes());
@@ -42,8 +42,8 @@ fn build_author_request(user: &str, args: &[&str]) -> Vec<u8> {
         0x01, // authen_type = ASCII
         0x01, // authen_service = login
         user.len() as u8,
-        4,    // port_len
-        9,    // rem_addr_len
+        4, // port_len
+        9, // rem_addr_len
         args.len() as u8,
     ];
     for a in args {
@@ -66,8 +66,8 @@ fn build_acct_start(user: &str, args: &[&str]) -> Vec<u8> {
         0x01, // authen_type = ASCII
         0x01, // authen_service = login
         user.len() as u8,
-        4,    // port_len
-        9,    // rem_addr_len
+        4, // port_len
+        9, // rem_addr_len
         args.len() as u8,
     ];
     for a in args {
@@ -249,10 +249,8 @@ fn bench_full_authen_roundtrip(c: &mut Criterion) {
             let mut body = encrypted_body.clone();
             usg_tacacs_proto::crypto::apply_body_crypto(&header, &mut body, Some(SECRET)).unwrap();
             // Parse
-            let _parsed = usg_tacacs_proto::authen::parse_authen_body(
-                header.clone(),
-                &body,
-            ).unwrap();
+            let _parsed =
+                usg_tacacs_proto::authen::parse_authen_body(header.clone(), &body).unwrap();
             // Encode reply
             let mut reply_body = usg_tacacs_proto::authen::encode_authen_reply(&reply).unwrap();
             // Encrypt reply

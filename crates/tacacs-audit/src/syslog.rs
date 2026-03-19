@@ -118,9 +118,8 @@ impl SyslogForwarder {
     async fn connect_tls(&self, addr: &str) -> Result<SyslogConnection> {
         debug!("connecting to syslog server via TLS: {}", addr);
 
-        let root_store = Self::build_tls_root_store(
-            self.config.tls_ca_file.as_ref().map(|p| p.as_path()),
-        )?;
+        let root_store =
+            Self::build_tls_root_store(self.config.tls_ca_file.as_ref().map(|p| p.as_path()))?;
 
         let config_builder = rustls::ClientConfig::builder().with_root_certificates(root_store);
 
@@ -346,7 +345,10 @@ impl SyslogForwarder {
         }
 
         if let Some(ref source_ip) = event.source_ip {
-            parts.push(format!("src={}", sanitize_msg_field(&source_ip.to_string())));
+            parts.push(format!(
+                "src={}",
+                sanitize_msg_field(&source_ip.to_string())
+            ));
         }
 
         if let Some(ref command) = event.command {
@@ -373,13 +375,7 @@ impl SyslogForwarder {
 /// character to prevent log injection attacks (CWE-117).
 fn sanitize_msg_field(s: &str) -> String {
     s.chars()
-        .map(|c| {
-            if c.is_ascii_control() {
-                '\u{FFFD}'
-            } else {
-                c
-            }
-        })
+        .map(|c| if c.is_ascii_control() { '\u{FFFD}' } else { c })
         .collect()
 }
 

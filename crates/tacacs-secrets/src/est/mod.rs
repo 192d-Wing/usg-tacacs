@@ -296,7 +296,12 @@ impl EstProvider {
         let ca_chain = self.fetch_ca_chain().await?;
 
         let serial = hex::encode(certificate.tbs_certificate.serial_number.as_bytes());
-        let expires = certificate.tbs_certificate.validity.not_after.to_unix_duration().as_secs();
+        let expires = certificate
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs();
 
         let bundle = CertificateBundle {
             cert_pem: cert_pem.into_bytes(),
@@ -464,7 +469,12 @@ impl EstProvider {
         let ca_chain = self.fetch_ca_chain().await?;
 
         let serial = hex::encode(certificate.tbs_certificate.serial_number.as_bytes());
-        let expires = certificate.tbs_certificate.validity.not_after.to_unix_duration().as_secs();
+        let expires = certificate
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs();
 
         let new_bundle = CertificateBundle {
             cert_pem: cert_pem.into_bytes(),

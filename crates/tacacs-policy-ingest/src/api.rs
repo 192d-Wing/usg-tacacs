@@ -41,10 +41,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// Verify bundle SHA256 checksum if provided in headers.
-fn verify_bundle_checksum(
-    headers: &HeaderMap,
-    body: &Bytes,
-) -> Result<(), (StatusCode, String)> {
+fn verify_bundle_checksum(headers: &HeaderMap, body: &Bytes) -> Result<(), (StatusCode, String)> {
     if let Some(expected) = header_optional(headers, "X-Bundle-SHA256") {
         let mut hasher = Sha256::new();
         hasher.update(body);
@@ -73,7 +70,11 @@ async fn store_policies(
                 format!("policy invalid for {loc}: {e}"),
             ));
         }
-        if let Err(e) = state.store.upsert_policy(repo_id, commit_sha, loc, pol).await {
+        if let Err(e) = state
+            .store
+            .upsert_policy(repo_id, commit_sha, loc, pol)
+            .await
+        {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("db upsert policy failed for {loc}: {e}"),
@@ -97,7 +98,11 @@ async fn store_configs(
                 format!("config invalid for {loc}: {e}"),
             ));
         }
-        if let Err(e) = state.store.upsert_config(repo_id, commit_sha, loc, cfg).await {
+        if let Err(e) = state
+            .store
+            .upsert_config(repo_id, commit_sha, loc, cfg)
+            .await
+        {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("db upsert config failed for {loc}: {e}"),
@@ -167,7 +172,9 @@ pub async fn promote(
     // derive audit attribution from the mTLS client certificate CN instead.
     let activated_by =
         header_optional(&headers, "X-Activated-By").unwrap_or_else(|| "mtls-client".to_string());
-    warn!("X-Activated-By header used for audit attribution; in production, derive from mTLS client certificate");
+    warn!(
+        "X-Activated-By header used for audit attribution; in production, derive from mTLS client certificate"
+    );
 
     if let Err(e) = state
         .store

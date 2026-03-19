@@ -488,7 +488,10 @@ fn check_attempt_limits(state: &AuthSessionState, config: &AsciiConfig) -> Optio
 ///
 /// # NIST SP 800-53 Controls
 /// - AC-7: Unsuccessful logon attempts
-fn check_and_update_attempts(state: &mut AuthSessionState, config: &AsciiConfig) -> Option<AuthenReply> {
+fn check_and_update_attempts(
+    state: &mut AuthSessionState,
+    config: &AsciiConfig,
+) -> Option<AuthenReply> {
     if config.attempt_limit > 0 {
         state.ascii_attempts = state.ascii_attempts.saturating_add(1);
     }

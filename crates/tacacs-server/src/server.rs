@@ -129,7 +129,10 @@ use usg_tacacs_proto::{
 /// | SC-7 | Boundary Protection | Prevents rate-limit bypass via IPv4-mapped IPv6 |
 fn normalize_ip(ip: IpAddr) -> IpAddr {
     match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
         other => other,
     }
 }
@@ -320,8 +323,7 @@ fn extract_cert_from_tls_stream(
     let leaf = certs
         .first()
         .ok_or_else(|| anyhow::anyhow!("no client certificate presented"))?;
-    X509::from_der(leaf.as_ref())
-        .with_context(|| format!("parsing client certificate from {peer}"))
+    X509::from_der(leaf.as_ref()).with_context(|| format!("parsing client certificate from {peer}"))
 }
 
 /// Extract Common Names and Subject Alternative Names from certificate.
@@ -390,9 +392,9 @@ fn check_cert_names_allowed(
     allowed_cn: &[String],
     allowed_san: &[String],
 ) -> Result<()> {
-    let allowed = names.iter().any(|n| {
-        allowed_cn.iter().any(|a| a == n) || allowed_san.iter().any(|a| a == n)
-    });
+    let allowed = names
+        .iter()
+        .any(|n| allowed_cn.iter().any(|a| a == n) || allowed_san.iter().any(|a| a == n));
 
     if allowed {
         Ok(())
@@ -1440,7 +1442,15 @@ fn build_authz_allow_response(
         data: format!("{data}{ldap_data}"),
         args: authz_allow_attrs(request),
     };
-    audit_event("authz_policy_allow", peer, &request.user, request.header.session_id, "pass", "policy-allow", &resp.data);
+    audit_event(
+        "authz_policy_allow",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "pass",
+        "policy-allow",
+        &resp.data,
+    );
     resp
 }
 
@@ -1452,14 +1462,27 @@ fn build_authz_deny_response(
     ctx: &str,
     peer: &str,
 ) -> AuthorizationResponse {
-    let mut resp = authz_reason_response(AUTHOR_STATUS_FAIL, format!("command '{cmd}' denied by policy"), "policy-deny", Some(cmd.to_string()));
+    let mut resp = authz_reason_response(
+        AUTHOR_STATUS_FAIL,
+        format!("command '{cmd}' denied by policy"),
+        "policy-deny",
+        Some(cmd.to_string()),
+    );
     if let Some(rule) = matched_rule {
         resp.data.push_str(";rule=");
         resp.data.push_str(&rule);
     }
     resp.data.push_str(";ctx=");
     resp.data.push_str(ctx);
-    audit_event("authz_policy_deny", peer, &request.user, request.header.session_id, "fail", &resp.server_msg, &resp.data);
+    audit_event(
+        "authz_policy_deny",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "fail",
+        &resp.server_msg,
+        &resp.data,
+    );
     resp
 }
 
@@ -1501,8 +1524,21 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
-    let response = authz_reason_response(AUTHOR_STATUS_ERROR, err.to_string(), "rfc-validate", Some(err.to_string()));
-    audit_event("authz_rfc_invalid", peer, &request.user, request.header.session_id, "error", "rfc-validate", &response.data);
+    let response = authz_reason_response(
+        AUTHOR_STATUS_ERROR,
+        err.to_string(),
+        "rfc-validate",
+        Some(err.to_string()),
+    );
+    audit_event(
+        "authz_rfc_invalid",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "error",
+        "rfc-validate",
+        &response.data,
+    );
     let _ = write_author_response(stream, &request.header, &response, secret).await;
     Ok(LoopControl::Break)
 }
@@ -1517,7 +1553,12 @@ async fn handle_authz_single_connect_error<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let response = authz_reason_response(AUTHOR_STATUS_ERROR, err_msg, "single-connect", Some("violation".into()));
+    let response = authz_reason_response(
+        AUTHOR_STATUS_ERROR,
+        err_msg,
+        "single-connect",
+        Some("violation".into()),
+    );
     let _ = write_author_response(stream, &request.header, &response, secret).await;
     Ok(LoopControl::Break)
 }
@@ -1531,10 +1572,31 @@ fn build_authz_semantic_error_response(
     warn!(peer = %peer, user = %request.user, session = request.header.session_id, reason = %msg.msg, "authorization request rejected by semantic checks");
     let (code, detail) = authz_semantic_detail(&msg);
     let ctx = authz_context(request);
-    let resp = authz_reason_response(AUTHOR_STATUS_ERROR, authz_server_msg_with_detail(code, msg.msg, &detail), code, Some(detail.clone()));
+    let resp = authz_reason_response(
+        AUTHOR_STATUS_ERROR,
+        authz_server_msg_with_detail(code, msg.msg, &detail),
+        code,
+        Some(detail.clone()),
+    );
     let meta = format!("{};ctx={ctx}", resp.data);
-    audit_event("authz_semantic_reject", peer, &request.user, request.header.session_id, "error", code, &meta);
-    audit_event("authz_error", peer, &request.user, request.header.session_id, "error", "authz-error", &resp.data);
+    audit_event(
+        "authz_semantic_reject",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "error",
+        code,
+        &meta,
+    );
+    audit_event(
+        "authz_error",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "error",
+        "authz-error",
+        &resp.data,
+    );
     resp
 }
 
@@ -1560,7 +1622,12 @@ async fn execute_authorization_decision(
     } else if let Some(cmd) = request.command_string() {
         authorize_user_command(request, &policy_guard, &ldap_groups, &cmd, peer)
     } else {
-        authz_reason_response(AUTHOR_STATUS_ERROR, "unsupported request", "unsupported", None)
+        authz_reason_response(
+            AUTHOR_STATUS_ERROR,
+            "unsupported request",
+            "unsupported",
+            None,
+        )
     }
 }
 
@@ -1589,11 +1656,17 @@ where
         Err(msg) => build_authz_semantic_error_response(request, msg, peer),
     };
 
-    if let Err(err) = request.header.response(0).and_then(|h| validate_author_response_header(&h)) {
+    if let Err(err) = request
+        .header
+        .response(0)
+        .and_then(|h| validate_author_response_header(&h))
+    {
         warn!(error = %err, peer = %peer, "authorization header invalid");
     }
 
-    write_author_response(stream, &request.header, &decision, secret).await.with_context(|| "sending TACACS+ response")?;
+    write_author_response(stream, &request.header, &decision, secret)
+        .await
+        .with_context(|| "sending TACACS+ response")?;
 
     Ok(LoopControl::Continue)
 }
@@ -1910,7 +1983,11 @@ where
         return Ok(LoopControl::Break);
     }
 
-    if let Err(err) = request.header.response(0).and_then(|h| validate_accounting_response_header(&h)) {
+    if let Err(err) = request
+        .header
+        .response(0)
+        .and_then(|h| validate_accounting_response_header(&h))
+    {
         warn!(error = %err, peer = %peer, "accounting header invalid");
     }
 
@@ -2178,9 +2255,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     // NIST SC-5: Reject new sessions if map is at capacity
-    if !auth_states.contains_key(&session_id)
-        && auth_states.len() >= MAX_AUTH_SESSIONS_PER_CONN
-    {
+    if !auth_states.contains_key(&session_id) && auth_states.len() >= MAX_AUTH_SESSIONS_PER_CONN {
         warn!(
             peer = %peer,
             session_id = session_id,
@@ -2190,10 +2265,12 @@ where
         return Ok(None);
     }
 
-    let state = auth_states.entry(session_id).or_insert_with(|| match packet {
-        AuthenPacket::Start(start) => create_state_from_start(start),
-        AuthenPacket::Continue(cont) => create_state_from_continue(cont),
-    });
+    let state = auth_states
+        .entry(session_id)
+        .or_insert_with(|| match packet {
+            AuthenPacket::Start(start) => create_state_from_start(start),
+            AuthenPacket::Continue(cont) => create_state_from_continue(cont),
+        });
 
     if let AuthenPacket::Continue(cont) = packet
         && let Err(err) = state.validate_client(&cont.header)
@@ -2462,10 +2539,7 @@ async fn build_ascii_auth_result_reply(
     }
 }
 
-fn extract_ascii_username_from_start(
-    start: &AuthenStart,
-    state: &mut AuthSessionState,
-) {
+fn extract_ascii_username_from_start(start: &AuthenStart, state: &mut AuthSessionState) {
     let decoded_username = if start.user_raw.is_empty() || start.user.is_empty() {
         None
     } else {
@@ -3024,12 +3098,13 @@ where
             Some(s) => s,
             None => return Ok(LoopControl::Break),
         };
-    let reply = match process_authen_packet(&packet, state, policy, credentials, ldap, ascii_cfg, peer)
-        .await
-    {
-        Ok(r) => r,
-        Err(ctrl) => return Ok(ctrl),
-    };
+    let reply =
+        match process_authen_packet(&packet, state, policy, credentials, ldap, ascii_cfg, peer)
+            .await
+        {
+            Ok(r) => r,
+            Err(ctrl) => return Ok(ctrl),
+        };
     finalize_authentication(
         stream,
         &packet,
@@ -3559,7 +3634,11 @@ async fn reload_policy_from_disk(
             let rule_count = new_policy.rule_count();
             *policy.write().await = new_policy;
             update_policy_metrics(rule_count);
-            info!(source = source, rules = rule_count, "policy reloaded successfully");
+            info!(
+                source = source,
+                rules = rule_count,
+                "policy reloaded successfully"
+            );
         }
         Err(err) => {
             record_policy_failure();
@@ -3586,7 +3665,11 @@ async fn reload_policy_from_json(
             let rule_count = new_policy.rule_count();
             *policy.write().await = new_policy;
             update_policy_metrics(rule_count);
-            info!(source = source, rules = rule_count, "policy uploaded successfully from JSON");
+            info!(
+                source = source,
+                rules = rule_count,
+                "policy uploaded successfully from JSON"
+            );
         }
         Err(err) => {
             record_policy_failure();

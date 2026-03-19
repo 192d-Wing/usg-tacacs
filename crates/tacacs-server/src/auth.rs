@@ -174,7 +174,9 @@ fn ldap_connect_and_bind(cfg: &LdapConfig) -> Option<LdapConn> {
     }
     let settings = LdapConnSettings::new().set_conn_timeout(cfg.timeout);
     if cfg.ca_file.is_some() {
-        tracing::error!("LDAP custom CA file specified but not supported in this build; refusing to connect without proper certificate validation");
+        tracing::error!(
+            "LDAP custom CA file specified but not supported in this build; refusing to connect without proper certificate validation"
+        );
         return None;
     }
     let mut ldap = LdapConn::with_settings(settings, &cfg.url).ok()?;
@@ -802,12 +804,7 @@ mod tests {
         // Test timing protection for byte-based verification
         let creds = make_creds();
 
-        assert!(!verify_pap_bytes(
-            "nonexistent_user",
-            b"any_password",
-            &creds
-        )
-        .await);
+        assert!(!verify_pap_bytes("nonexistent_user", b"any_password", &creds).await);
         assert!(!verify_pap_bytes("another_fake_user", b"test123", &creds).await);
         assert!(verify_pap_bytes("admin", b"secret123", &creds).await);
     }

@@ -69,7 +69,7 @@ use crate::header::Header;
 use anyhow::bail;
 use anyhow::{Result, anyhow, bail};
 #[cfg(feature = "legacy-md5")]
-use md5::{Md5, Digest};
+use md5::{Digest, Md5};
 use zeroize::Zeroizing;
 
 /// Apply TACACS+ body obfuscation (encrypt or decrypt).

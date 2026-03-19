@@ -223,7 +223,9 @@ fn validate_secrets_and_build_ldap(args: &Args) -> Result<Option<Arc<LdapConfig>
             .clone()
             .context("--ldap-search-base is required with --ldaps-url")?;
         if args.ldap_ca_file.is_some() {
-            warn!("--ldap-ca-file is specified but custom CA is not supported in this build; LDAP connections will fail");
+            warn!(
+                "--ldap-ca-file is specified but custom CA is not supported in this build; LDAP connections will fail"
+            );
         }
         Ok(Some(Arc::new(LdapConfig {
             url,
