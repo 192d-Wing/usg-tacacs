@@ -18,7 +18,7 @@ pub use pki::{CertificateBundle, PkiClient};
 
 use crate::config::OpenBaoConfig;
 use crate::provider::{SecretChange, SecretValue, SecretsProvider};
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -44,6 +44,19 @@ struct SecretsCache {
     ldap_bind_password: Option<SecretValue>,
     location_secrets: HashMap<String, SecretValue>,
     nad_secrets: HashMap<IpAddr, SecretValue>,
+}
+
+/// Validate a path segment to prevent path traversal attacks.
+///
+/// # NIST Controls
+/// - **SI-10 (Information Input Validation)**: Validates path segments before interpolation
+/// - **AC-3 (Access Enforcement)**: Prevents unauthorized path traversal
+fn validate_path_segment(segment: &str) -> Result<()> {
+    ensure!(!segment.is_empty(), "path segment must not be empty");
+    ensure!(!segment.contains(".."), "path segment must not contain '..'");
+    ensure!(!segment.contains('/'), "path segment must not contain '/'");
+    ensure!(!segment.contains('\\'), "path segment must not contain '\\\\'");
+    Ok(())
 }
 
 impl OpenBaoProvider {
@@ -80,7 +93,7 @@ impl OpenBaoProvider {
                     info!("shared secret updated from OpenBao");
                     cache.shared_secret = Some(secret.clone());
                     if notify {
-                        return Ok(Some(SecretChange::SharedSecret(secret.data)));
+                        return Ok(Some(SecretChange::SharedSecret(secret.data.clone())));
                     }
                 }
                 cache.shared_secret = Some(secret);
@@ -91,7 +104,7 @@ impl OpenBaoProvider {
                 Ok(None)
             }
             Err(e) => {
-                warn!(error = %e, path = %secret_path, "failed to fetch shared secret");
+                tracing::error!(error = %e, path = %secret_path, "failed to fetch shared secret");
                 Ok(None)
             }
         }
@@ -125,13 +138,14 @@ impl OpenBaoProvider {
                 Ok(None)
             }
             Err(e) => {
-                warn!(error = %e, path = %ldap_path, "failed to fetch LDAP bind password");
+                tracing::error!(error = %e, path = %ldap_path, "failed to fetch LDAP bind password");
                 Ok(None)
             }
         }
     }
 
     async fn fetch_location_secret(&self, location: &str) -> Result<()> {
+        validate_path_segment(location)?;
         let location_path = format!(
             "{}/locations/{}/shared-secret",
             self.config.secret_path, location
@@ -147,7 +161,7 @@ impl OpenBaoProvider {
                 debug!(location = %location, "no location-specific secret found");
             }
             Err(e) => {
-                warn!(error = %e, location = %location, "failed to fetch location secret");
+                tracing::error!(error = %e, location = %location, "failed to fetch location secret");
             }
         }
         Ok(())
@@ -158,6 +172,7 @@ impl OpenBaoProvider {
         location: &str,
         notify: bool,
     ) -> Result<Vec<SecretChange>> {
+        validate_path_segment(location)?;
         let mut changes = Vec::new();
         let nad_path = format!(
             "{}/locations/{}/nad-secrets",
@@ -196,7 +211,7 @@ impl OpenBaoProvider {
                 debug!(location = %location, "no NAD secrets found");
             }
             Err(e) => {
-                warn!(error = %e, location = %location, "failed to fetch NAD secrets");
+                tracing::error!(error = %e, location = %location, "failed to fetch NAD secrets");
             }
         }
         Ok(changes)

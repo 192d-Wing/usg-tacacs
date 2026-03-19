@@ -2,6 +2,7 @@ services:
   frr:
     image: quay.io/frrouting/frr:10.5.0
     restart: unless-stopped
+    # SECURITY: host networking required for BGP peering - apply seccomp/AppArmor in production
     network_mode: host
     privileged: false
     cap_add:
@@ -22,10 +23,13 @@ services:
   haproxy:
     image: haproxy:lts-alpine
     restart: unless-stopped
-    network_mode: host
     networks:
       tacacs-net:
         ipv6_address: "fd00:dead:beef::30"
+    ports:
+      - "49:49"
+      - "300:300"
+      - "127.0.0.1:8404:8404"
     user: "99:99"
     read_only: true
     cap_drop:

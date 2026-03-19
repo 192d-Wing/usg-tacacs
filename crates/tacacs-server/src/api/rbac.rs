@@ -54,6 +54,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::warn;
 
+/// Identity extracted from TLS client certificate CN.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-3 | Device Identification | Identity derived from mTLS client certificate, not spoofable headers |
+/// | AC-3 | Access Enforcement | Used by RBAC middleware to enforce permissions |
+#[derive(Debug, Clone)]
+pub struct TlsClientIdentity {
+    /// The Common Name (CN) from the client's TLS certificate.
+    pub cn: String,
+}
+
 /// RBAC configuration.
 ///
 /// # NIST Controls
@@ -157,21 +171,24 @@ impl RbacMiddleware {
     }
 
     /// Middleware handler.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | IA-3 | Device Identification | Extracts identity from TLS client certificate extension |
+    /// | AC-3 | Access Enforcement | Denies requests without valid certificate identity |
     pub async fn check_permission(
         &self,
         req: Request<Body>,
         next: Next,
     ) -> Result<Response, StatusCode> {
-        // Extract user from TLS client certificate CN
-        // For now, we'll use a header for testing (X-User-CN)
-        // In production, this should come from the TLS client certificate
-        let user = req
-            .headers()
-            .get("X-User-CN")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("anonymous");
+        // NIST IA-3: Extract user identity from TLS client certificate extension.
+        // The TlsClientIdentity is inserted by the TLS connection handler after
+        // validating the client certificate -- it cannot be spoofed via headers.
+        let user = Self::extract_user_identity(&req);
 
-        if !self.config.has_permission(user, &self.required_permission) {
+        if !self.config.has_permission(&user, &self.required_permission) {
             warn!(
                 user = %user,
                 permission = %self.required_permission,
@@ -181,6 +198,32 @@ impl RbacMiddleware {
         }
 
         Ok(next.run(req).await)
+    }
+
+    /// Extract user identity from request extensions (production) or header (test only).
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | IA-3 | Device Identification | Production path uses TLS certificate extension only |
+    fn extract_user_identity(req: &Request<Body>) -> String {
+        // Production: use TlsClientIdentity set by TLS connection handler
+        if let Some(identity) = req.extensions().get::<TlsClientIdentity>() {
+            return identity.cn.clone();
+        }
+
+        // Test-only fallback: allow X-User-CN header for integration tests
+        #[cfg(test)]
+        {
+            if let Some(val) = req.headers().get("X-User-CN") {
+                if let Ok(s) = val.to_str() {
+                    return s.to_string();
+                }
+            }
+        }
+
+        "anonymous".to_string()
     }
 }
 

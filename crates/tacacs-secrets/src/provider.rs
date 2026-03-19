@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info};
+use zeroize::Zeroize;
 
 /// A secret value with metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +50,13 @@ impl SecretValue {
     pub fn as_string(&self) -> Result<String> {
         String::from_utf8(self.data.clone())
             .map_err(|e| anyhow::anyhow!("secret is not valid UTF-8: {}", e))
+    }
+}
+
+/// NIST SC-12: Zeroize secret data when SecretValue is dropped.
+impl Drop for SecretValue {
+    fn drop(&mut self) {
+        self.data.zeroize();
     }
 }
 

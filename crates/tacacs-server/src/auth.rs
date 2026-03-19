@@ -109,7 +109,7 @@ fn ldap_escape_filter_value(input: &str) -> String {
     escaped
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LdapConfig {
     pub url: String,
     pub bind_dn: String,
@@ -120,6 +120,29 @@ pub struct LdapConfig {
     pub ca_file: Option<PathBuf>,
     pub required_group: Vec<String>,
     pub group_attr: String,
+}
+
+/// Custom Debug implementation that redacts bind_password.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5 | Authenticator Management | Prevents credential exposure in debug/log output |
+impl std::fmt::Debug for LdapConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LdapConfig")
+            .field("url", &self.url)
+            .field("bind_dn", &self.bind_dn)
+            .field("bind_password", &"[REDACTED]")
+            .field("search_base", &self.search_base)
+            .field("username_attr", &self.username_attr)
+            .field("timeout", &self.timeout)
+            .field("ca_file", &self.ca_file)
+            .field("required_group", &self.required_group)
+            .field("group_attr", &self.group_attr)
+            .finish()
+    }
 }
 
 impl LdapConfig {
@@ -151,7 +174,8 @@ fn ldap_connect_and_bind(cfg: &LdapConfig) -> Option<LdapConn> {
     }
     let settings = LdapConnSettings::new().set_conn_timeout(cfg.timeout);
     if cfg.ca_file.is_some() {
-        // ldap3 with tls-native uses system roots; custom CA not supported in this build.
+        tracing::error!("LDAP custom CA file specified but not supported in this build; refusing to connect without proper certificate validation");
+        return None;
     }
     let mut ldap = LdapConn::with_settings(settings, &cfg.url).ok()?;
     ldap.simple_bind(&cfg.bind_dn, &cfg.bind_password)
@@ -501,7 +525,7 @@ pub fn compute_chap_response(
     buf.extend_from_slice(password.as_bytes());
     buf.extend_from_slice(challenge);
     let digest = hash(MessageDigest::md5(), &buf).ok()?;
-    Some(digest.as_ref() == response)
+    Some(constant_time_eq_bytes(digest.as_ref(), response))
 }
 
 /// Handle CHAP authentication continue message.
@@ -1043,6 +1067,8 @@ mod tests {
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("LdapConfig"));
         assert!(debug_str.contains("ldaps://example.com"));
+        assert!(debug_str.contains("[REDACTED]"));
+        assert!(!debug_str.contains("secret"));
     }
 
     // ==================== ldap_authenticate_blocking Tests ====================

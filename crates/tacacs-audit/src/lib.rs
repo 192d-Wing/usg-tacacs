@@ -69,25 +69,66 @@ pub use forwarder::AuditForwarder;
 
 use anyhow::Result;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
+use tracing::warn;
+
+/// Maximum capacity of the bounded audit event channel.
+///
+/// # NIST Controls
+/// - **AU-4 (Audit Log Storage)**: Bounds memory usage for audit queue
+const AUDIT_CHANNEL_CAPACITY: usize = 10_000;
+
+/// Counter for audit events dropped due to channel backpressure.
+static AUDIT_EVENTS_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Send an audit event, dropping it with a warning if the channel is full.
+///
+/// Returns true if the event was sent, false if dropped.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-4 | Audit Log Storage | Prevents unbounded memory growth in audit queue |
+pub fn try_send_audit_event(tx: &mpsc::Sender<AuditEvent>, event: AuditEvent) -> bool {
+    match tx.try_send(event) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            let dropped = AUDIT_EVENTS_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            warn!(
+                total_dropped = dropped,
+                "audit event dropped: channel full (capacity={})",
+                AUDIT_CHANNEL_CAPACITY
+            );
+            false
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            warn!("audit event dropped: channel closed");
+            false
+        }
+    }
+}
 
 /// Initialize the audit system with the given configuration.
 ///
-/// Returns a channel sender for submitting audit events and a background task handle.
+/// Returns a bounded channel sender for submitting audit events and a
+/// background task handle. The channel is bounded to [`AUDIT_CHANNEL_CAPACITY`]
+/// to prevent unbounded memory growth under load.
 ///
 /// # NIST Controls
 ///
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | AU-2/AU-12 | Event Logging / Audit Generation | Initializes audit event processing pipeline |
-/// | AU-4 | Audit Log Storage | Configures external forwarding to prevent local exhaustion |
+/// | AU-4 | Audit Log Storage | Bounded channel prevents memory exhaustion |
 pub async fn init_audit_system(
     config: AuditConfig,
 ) -> Result<(
-    mpsc::UnboundedSender<AuditEvent>,
+    mpsc::Sender<AuditEvent>,
     tokio::task::JoinHandle<()>,
 )> {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(AUDIT_CHANNEL_CAPACITY);
     let forwarder = Arc::new(AuditForwarder::new(config).await?);
 
     let task = tokio::spawn(async move {

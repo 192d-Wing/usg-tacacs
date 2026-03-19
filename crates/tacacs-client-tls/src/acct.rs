@@ -440,6 +440,12 @@ struct AcctReply {
     data: String,
 }
 
+/// Maximum body length for accounting replies (256 KB).
+///
+/// # NIST Controls
+/// - **SI-10 (Information Input Validation)**: Prevents allocation of excessively large buffers
+const MAX_BODY_LEN: usize = 262_144;
+
 /// Receive an accounting reply.
 async fn recv_acct_reply<R>(reader: &mut R) -> Result<AcctReply>
 where
@@ -453,6 +459,14 @@ where
         .context("reading reply header")?;
 
     let length = u32::from_be_bytes([header[8], header[9], header[10], header[11]]) as usize;
+
+    if length > MAX_BODY_LEN {
+        anyhow::bail!(
+            "accounting reply body length {} exceeds maximum {}",
+            length,
+            MAX_BODY_LEN
+        );
+    }
 
     // Read body
     let mut body = vec![0u8; length];

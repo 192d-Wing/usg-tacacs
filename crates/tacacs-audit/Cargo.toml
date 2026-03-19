@@ -33,6 +33,10 @@ rustls-native-certs = "0.8"
 hostname = "0.4"
 
 # Elasticsearch client
+# WARNING: This is an alpha pre-release. No stable 8.x version of the
+# `elasticsearch` crate exists on crates.io (latest stable is 7.x which
+# targets ES 7.x APIs). Using alpha carries risk of breaking API changes.
+# Monitor https://crates.io/crates/elasticsearch for a stable 8.x release.
 elasticsearch = "8.15.0-alpha.1"
 
 [dev-dependencies]

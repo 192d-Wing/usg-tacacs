@@ -219,7 +219,7 @@ cargo-deny:
   script:
     - echo "=== Cargo Deny Check ==="
     - cargo deny check
-  allow_failure: true
+  allow_failure: false
   only:
     - merge_requests
     - master

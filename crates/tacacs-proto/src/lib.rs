@@ -168,7 +168,7 @@ where
     }
     let mut body = author::encode_author_response(response)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
-    let header = request_header.response(body.len() as u32);
+    let header = request_header.response(body.len() as u32)?;
     header::validate_response_header(
         &header,
         Some(TYPE_AUTHOR),
@@ -205,7 +205,7 @@ where
     }
     let mut body: Vec<u8> = authen::encode_authen_reply(reply)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
-    let header: Header = request_header.response(body.len() as u32);
+    let header: Header = request_header.response(body.len() as u32)?;
     header::validate_response_header(
         &header,
         Some(TYPE_AUTHEN),
@@ -242,7 +242,7 @@ where
     }
     let mut body: Vec<u8> = accounting::encode_accounting_response(response)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
-    let header: Header = request_header.response(body.len() as u32);
+    let header: Header = request_header.response(body.len() as u32)?;
     header::validate_response_header(&header, Some(TYPE_ACCT), ALLOWED_FLAGS, true, VERSION >> 4)?;
     header::write_header(writer, &header).await?;
     writer
@@ -271,7 +271,7 @@ where
     );
     let mut body = encode_capability(cap)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
-    let header: Header = request_header.response(body.len() as u32);
+    let header: Header = request_header.response(body.len() as u32)?;
     header::validate_response_header(
         &header,
         Some(TYPE_CAPABILITY),
@@ -777,8 +777,9 @@ pub fn validate_authen_continue(req: &authen::AuthenContinue) -> Result<()> {
     Ok(())
 }
 
+// NIST 800-53 Rev5: SI-10 Information Input Validation
 fn parse_acct_response_body(body: &[u8]) -> Result<accounting::AccountingResponse> {
-    ensure!(body.len() >= 5, "accounting response too short");
+    ensure!(body.len() >= 6, "accounting response too short");
     let status = body[0];
     ensure!(
         status == ACCT_STATUS_SUCCESS
@@ -792,7 +793,7 @@ fn parse_acct_response_body(body: &[u8]) -> Result<accounting::AccountingRespons
     }
     let server_msg_len = u16::from_be_bytes([body[1], body[2]]) as usize;
     let data_len = u16::from_be_bytes([body[3], body[4]]) as usize;
-    let arg_cnt = body.get(5).copied().unwrap_or(0) as usize;
+    let arg_cnt = body[5] as usize;
     let mut cursor = 6;
     let arg_lens = body
         .get(cursor..cursor + arg_cnt)

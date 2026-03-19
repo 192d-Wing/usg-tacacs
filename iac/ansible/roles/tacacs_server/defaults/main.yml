@@ -23,8 +23,8 @@ tacacs_tls_key_file: "{{ tacacs_config_dir }}/certs/server.key"
 tacacs_tls_ca_file: "{{ tacacs_config_dir }}/certs/ca.crt"
 tacacs_tls_extra_roots: []
 
-# Shared secret (should be overridden via vault or encrypted vars)
-tacacs_shared_secret: "CHANGE_ME_IN_PRODUCTION"
+# REQUIRED: Set a strong shared secret (minimum 16 characters). Server will refuse to start with an empty secret.
+tacacs_shared_secret: ""
 
 # LDAP configuration (optional)
 tacacs_ldap_enabled: false
@@ -45,9 +45,9 @@ tacacs_default_allow: false
 tacacs_ascii_attempt_limit: 5
 tacacs_ascii_user_attempt_limit: 3
 tacacs_ascii_pass_attempt_limit: 5
-tacacs_ascii_backoff_ms: 100
+tacacs_ascii_backoff_ms: 1000
 tacacs_ascii_backoff_max_ms: 5000
-tacacs_ascii_lockout_limit: 0
+tacacs_ascii_lockout_limit: 5
 
 # Logging configuration
 tacacs_log_format: "json"

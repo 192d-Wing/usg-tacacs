@@ -186,7 +186,7 @@ impl Default for PkiConfig {
 /// - **IA-5 (Authenticator Management)**: Automated certificate lifecycle management
 /// - **SC-17 (PKI Certificates)**: RFC 7030-compliant certificate enrollment
 /// - **CM-3 (Configuration Change Control)**: Automated, auditable cert provisioning
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EstConfig {
     /// Whether EST provisioning is enabled.
     #[serde(default)]
@@ -254,6 +254,37 @@ pub struct EstConfig {
     /// If true, server exits on enrollment failure. If false, server starts degraded.
     #[serde(default)]
     pub initial_enrollment_required: bool,
+}
+
+/// Custom Debug implementation that redacts password field.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5 | Authenticator Management | Prevents credential exposure in debug/log output |
+impl std::fmt::Debug for EstConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EstConfig")
+            .field("enabled", &self.enabled)
+            .field("server_url", &self.server_url)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("password_file", &self.password_file)
+            .field("client_cert_path", &self.client_cert_path)
+            .field("client_key_path", &self.client_key_path)
+            .field("ca_label", &self.ca_label)
+            .field("common_name", &self.common_name)
+            .field("organization", &self.organization)
+            .field("cert_path", &self.cert_path)
+            .field("key_path", &self.key_path)
+            .field("ca_cert_path", &self.ca_cert_path)
+            .field("renewal_threshold_percent", &self.renewal_threshold_percent)
+            .field("renewal_check_interval_secs", &self.renewal_check_interval_secs)
+            .field("bootstrap_timeout_secs", &self.bootstrap_timeout_secs)
+            .field("initial_enrollment_required", &self.initial_enrollment_required)
+            .finish()
+    }
 }
 
 impl Default for EstConfig {

@@ -4284,6 +4284,7 @@ dependencies = [
  "log",
  "openssl",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -4309,6 +4310,7 @@ dependencies = [
  "usg-est-client",
  "wiremock",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]

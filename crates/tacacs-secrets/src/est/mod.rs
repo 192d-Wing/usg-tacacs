@@ -94,17 +94,34 @@ impl CertificateBundle {
             .context("failed to write certificate file")?;
         info!(path = ?cert_path, "wrote certificate to file");
 
-        // Write private key with restrictive permissions (0600)
-        fs::write(key_path, &self.key_pem)
-            .await
-            .context("failed to write private key file")?;
-
+        // Write private key with restrictive permissions (0600) atomically
+        // to avoid TOCTOU race where key is briefly world-readable.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(key_path).await?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(key_path, perms).await?;
+            use std::os::unix::fs::OpenOptionsExt;
+            let key_path_buf = key_path.to_path_buf();
+            let key_data = self.key_pem.clone();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&key_path_buf)
+                    .context("failed to create private key file with 0600 mode")?;
+                std::io::Write::write_all(&mut file, &key_data)
+                    .context("failed to write private key data")?;
+                Ok(())
+            })
+            .await
+            .context("spawn_blocking join error")??;
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::write(key_path, &self.key_pem)
+                .await
+                .context("failed to write private key file")?;
         }
         info!(path = ?key_path, "wrote private key to file with 0600 permissions");
 

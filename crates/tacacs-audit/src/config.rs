@@ -206,7 +206,7 @@ fn default_reconnect_interval() -> u64 {
 /// |---------|------|----------------|
 /// | AU-4 | Audit Log Storage | Forwards audit logs to Elasticsearch for long-term storage |
 /// | AU-6 | Audit Review | Enables centralized audit review via Elasticsearch/Kibana |
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ElasticsearchConfig {
     /// Enable Elasticsearch forwarding
     pub enabled: bool,
@@ -244,6 +244,30 @@ pub struct ElasticsearchConfig {
     /// Flush interval in seconds (default: 10)
     #[serde(default = "default_flush_interval")]
     pub flush_interval_secs: u64,
+}
+
+/// Custom Debug implementation that redacts credential fields.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5 | Authenticator Management | Prevents credential exposure in debug/log output |
+impl std::fmt::Debug for ElasticsearchConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElasticsearchConfig")
+            .field("enabled", &self.enabled)
+            .field("hosts", &self.hosts)
+            .field("index", &self.index)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("ca_cert_file", &self.ca_cert_file)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("batch_size", &self.batch_size)
+            .field("flush_interval_secs", &self.flush_interval_secs)
+            .finish()
+    }
 }
 
 fn default_es_timeout() -> u64 {

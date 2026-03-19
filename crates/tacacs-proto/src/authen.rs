@@ -320,12 +320,11 @@ impl AuthenStart {
     }
 }
 
-fn validate_authen_header(header: &Header, body: &[u8]) -> Result<()> {
-    ensure!(body.len() >= 4, "authentication body too short");
-    ensure!(
-        header.seq_no % 2 == 1,
-        "authentication client packets must use odd seq"
-    );
+/// Validate fields that are specific to authentication Start packets.
+/// Only call this when the packet has been identified as a Start (seq_no == 1).
+// NIST 800-53 Rev5: IA-2 Identification and Authentication
+fn validate_authen_start_header(body: &[u8]) -> Result<()> {
+    ensure!(body.len() >= 8, "authentication start body too short");
     ensure!(
         body[0] == 0x01 || body[0] == 0x02,
         "invalid authen action (only login/enable allowed)"
@@ -395,21 +394,23 @@ fn parse_authen_continue_packet(header: Header, body: &[u8]) -> Result<AuthenPac
     }))
 }
 
+/// Parse an authentication body, using `header.seq_no` to disambiguate
+/// Start (seq_no == 1) from Continue (seq_no > 1 and odd).
+// NIST 800-53 Rev5: SC-23 Session Authenticity
 pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
-    validate_authen_header(&header, body)?;
-    if body.len() >= 8 {
-        let user_len = body[4] as usize;
-        let port_len = body[5] as usize;
-        let rem_addr_len = body[6] as usize;
-        let data_len = body[7] as usize;
-        let expected = 8 + user_len + port_len + rem_addr_len + data_len;
-        if expected <= body.len() {
-            return parse_authen_start_packet(header, body);
-        }
+    ensure!(
+        header.seq_no % 2 == 1,
+        "authentication client packets must use odd seq"
+    );
+    if header.seq_no == 1 {
+        validate_authen_start_header(body)?;
+        parse_authen_start_packet(header, body)
+    } else {
+        parse_authen_continue_packet(header, body)
     }
-    parse_authen_continue_packet(header, body)
 }
 
+// NIST 800-53 Rev5: SI-10 Information Input Validation
 pub fn encode_authen_reply(reply: &AuthenReply) -> Result<Vec<u8>> {
     let mut buf = BytesMut::new();
     buf.put_u8(reply.status);
@@ -419,6 +420,14 @@ pub fn encode_authen_reply(reply: &AuthenReply) -> Result<Vec<u8>> {
     } else {
         reply.server_msg_raw.as_slice()
     };
+    ensure!(
+        msg_bytes.len() <= u16::MAX as usize,
+        "server_msg exceeds maximum length"
+    );
+    ensure!(
+        reply.data.len() <= u16::MAX as usize,
+        "data exceeds maximum length"
+    );
     buf.put_u16(msg_bytes.len() as u16);
     buf.put_u16(reply.data.len() as u16);
     buf.extend_from_slice(msg_bytes);
@@ -888,7 +897,7 @@ mod tests {
         let header = make_header(1);
         let body = vec![
             0x00, // action = 0 (invalid, must be 1 or 2)
-            0x01, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
         ];
 
         let result = parse_authen_body(header, &body);
@@ -903,7 +912,7 @@ mod tests {
         let body = vec![
             0x01, // action
             0x10, // priv_lvl = 16 (invalid, max is 15)
-            0x01, 0x01,
+            0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
         ];
 
         let result = parse_authen_body(header, &body);
@@ -919,13 +928,42 @@ mod tests {
             0x01, // action
             0x01, // priv_lvl
             0x00, // authen_type = 0 (invalid)
-            0x01,
+            0x01, 0x00, 0x00, 0x00, 0x00,
         ];
 
         let result = parse_authen_body(header, &body);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("authen_type"));
+    }
+
+    #[test]
+    fn parse_authen_body_seq3_parses_as_continue() {
+        let header = make_header(3); // odd, > 1 -> Continue
+        // Continue body: user_msg_len(2) + data_len(2) + flags(1)
+        let body = vec![0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let packet = parse_authen_body(header, &body).unwrap();
+
+        match packet {
+            AuthenPacket::Continue(cont) => {
+                assert!(cont.user_msg.is_empty());
+                assert!(cont.data.is_empty());
+                assert_eq!(cont.flags, 0);
+            }
+            _ => panic!("expected Continue packet for seq_no=3"),
+        }
+    }
+
+    #[test]
+    fn parse_authen_body_start_too_short_rejected() {
+        let header = make_header(1);
+        // Only 4 bytes - too short for a Start packet (needs 8)
+        let body = vec![0x01, 0x01, 0x01, 0x01];
+
+        let result = parse_authen_body(header, &body);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
     }
 
     // ==================== encode_authen_reply Tests ====================

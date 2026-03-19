@@ -117,6 +117,23 @@ use usg_tacacs_proto::{
     write_accounting_response, write_authen_reply, write_author_response,
 };
 
+/// Normalize IPv4-mapped IPv6 addresses to their IPv4 equivalent.
+///
+/// This prevents bypass of per-IP limits by connecting via both
+/// `127.0.0.1` and `::ffff:127.0.0.1`.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-7 | Boundary Protection | Prevents rate-limit bypass via IPv4-mapped IPv6 |
+fn normalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        other => other,
+    }
+}
+
 /// Per-IP connection rate limiter.
 ///
 /// # NIST Controls
@@ -128,7 +145,7 @@ use usg_tacacs_proto::{
 #[derive(Clone)]
 pub(crate) struct ConnLimiter {
     max_per_ip: u32,
-    counts: Arc<Mutex<HashMap<String, u32>>>,
+    counts: Arc<Mutex<HashMap<IpAddr, u32>>>,
 }
 
 impl ConnLimiter {
@@ -146,15 +163,16 @@ impl ConnLimiter {
     /// | Control | Name | Implementation |
     /// |---------|------|----------------|
     /// | AC-10 | Concurrent Session Control | Enforces maximum concurrent connections per IP |
-    async fn try_acquire(&self, ip: &str) -> Option<ConnGuard> {
+    async fn try_acquire(&self, ip: IpAddr) -> Option<ConnGuard> {
+        let normalized = normalize_ip(ip);
         if self.max_per_ip == 0 {
             return Some(ConnGuard {
-                ip: ip.to_string(),
+                ip: normalized,
                 limiter: self.clone(),
             });
         }
         let mut map = self.counts.lock().await;
-        let entry = map.entry(ip.to_string()).or_insert(0);
+        let entry = map.entry(normalized).or_insert(0);
         // NIST AC-10: Reject if connection limit exceeded
         if *entry >= self.max_per_ip {
             return None;
@@ -162,14 +180,14 @@ impl ConnLimiter {
         *entry += 1;
         drop(map);
         Some(ConnGuard {
-            ip: ip.to_string(),
+            ip: normalized,
             limiter: self.clone(),
         })
     }
 
-    async fn release(&self, ip: &str) {
+    async fn release(&self, ip: IpAddr) {
         let mut map = self.counts.lock().await;
-        if let Some(v) = map.get_mut(ip)
+        if let Some(v) = map.get_mut(&ip)
             && *v > 0
         {
             *v -= 1;
@@ -205,16 +223,16 @@ enum LoopControl {
 }
 
 struct ConnGuard {
-    ip: String,
+    ip: IpAddr,
     limiter: ConnLimiter,
 }
 
 impl Drop for ConnGuard {
     fn drop(&mut self) {
-        let ip = self.ip.clone();
+        let ip = self.ip;
         let limiter = self.limiter.clone();
         tokio::spawn(async move {
-            limiter.release(&ip).await;
+            limiter.release(ip).await;
         });
     }
 }
@@ -230,6 +248,7 @@ impl Drop for ConnGuard {
 /// | AC-7 | Unsuccessful Logon Attempts | Contains ASCII authentication limits |
 /// | AC-10 | Concurrent Session Control | Contains connection rate limiter |
 /// | AC-11/AC-12 | Session Lock/Termination | Contains idle/keepalive timeouts |
+/// | SC-5 | Denial of Service Protection | Per-packet read timeout prevents slowloris |
 #[derive(Clone)]
 pub(crate) struct ConnectionConfig {
     /// Idle timeout for single-connect sessions (seconds)
@@ -240,6 +259,8 @@ pub(crate) struct ConnectionConfig {
     pub conn_limiter: ConnLimiter,
     /// ASCII authentication configuration
     pub ascii: AsciiConfig,
+    /// Per-packet read timeout in seconds (0 = disabled). NIST SC-5.
+    pub packet_read_timeout_secs: u64,
 }
 
 /// Shared authentication context containing policy, credentials, and secrets.
@@ -994,8 +1015,8 @@ pub async fn serve_tls(
         let conn_tls_identity = tls_identity.clone();
         let conn_registry = registry.clone();
         tokio::spawn(async move {
-            let peer_ip = peer_addr.ip().to_string();
-            let guard = match conn_cfg.conn_limiter.try_acquire(&peer_ip).await {
+            let peer_ip = peer_addr.ip();
+            let guard = match conn_cfg.conn_limiter.try_acquire(peer_ip).await {
                 Some(g) => g,
                 None => {
                     warn!(peer = %peer_addr, "connection rejected: per-peer limit exceeded");
@@ -1058,8 +1079,8 @@ pub async fn serve_legacy(
         let conn_nad_secrets = nad_secrets.clone();
         let conn_registry = registry.clone();
         tokio::spawn(async move {
-            let peer_ip = peer_addr.ip().to_string();
-            let guard = match conn_cfg.conn_limiter.try_acquire(&peer_ip).await {
+            let peer_ip = peer_addr.ip();
+            let guard = match conn_cfg.conn_limiter.try_acquire(peer_ip).await {
                 Some(g) => g,
                 None => {
                     warn!(peer = %peer_addr, "connection rejected: per-peer limit exceeded");
@@ -1565,7 +1586,7 @@ where
         Err(msg) => build_authz_semantic_error_response(request, msg, peer),
     };
 
-    if let Err(err) = validate_author_response_header(&request.header.response(0)) {
+    if let Err(err) = request.header.response(0).and_then(|h| validate_author_response_header(&h)) {
         warn!(error = %err, peer = %peer, "authorization header invalid");
     }
 
@@ -1886,7 +1907,7 @@ where
         return Ok(LoopControl::Break);
     }
 
-    if let Err(err) = validate_accounting_response_header(&request.header.response(0)) {
+    if let Err(err) = request.header.response(0).and_then(|h| validate_accounting_response_header(&h)) {
         warn!(error = %err, peer = %peer, "accounting header invalid");
     }
 
@@ -2125,6 +2146,15 @@ where
     Ok(())
 }
 
+/// Maximum number of concurrent authentication sessions per connection.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-5 | Denial of Service Protection | Prevents auth state map exhaustion |
+const MAX_AUTH_SESSIONS_PER_CONN: usize = 64;
+
 /// Get or create authentication session state for the given packet.
 ///
 /// # NIST Controls
@@ -2132,6 +2162,7 @@ where
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | SC-23 | Session Authenticity | Session state tracking with sequence validation |
+/// | SC-5 | Denial of Service Protection | Bounds auth session map size |
 async fn get_or_create_auth_state<'a, S>(
     stream: &mut S,
     packet: &AuthenPacket,
@@ -2143,6 +2174,19 @@ async fn get_or_create_auth_state<'a, S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    // NIST SC-5: Reject new sessions if map is at capacity
+    if !auth_states.contains_key(&session_id)
+        && auth_states.len() >= MAX_AUTH_SESSIONS_PER_CONN
+    {
+        warn!(
+            peer = %peer,
+            session_id = session_id,
+            limit = MAX_AUTH_SESSIONS_PER_CONN,
+            "auth session limit exceeded, rejecting new session"
+        );
+        return Ok(None);
+    }
+
     let state = auth_states.entry(session_id).or_insert_with(|| match packet {
         AuthenPacket::Start(start) => create_state_from_start(start),
         AuthenPacket::Continue(cont) => create_state_from_continue(cont),
@@ -3174,6 +3218,7 @@ async fn connection_loop<S>(
     peer: &str,
     single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
+    packet_read_timeout_secs: u64,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -3181,7 +3226,25 @@ where
     loop {
         let deadline =
             calculate_keepalive_deadline(single_connect_idle_secs, single_connect_keepalive_secs);
-        match read_packet_with_keepalive(stream, secret, single_connect, deadline, peer).await {
+        // NIST SC-5: Apply per-packet read timeout to prevent slowloris attacks
+        let read_result = if packet_read_timeout_secs > 0 && !single_connect.active {
+            match timeout(
+                Duration::from_secs(packet_read_timeout_secs),
+                read_packet_with_keepalive(stream, secret, single_connect, deadline, peer),
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(peer = %peer, timeout_secs = packet_read_timeout_secs,
+                        "packet read timeout exceeded; closing connection (SC-5)");
+                    break;
+                }
+            }
+        } else {
+            read_packet_with_keepalive(stream, secret, single_connect, deadline, peer).await
+        };
+        match read_result {
             Ok(Some(packet)) => match dispatch_packet_to_handler(
                 stream,
                 packet,
@@ -3252,6 +3315,7 @@ where
     let ldap = &auth_ctx.ldap;
     let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
     let single_connect_keepalive_secs = conn_cfg.single_connect_keepalive_secs;
+    let packet_read_timeout_secs = conn_cfg.packet_read_timeout_secs;
     let ascii_cfg = &conn_cfg.ascii;
 
     use std::collections::HashMap;
@@ -3274,6 +3338,7 @@ where
         &peer,
         single_connect_idle_secs,
         single_connect_keepalive_secs,
+        packet_read_timeout_secs,
     )
     .await?;
 

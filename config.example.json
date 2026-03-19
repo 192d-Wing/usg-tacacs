@@ -5,15 +5,15 @@
   "tls_key": "certs/server-key.pem",
   "client_ca": "certs/client-ca.pem",
   "tls_trust_root": [],
-  "secret": "supersecret123",
+  "secret": "CHANGE-ME-GENERATE-WITH-openssl-rand-base64-32",
   "legacy_nad_secret": [
     {
       "ip": "192.0.2.10",
-      "secret": "router-strong-secret"
+      "secret": "CHANGE-ME-GENERATE-WITH-openssl-rand-base64-32"
     },
     {
       "ip": "192.0.2.11",
-      "secret": "switch-strong-secret"
+      "secret": "CHANGE-ME-GENERATE-WITH-openssl-rand-base64-32"
     }
   ],
   "forbid_unencrypted": true,
@@ -24,9 +24,9 @@
   "ascii_attempt_limit": 5,
   "ascii_user_attempt_limit": 3,
   "ascii_pass_attempt_limit": 5,
-  "ascii_backoff_ms": 0,
+  "ascii_backoff_ms": 1000,
   "ascii_backoff_max_ms": 5000,
-  "ascii_lockout_limit": 0,
+  "ascii_lockout_limit": 5,
   "single_connect_idle_secs": 300,
   "single_connect_keepalive_secs": 120,
   "max_connections_per_ip": 50,

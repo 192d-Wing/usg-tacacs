@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TACACS+ packet header parsing and serialization for async streams.
 
+// NIST 800-53 Rev5: SC-8 Transmission Confidentiality and Integrity
 use anyhow::{Context, Result, ensure};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -15,15 +16,22 @@ pub struct Header {
 }
 
 impl Header {
-    pub fn response(&self, length: u32) -> Header {
-        Header {
+    /// Build a response header by incrementing seq_no. Returns an error if
+    /// the resulting sequence number would wrap past 255 (RFC 8907 violation).
+    pub fn response(&self, length: u32) -> Result<Header> {
+        ensure!(
+            self.seq_no < 254,
+            "TACACS+ seq_no {} would overflow on response (max request seq_no is 253)",
+            self.seq_no
+        );
+        Ok(Header {
             version: self.version,
             packet_type: self.packet_type,
             seq_no: self.seq_no.wrapping_add(1),
             flags: self.flags, // mirrors request flags; caller can override if needed
             session_id: self.session_id,
             length,
-        }
+        })
     }
 }
 
@@ -78,6 +86,7 @@ pub fn validate_request_header(
     require_odd_seq: bool,
     expected_major: u8,
 ) -> Result<()> {
+    ensure!(header.seq_no >= 1, "TACACS+ seq_no must be >= 1");
     if let Some(packet_type) = expected_packet_type {
         ensure!(
             header.packet_type == packet_type,
@@ -112,6 +121,7 @@ pub fn validate_response_header(
     require_even_seq: bool,
     expected_major: u8,
 ) -> Result<()> {
+    ensure!(header.seq_no >= 1, "TACACS+ seq_no must be >= 1");
     if let Some(packet_type) = expected_packet_type {
         ensure!(
             header.packet_type == packet_type,
@@ -174,7 +184,7 @@ mod tests {
     #[test]
     fn header_response_increments_seq_no() {
         let request = make_header(0xC0, 0x01, 1, 0, 12345, 100);
-        let response = request.response(50);
+        let response = request.response(50).unwrap();
 
         assert_eq!(response.seq_no, 2);
         assert_eq!(response.length, 50);
@@ -185,11 +195,28 @@ mod tests {
     }
 
     #[test]
-    fn header_response_wraps_at_255() {
-        let request = make_header(0xC0, 0x01, 255, 0, 12345, 100);
-        let response = request.response(50);
+    fn header_response_rejects_seq_overflow() {
+        let request = make_header(0xC0, 0x01, 254, 0, 12345, 100);
+        let result = request.response(50);
 
-        assert_eq!(response.seq_no, 0); // 255 + 1 wraps to 0
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("overflow"));
+    }
+
+    #[test]
+    fn header_response_rejects_seq_255() {
+        let request = make_header(0xC0, 0x01, 255, 0, 12345, 100);
+        let result = request.response(50);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn header_response_allows_seq_253() {
+        let request = make_header(0xC0, 0x01, 253, 0, 12345, 100);
+        let response = request.response(50).unwrap();
+
+        assert_eq!(response.seq_no, 254);
     }
 
     // ==================== read_header / write_header Tests ====================

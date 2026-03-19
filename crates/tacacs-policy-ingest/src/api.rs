@@ -9,6 +9,7 @@ use axum::{
 };
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
+use tracing::warn;
 
 fn header_required(
     headers: &HeaderMap,
@@ -162,9 +163,11 @@ pub async fn promote(
         return (StatusCode::FORBIDDEN, "repo not allowed".to_string());
     }
 
-    // In a hardened deployment, derive this from client cert identity.
+    // SECURITY WARNING: X-Activated-By header is spoofable. In production,
+    // derive audit attribution from the mTLS client certificate CN instead.
     let activated_by =
         header_optional(&headers, "X-Activated-By").unwrap_or_else(|| "mtls-client".to_string());
+    warn!("X-Activated-By header used for audit attribution; in production, derive from mTLS client certificate");
 
     if let Err(e) = state
         .store

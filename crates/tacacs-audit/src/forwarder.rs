@@ -155,7 +155,7 @@ impl AuditForwarder {
     /// | Control | Name | Implementation |
     /// |---------|------|----------------|
     /// | AU-2/AU-12 | Event Logging | Continuous processing of audit events |
-    pub async fn run(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<AuditEvent>) {
+    pub async fn run(self: Arc<Self>, mut rx: mpsc::Receiver<AuditEvent>) {
         debug!("audit forwarder started");
 
         while let Some(event) = rx.recv().await {

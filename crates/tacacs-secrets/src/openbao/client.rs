@@ -10,15 +10,22 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+use zeroize::Zeroize;
 
 /// OpenBao HTTP client.
 ///
 /// Handles authentication, token management, and API requests to OpenBao.
+///
+/// # NIST Controls
+/// - **IA-5 (Authenticator Management)**: Serializes authentication attempts
+///   to prevent thundering herd on token refresh
 pub struct OpenBaoClient {
     http: Client,
     address: String,
     auth: AppRoleAuth,
     token: Arc<RwLock<TokenState>>,
+    /// Serializes authentication attempts to prevent thundering herd.
+    auth_in_progress: tokio::sync::Mutex<()>,
     kv: KvClient,
     pki: Option<PkiClient>,
     max_retries: u32,
@@ -30,6 +37,15 @@ struct TokenState {
     token: Option<String>,
     expires_at: Option<std::time::Instant>,
     renewable: bool,
+}
+
+/// NIST SC-12: Zeroize token material when TokenState is dropped.
+impl Drop for TokenState {
+    fn drop(&mut self) {
+        if let Some(ref mut token) = self.token {
+            token.zeroize();
+        }
+    }
 }
 
 impl TokenState {
@@ -94,6 +110,7 @@ impl OpenBaoClient {
             address: config.address.trim_end_matches('/').to_string(),
             auth,
             token: Arc::new(RwLock::new(TokenState::default())),
+            auth_in_progress: tokio::sync::Mutex::new(()),
             kv,
             pki: None,
             max_retries: config.max_retries,
@@ -168,6 +185,12 @@ impl OpenBaoClient {
     }
 
     /// Get a valid token, refreshing if necessary.
+    ///
+    /// Uses `auth_in_progress` mutex to serialize authentication attempts,
+    /// preventing thundering herd when multiple tasks detect an expired token.
+    ///
+    /// # NIST Controls
+    /// - **IA-5 (Authenticator Management)**: Serialized token refresh
     pub async fn get_token(&self) -> Result<String> {
         // Fast path: check with read lock
         {
@@ -180,22 +203,21 @@ impl OpenBaoClient {
             }
         }
 
-        // Slow path: use write lock to ensure only one thread re-authenticates
+        // Serialize authentication attempts to prevent thundering herd
+        let _auth_guard = self.auth_in_progress.lock().await;
+
+        // Double-check: another task may have refreshed while we waited
         {
-            let mut state = self.token.write().await;
-            // Double-check after acquiring write lock (another thread may have refreshed)
+            let state = self.token.read().await;
             if state.is_valid() {
                 return state
                     .token
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("token is None despite valid state"));
             }
-            // Mark token as invalid to prevent other threads from using it
-            state.token = None;
-            state.expires_at = None;
-        } // Release write lock before network call
+        }
 
-        // Re-authenticate outside the lock
+        // Re-authenticate while holding the auth_in_progress guard
         self.authenticate().await?;
 
         let state = self.token.read().await;

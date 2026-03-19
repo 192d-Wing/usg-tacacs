@@ -191,7 +191,7 @@ pub struct Args {
     pub ascii_pass_attempt_limit: u8,
 
     /// Base backoff (ms) before repeating ASCII username/password prompts (0 = no delay).
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 1000)]
     pub ascii_backoff_ms: u64,
 
     /// Maximum backoff (ms) for ASCII prompt retries (0 = no cap).
@@ -199,7 +199,7 @@ pub struct Args {
     pub ascii_backoff_max_ms: u64,
 
     /// Lock out ASCII auth after this many attempts (0 = no lockout).
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 5)]
     pub ascii_lockout_limit: u8,
 
     /// Idle timeout (seconds) for single-connection sessions before closing (0 = disabled).
@@ -209,6 +209,11 @@ pub struct Args {
     /// Expected keepalive activity interval (seconds) for single-connection sessions; 0 disables the timeout.
     #[arg(long, default_value_t = 120)]
     pub single_connect_keepalive_secs: u64,
+
+    /// Per-packet read timeout in seconds (0 = disabled). Prevents slowloris-style attacks
+    /// by closing connections that take too long to send a complete packet.
+    #[arg(long, default_value_t = 30)]
+    pub packet_read_timeout_secs: u64,
 
     /// Maximum concurrent connections allowed per peer IP (0 = unlimited).
     #[arg(long, default_value_t = 50)]
@@ -462,6 +467,17 @@ pub struct Args {
     /// JSON file containing RBAC configuration for the Management API.
     #[arg(long)]
     pub api_rbac_config: Option<PathBuf>,
+
+    /// Allow the Management API to run without TLS (plaintext). This is insecure and
+    /// should only be used for development/testing. Production deployments must use TLS.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | SC-8 | Transmission Confidentiality | Requires explicit opt-in to disable TLS protection |
+    #[arg(long, default_value_t = false)]
+    pub api_allow_plaintext: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1044,6 +1060,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1085,6 +1102,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1146,6 +1164,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1187,6 +1206,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1246,6 +1266,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1287,6 +1308,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1346,6 +1368,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1387,6 +1410,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1447,6 +1471,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1488,6 +1513,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1547,6 +1573,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1588,6 +1615,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1712,6 +1740,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1753,6 +1782,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1809,6 +1839,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1850,6 +1881,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1906,6 +1938,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -1947,6 +1980,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -2008,6 +2042,7 @@ mod tests {
             ascii_lockout_limit: 0,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
+            packet_read_timeout_secs: 30,
             max_connections_per_ip: 50,
             max_sessions: 0,
             max_sessions_per_ip: 0,
@@ -2049,6 +2084,7 @@ mod tests {
             api_tls_key: None,
             api_client_ca: None,
             api_rbac_config: None,
+            api_allow_plaintext: false,
             est_enabled: false,
             est_server_url: None,
             est_username: None,

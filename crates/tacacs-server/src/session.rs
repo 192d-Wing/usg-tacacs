@@ -74,6 +74,15 @@ impl SingleConnectState {
     }
 }
 
+/// Default maximum number of active tasks per connection.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-5 | Denial of Service Protection | Bounds task map to prevent resource exhaustion |
+const DEFAULT_MAX_TASKS: usize = 1024;
+
 /// Tracks active accounting task_ids per connection to enforce RFC 8907:
 /// "Clients MUST NOT reuse a task_id in a start record until it has sent
 /// a stop record for that task_id."
@@ -84,16 +93,32 @@ impl SingleConnectState {
 /// |---------|------|----------------|
 /// | AU-2/AU-3 | Audit Events | Enables correlation of start/stop/watchdog accounting records |
 /// | SI-7 | Information Integrity | Detects protocol violations indicating misconfiguration or attack |
-#[derive(Debug, Default)]
+/// | SC-5 | Denial of Service Protection | Bounded task set prevents resource exhaustion |
+#[derive(Debug)]
 pub struct TaskIdTracker {
     /// Set of task_ids that have received a START but not yet a STOP.
     active: HashSet<u32>,
+    /// Maximum number of concurrent active tasks allowed.
+    max_tasks: usize,
+}
+
+impl Default for TaskIdTracker {
+    fn default() -> Self {
+        Self {
+            active: HashSet::new(),
+            max_tasks: DEFAULT_MAX_TASKS,
+        }
+    }
 }
 
 impl TaskIdTracker {
     /// Record a START accounting event. Returns an error message if the
-    /// task_id is already active (reuse violation per RFC 8907).
+    /// task_id is already active (reuse violation per RFC 8907) or if
+    /// the maximum task limit has been reached (SC-5).
     pub fn start(&mut self, task_id: u32) -> Result<(), &'static str> {
+        if self.active.len() >= self.max_tasks {
+            return Err("task limit exceeded: too many concurrent active tasks (SC-5)");
+        }
         if self.active.contains(&task_id) {
             return Err(
                 "task_id reuse: start record received for already-active task_id (RFC 8907 violation)",
@@ -266,5 +291,26 @@ mod tests {
 
         // Second stop should fail
         assert!(tracker.stop(700).is_err());
+    }
+
+    #[test]
+    fn task_id_tracker_rejects_when_limit_exceeded() {
+        let mut tracker = TaskIdTracker {
+            active: HashSet::new(),
+            max_tasks: 3,
+        };
+
+        assert!(tracker.start(1).is_ok());
+        assert!(tracker.start(2).is_ok());
+        assert!(tracker.start(3).is_ok());
+
+        // Fourth task should be rejected
+        let result = tracker.start(4);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("task limit exceeded"));
+
+        // After stopping one, a new task should be accepted
+        assert!(tracker.stop(1).is_ok());
+        assert!(tracker.start(4).is_ok());
     }
 }

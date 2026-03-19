@@ -73,6 +73,7 @@ use openssl::hash::MessageDigest;
 #[cfg(feature = "legacy-md5")]
 use openssl::hash::hash;
 use std::convert::TryInto;
+use zeroize::Zeroizing;
 
 /// Apply TACACS+ body obfuscation (encrypt or decrypt).
 ///
@@ -104,11 +105,13 @@ pub fn apply_body_crypto(header: &Header, body: &mut [u8], secret: Option<&[u8]>
 
     #[cfg(feature = "legacy-md5")]
     {
-        let mut pad: Vec<u8> = Vec::with_capacity(body.len());
+        // NIST SC-12: Zeroize key material when dropped
+        let mut pad: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(body.len()));
         let mut prev: Option<[u8; 16]> = None;
 
         while pad.len() < body.len() {
-            let mut seed: Vec<u8> = Vec::with_capacity(4 + secret.len() + 2 + 16);
+            let mut seed: Zeroizing<Vec<u8>> =
+                Zeroizing::new(Vec::with_capacity(4 + secret.len() + 2 + 16));
             seed.extend_from_slice(&header.session_id.to_be_bytes());
             seed.extend_from_slice(secret);
             seed.push(header.version);

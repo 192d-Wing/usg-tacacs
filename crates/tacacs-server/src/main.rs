@@ -222,6 +222,9 @@ fn validate_secrets_and_build_ldap(args: &Args) -> Result<Option<Arc<LdapConfig>
             .ldap_search_base
             .clone()
             .context("--ldap-search-base is required with --ldaps-url")?;
+        if args.ldap_ca_file.is_some() {
+            warn!("--ldap-ca-file is specified but custom CA is not supported in this build; LDAP connections will fail");
+        }
         Ok(Some(Arc::new(LdapConfig {
             url,
             bind_dn,
@@ -343,6 +346,7 @@ fn build_connection_config(args: &Args, conn_limiter: ConnLimiter) -> Connection
     ConnectionConfig {
         single_connect_idle_secs: args.single_connect_idle_secs,
         single_connect_keepalive_secs: args.single_connect_keepalive_secs,
+        packet_read_timeout_secs: args.packet_read_timeout_secs,
         conn_limiter,
         ascii: AsciiConfig {
             attempt_limit: args.ascii_attempt_limit,
@@ -629,6 +633,12 @@ fn load_rbac_config(args: &Args) -> Result<crate::api::RbacConfig> {
 }
 
 /// Build TLS acceptor for Management API.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-8 | Transmission Confidentiality | Refuses plaintext API unless --api-allow-plaintext is set |
 fn build_api_tls_acceptor(args: &Args) -> Result<Option<tokio_rustls::TlsAcceptor>> {
     if let (Some(cert), Some(key), Some(client_ca)) = (
         args.api_tls_cert.as_ref(),
@@ -640,11 +650,18 @@ fn build_api_tls_acceptor(args: &Args) -> Result<Option<tokio_rustls::TlsAccepto
         Ok(Some(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(
             tls_config,
         ))))
-    } else {
+    } else if args.api_allow_plaintext {
+        // NIST SC-8: Explicit opt-in required for plaintext mode
         warn!(
-            "Management API TLS is not configured. Running in PLAINTEXT mode. For production use, configure --api-tls-cert, --api-tls-key, and --api-client-ca."
+            "Management API TLS is not configured and --api-allow-plaintext is set. \
+             Running in PLAINTEXT mode. NOT RECOMMENDED FOR PRODUCTION."
         );
         Ok(None)
+    } else {
+        bail!(
+            "Management API TLS is not configured. Provide --api-tls-cert, --api-tls-key, \
+             and --api-client-ca, or pass --api-allow-plaintext for non-production use."
+        );
     }
 }
 

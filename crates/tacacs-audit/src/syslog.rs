@@ -329,29 +329,58 @@ impl SyslogForwarder {
         )
     }
 
+    /// Format human-readable message with sanitized user-controlled fields.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AU-9 | Protection of Audit Information | Sanitizes fields to prevent log injection (CWE-117) |
     fn format_message(&self, event: &AuditEvent) -> String {
         let mut parts = Vec::new();
 
         parts.push(format!("outcome={}", event.outcome));
 
         if let Some(ref username) = event.username {
-            parts.push(format!("user={}", username));
+            parts.push(format!("user={}", sanitize_msg_field(username)));
         }
 
         if let Some(ref source_ip) = event.source_ip {
-            parts.push(format!("src={}", source_ip));
+            parts.push(format!("src={}", sanitize_msg_field(&source_ip.to_string())));
         }
 
         if let Some(ref command) = event.command {
-            parts.push(format!("cmd={}", command));
+            parts.push(format!("cmd={}", sanitize_msg_field(command)));
         }
 
         if let Some(ref reason) = event.reason {
-            parts.push(format!("reason={}", reason));
+            parts.push(format!("reason={}", sanitize_msg_field(reason)));
         }
 
         parts.join(" ")
     }
+}
+
+/// Sanitize user-controlled fields for the syslog message body.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-9 | Protection of Audit Information | Prevents log injection via control character sanitization |
+///
+/// Replaces control characters (0x00-0x1F, 0x7F) with the Unicode replacement
+/// character to prevent log injection attacks (CWE-117).
+fn sanitize_msg_field(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_control() {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// Escape special characters in structured data parameters per RFC 5424.

@@ -60,6 +60,6 @@ fuzz_target!(|data: &[u8]| {
         );
 
         // Test response creation
-        let _response = header.response(42);
+        let _response = header.response(42).ok();
     }
 });
