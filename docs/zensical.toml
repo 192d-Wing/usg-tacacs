@@ -6,7 +6,33 @@ docs_dir = "docs"
 site_dir = "site"
 repo_url = "https://github.com/192d-Wing/usg-tacacs"
 repo_name = "192d-Wing/usg-tacacs"
-
+nav = [
+  { "Home" = "index.md" },
+  { "Admin Guide" = [
+    { "Overview" = "admin/index.md" },
+    { "Security Hardening" = "admin/security.md" },
+    { "Configuration" = "config.md" },
+    { "TLS Setup" = "tls.md" },
+    { "Operations" = "operations.md" },
+    { "Container Deployment" = "container.md" },
+    { "Management API" = "admin/management-api.md" },
+    { "Reverse Proxy mTLS" = "admin/reverse-proxy-mtls.md" },
+    { "EST Provisioning" = "est-provisioning.md" },
+  ]},
+  { "User Guide" = [
+    { "Overview" = "user/index.md" },
+    { "Device Configuration" = "user/device-config.md" },
+    { "Authentication" = "authentication.md" },
+    { "Policy" = "policy.md" },
+  ]},
+  { "Developer Guide" = [
+    { "Overview" = "dev/index.md" },
+    { "Development Setup" = "dev_setup.md" },
+    { "Protocol Implementation" = "dev/protocol.md" },
+    { "Policy Ingest Service" = "policy-ingest.md" },
+  ]},
+  { "RFC Compliance" = "rfc/index.md" },
+]
 
 [project.theme]
 variant = "modern"
@@ -59,88 +85,3 @@ permalink = true
 
 [project.markdown_extensions.pymdownx.tabbed]
 alternate_style = true
-
-[[project.nav]]
-title = "Home"
-path = "index.md"
-
-[[project.nav]]
-title = "Admin Guide"
-
-[[project.nav.children]]
-title = "Overview"
-path = "admin/index.md"
-
-[[project.nav.children]]
-title = "Security Hardening"
-path = "admin/security.md"
-
-[[project.nav.children]]
-title = "Configuration"
-path = "config.md"
-
-[[project.nav.children]]
-title = "TLS Setup"
-path = "tls.md"
-
-[[project.nav.children]]
-title = "Operations"
-path = "operations.md"
-
-[[project.nav.children]]
-title = "Container Deployment"
-path = "container.md"
-
-[[project.nav.children]]
-title = "Management API"
-path = "admin/management-api.md"
-
-[[project.nav.children]]
-title = "Reverse Proxy mTLS"
-path = "admin/reverse-proxy-mtls.md"
-
-[[project.nav.children]]
-title = "EST Provisioning"
-path = "est-provisioning.md"
-
-[[project.nav]]
-title = "User Guide"
-
-[[project.nav.children]]
-title = "Overview"
-path = "user/index.md"
-
-[[project.nav.children]]
-title = "Device Configuration"
-path = "user/device-config.md"
-
-[[project.nav.children]]
-title = "Authentication"
-path = "authentication.md"
-
-[[project.nav.children]]
-title = "Policy"
-path = "policy.md"
-
-[[project.nav]]
-title = "Developer Guide"
-
-[[project.nav.children]]
-title = "Overview"
-path = "dev/index.md"
-
-[[project.nav.children]]
-title = "Development Setup"
-path = "dev_setup.md"
-
-[[project.nav.children]]
-title = "Protocol Implementation"
-path = "dev/protocol.md"
-
-[[project.nav.children]]
-title = "Policy Ingest Service"
-path = "policy-ingest.md"
-
-[[project.nav]]
-title = "RFC Compliance"
-path = "rfc/index.md"
