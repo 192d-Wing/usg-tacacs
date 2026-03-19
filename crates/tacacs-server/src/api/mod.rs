@@ -161,10 +161,9 @@ async fn serve_tls_api_connection(
     if let Err(e) = hyper::server::conn::http1::Builder::new()
         .serve_connection(io, hyper_service)
         .await
+        && !e.is_incomplete_message()
     {
-        if !e.is_incomplete_message() {
-            error!(peer = %peer_addr, error = %e, "API connection error");
-        }
+        error!(peer = %peer_addr, error = %e, "API connection error");
     }
 }
 

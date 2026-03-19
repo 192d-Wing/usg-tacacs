@@ -118,8 +118,7 @@ impl SyslogForwarder {
     async fn connect_tls(&self, addr: &str) -> Result<SyslogConnection> {
         debug!("connecting to syslog server via TLS: {}", addr);
 
-        let root_store =
-            Self::build_tls_root_store(self.config.tls_ca_file.as_ref().map(|p| p.as_path()))?;
+        let root_store = Self::build_tls_root_store(self.config.tls_ca_file.as_deref())?;
 
         let config_builder = rustls::ClientConfig::builder().with_root_certificates(root_store);
 

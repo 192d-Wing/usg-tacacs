@@ -438,10 +438,9 @@ impl PolicyEngine {
         if let Some(user) = user
             && let Some(override_policy) =
                 self.raw_server_msg_user_overrides.get(&user.to_lowercase())
+            && !Self::check_user_override(override_policy, service, action, &hex)
         {
-            if !Self::check_user_override(override_policy, service, action, &hex) {
-                return false;
-            }
+            return false;
         }
         if self
             .raw_server_msg_deny_prefixes

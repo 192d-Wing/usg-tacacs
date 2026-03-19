@@ -3067,6 +3067,7 @@ async fn process_authen_packet(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_authentication_packet<S>(
     stream: &mut S,
     packet: AuthenPacket,
@@ -3281,6 +3282,7 @@ async fn check_api_termination(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connection_loop<S>(
     stream: &mut S,
     connection_id: u64,

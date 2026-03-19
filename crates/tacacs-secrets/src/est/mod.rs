@@ -241,7 +241,7 @@ impl EstProvider {
     ///
     /// This method generates a CSR and enrolls with the EST server.
     /// If certificates already exist on disk, they are loaded instead.
-
+    ///
     /// Store bundle to disk and memory.
     async fn store_bundle(&self, bundle: CertificateBundle) -> Result<()> {
         bundle

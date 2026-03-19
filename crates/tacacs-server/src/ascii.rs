@@ -507,6 +507,7 @@ fn check_and_update_attempts(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_ascii_continue(
     cont_user_msg: &[u8],
     cont_data: &[u8],
