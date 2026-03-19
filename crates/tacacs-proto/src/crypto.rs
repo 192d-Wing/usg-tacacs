@@ -69,10 +69,7 @@ use crate::header::Header;
 use anyhow::bail;
 use anyhow::{Result, anyhow, bail};
 #[cfg(feature = "legacy-md5")]
-use openssl::hash::MessageDigest;
-#[cfg(feature = "legacy-md5")]
-use openssl::hash::hash;
-use std::convert::TryInto;
+use md5::{Md5, Digest};
 use zeroize::Zeroizing;
 
 /// Apply TACACS+ body obfuscation (encrypt or decrypt).
@@ -105,31 +102,31 @@ pub fn apply_body_crypto(header: &Header, body: &mut [u8], secret: Option<&[u8]>
 
     #[cfg(feature = "legacy-md5")]
     {
-        // NIST SC-12: Zeroize key material when dropped
-        let mut pad: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(body.len()));
+        // NIST SC-12: Zeroize seed material when dropped.
+        // Reuse a single seed buffer across iterations to avoid per-block
+        // heap allocation.  XOR each MD5 block directly into the body to
+        // eliminate the separate pad accumulation vector.
+        let mut seed = Zeroizing::new(Vec::with_capacity(4 + secret.len() + 2 + 16));
         let mut prev: Option<[u8; 16]> = None;
+        let mut offset = 0;
 
-        while pad.len() < body.len() {
-            let mut seed: Zeroizing<Vec<u8>> =
-                Zeroizing::new(Vec::with_capacity(4 + secret.len() + 2 + 16));
+        while offset < body.len() {
+            seed.clear();
             seed.extend_from_slice(&header.session_id.to_be_bytes());
             seed.extend_from_slice(secret);
             seed.push(header.version);
             seed.push(header.seq_no);
-            if let Some(prev_pad) = prev {
-                seed.extend_from_slice(&prev_pad);
+            if let Some(ref prev_block) = prev {
+                seed.extend_from_slice(prev_block);
             }
-            let digest: openssl::hash::DigestBytes = hash(MessageDigest::md5(), &seed)?;
-            let digest: [u8; 16] = digest
-                .as_ref()
-                .try_into()
-                .map_err(|_| anyhow!("unexpected MD5 length"))?;
-            pad.extend_from_slice(&digest);
-            prev = Some(digest);
-        }
-
-        for (b, p) in body.iter_mut().zip(pad.iter()) {
-            *b ^= *p;
+            let block: [u8; 16] = Md5::digest(&*seed).into();
+            let remaining = body.len() - offset;
+            let chunk = remaining.min(16);
+            for i in 0..chunk {
+                body[offset + i] ^= block[i];
+            }
+            offset += chunk;
+            prev = Some(block);
         }
         Ok(())
     }

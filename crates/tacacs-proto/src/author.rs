@@ -8,7 +8,6 @@ use crate::{
     AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
 };
 use anyhow::{Result, anyhow, ensure};
-use bytes::{BufMut, BytesMut};
 
 #[derive(Debug, Clone)]
 pub struct AuthorizationRequest {
@@ -233,9 +232,9 @@ fn parse_author_args(body: &[u8], cursor: usize, arg_cnt: usize) -> Result<Vec<S
         "authorization args exceed body length"
     );
     let mut args = Vec::with_capacity(arg_cnt);
-    for (idx, len) in arg_lens.iter().enumerate() {
+    for len in arg_lens.iter() {
         ensure!(*len > 0, "authorization arg length invalid");
-        let (arg, next_cursor) = read_string(body, cursor, *len as usize, &format!("arg[{idx}]"))?;
+        let (arg, next_cursor) = read_string(body, cursor, *len as usize, "arg")?;
         cursor = next_cursor;
         args.push(arg);
     }
@@ -286,20 +285,23 @@ pub fn encode_author_response(response: &AuthorizationResponse) -> Result<Vec<u8
         response.data.len() <= u16::MAX as usize,
         "authorization data too long"
     );
-    let mut buf = BytesMut::new();
-    buf.put_u8(response.status);
-    buf.put_u8(response.args.len() as u8);
-    buf.put_u16(response.server_msg.len() as u16);
-    buf.put_u16(response.data.len() as u16);
+    let total_arg_data_len: usize = response.args.iter().map(|a| a.len()).sum();
+    let total_len =
+        6 + response.args.len() + response.server_msg.len() + response.data.len() + total_arg_data_len;
+    let mut buf = Vec::with_capacity(total_len);
+    buf.push(response.status);
+    buf.push(response.args.len() as u8);
+    buf.extend_from_slice(&(response.server_msg.len() as u16).to_be_bytes());
+    buf.extend_from_slice(&(response.data.len() as u16).to_be_bytes());
     for arg in &response.args {
-        buf.put_u8(arg.len() as u8);
+        buf.push(arg.len() as u8);
     }
     buf.extend_from_slice(response.server_msg.as_bytes());
     buf.extend_from_slice(response.data.as_bytes());
     for arg in &response.args {
         buf.extend_from_slice(arg.as_bytes());
     }
-    Ok(buf.to_vec())
+    Ok(buf)
 }
 
 #[cfg(test)]

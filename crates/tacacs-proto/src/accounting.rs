@@ -8,7 +8,6 @@ use crate::{
     ACCT_STATUS_SUCCESS,
 };
 use anyhow::{Result, anyhow, ensure};
-use bytes::{BufMut, BytesMut};
 
 #[derive(Debug, Clone)]
 pub struct AccountingRequest {
@@ -89,9 +88,9 @@ fn parse_acct_args(body: &[u8], cursor: usize, arg_cnt: usize) -> Result<Vec<Str
         "accounting args exceed body length"
     );
     let mut args: Vec<String> = Vec::with_capacity(arg_cnt);
-    for (idx, len) in arg_lens.iter().enumerate() {
+    for len in arg_lens.iter() {
         ensure!(*len > 0, "accounting arg length invalid");
-        let (arg, next_cursor) = read_string(body, cursor, *len as usize, &format!("arg[{idx}]"))?;
+        let (arg, next_cursor) = read_string(body, cursor, *len as usize, "arg")?;
         cursor = next_cursor;
         args.push(arg);
     }
@@ -273,20 +272,23 @@ pub fn encode_accounting_response(response: &AccountingResponse) -> Result<Vec<u
         "accounting data too long"
     );
     // RFC 8907 Section 7.2: server_msg_len(2) + data_len(2) + status(1)
-    let mut buf: BytesMut = BytesMut::new();
-    buf.put_u16(response.server_msg.len() as u16);
-    buf.put_u16(response.data.len() as u16);
-    buf.put_u8(response.status);
-    buf.put_u8(response.args.len() as u8);
+    let total_arg_data_len: usize = response.args.iter().map(|a| a.len()).sum();
+    let total_len =
+        6 + response.args.len() + response.server_msg.len() + response.data.len() + total_arg_data_len;
+    let mut buf = Vec::with_capacity(total_len);
+    buf.extend_from_slice(&(response.server_msg.len() as u16).to_be_bytes());
+    buf.extend_from_slice(&(response.data.len() as u16).to_be_bytes());
+    buf.push(response.status);
+    buf.push(response.args.len() as u8);
     for arg in &response.args {
-        buf.put_u8(arg.len() as u8);
+        buf.push(arg.len() as u8);
     }
     buf.extend_from_slice(response.server_msg.as_bytes());
     buf.extend_from_slice(response.data.as_bytes());
     for arg in &response.args {
         buf.extend_from_slice(arg.as_bytes());
     }
-    Ok(buf.to_vec())
+    Ok(buf)
 }
 
 #[cfg(test)]

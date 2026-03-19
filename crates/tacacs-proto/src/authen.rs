@@ -9,7 +9,6 @@ use crate::{
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ARAP, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
 };
 use anyhow::{Result, ensure};
-use bytes::{BufMut, BytesMut};
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
@@ -412,9 +411,6 @@ pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
 
 // NIST 800-53 Rev5: SI-10 Information Input Validation
 pub fn encode_authen_reply(reply: &AuthenReply) -> Result<Vec<u8>> {
-    let mut buf = BytesMut::new();
-    buf.put_u8(reply.status);
-    buf.put_u8(reply.flags);
     let msg_bytes = if reply.server_msg_raw.is_empty() {
         reply.server_msg.as_bytes()
     } else {
@@ -428,11 +424,15 @@ pub fn encode_authen_reply(reply: &AuthenReply) -> Result<Vec<u8>> {
         reply.data.len() <= u16::MAX as usize,
         "data exceeds maximum length"
     );
-    buf.put_u16(msg_bytes.len() as u16);
-    buf.put_u16(reply.data.len() as u16);
+    let total_len = 6 + msg_bytes.len() + reply.data.len();
+    let mut buf = Vec::with_capacity(total_len);
+    buf.push(reply.status);
+    buf.push(reply.flags);
+    buf.extend_from_slice(&(msg_bytes.len() as u16).to_be_bytes());
+    buf.extend_from_slice(&(reply.data.len() as u16).to_be_bytes());
     buf.extend_from_slice(msg_bytes);
     buf.extend_from_slice(&reply.data);
-    Ok(buf.to_vec())
+    Ok(buf)
 }
 
 pub fn parse_authen_reply(_header: Header, body: &[u8]) -> Result<AuthenReply> {

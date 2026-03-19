@@ -7,12 +7,30 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use log::warn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg_attr(feature = "_bench_internals", allow(unused))]
+#[cfg(not(feature = "_bench_internals"))]
 mod accounting;
+#[cfg(feature = "_bench_internals")]
+pub mod accounting;
+
+#[cfg(not(feature = "_bench_internals"))]
 mod authen;
+#[cfg(feature = "_bench_internals")]
+pub mod authen;
+
+#[cfg(not(feature = "_bench_internals"))]
 mod author;
+#[cfg(feature = "_bench_internals")]
+pub mod author;
+
 mod capability;
 pub mod client;
+
+#[cfg(not(feature = "_bench_internals"))]
 mod crypto;
+#[cfg(feature = "_bench_internals")]
+pub mod crypto;
+
 pub mod header;
 mod util;
 

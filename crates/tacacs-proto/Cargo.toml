@@ -6,15 +6,22 @@ license.workspace = true
 
 [features]
 default = ["legacy-md5"]
-legacy-md5 = ["openssl"]
+legacy-md5 = ["dep:md-5"]
+_bench_internals = []
 
 [dependencies]
 bytes.workspace = true
 anyhow.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
-openssl = { workspace = true, optional = true }
+md-5 = { version = "0.10", optional = true }
 log.workspace = true
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "proto_bench"
+harness = false
+required-features = ["_bench_internals"]

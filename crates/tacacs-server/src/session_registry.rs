@@ -319,7 +319,7 @@ impl SessionRegistry {
         }
 
         // Register the connection while still holding the lock
-        let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
+        let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
         let record = SessionRecord::new(connection_id, peer_addr);
         sessions.insert(connection_id, record);
 
@@ -359,7 +359,7 @@ impl SessionRegistry {
     )]
     #[allow(dead_code)]
     pub async fn register_connection(&self, peer_addr: SocketAddr) -> u64 {
-        let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
+        let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
         let record = SessionRecord::new(connection_id, peer_addr);
 
         let mut sessions = self.sessions.write().await;
