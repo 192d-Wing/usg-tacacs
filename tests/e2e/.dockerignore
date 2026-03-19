@@ -1,0 +1,3 @@
+# Ignore everything except what the Dockerfile needs
+# This file applies to the test-runner build context only
+artifacts/

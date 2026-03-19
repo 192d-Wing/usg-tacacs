@@ -66,7 +66,9 @@ fn parse_acct_variable_fields(
     let port_len = body[6] as usize;
     let rem_addr_len = body[7] as usize;
     let arg_cnt = body[8] as usize;
-    let mut cursor: usize = 9;
+    // Per RFC 8907 Section 7.1: arg lengths are at [9..9+arg_cnt],
+    // then user, port, rem_addr, then arg data.
+    let mut cursor: usize = 9 + arg_cnt;
     let (user, next) = read_string(body, cursor, user_len, "user")?;
     cursor = next;
     let (port, next) = read_string(body, cursor, port_len, "port")?;
@@ -78,9 +80,9 @@ fn parse_acct_variable_fields(
 
 fn parse_acct_args(body: &[u8], cursor: usize, arg_cnt: usize) -> Result<Vec<String>> {
     let arg_lens: &[u8] = body
-        .get(cursor..cursor + arg_cnt)
+        .get(9..9 + arg_cnt)
         .ok_or_else(|| anyhow!("accounting args length truncated"))?;
-    let mut cursor = cursor + arg_cnt;
+    let mut cursor = cursor;
     let total_args_len: usize = arg_lens.iter().map(|l| *l as usize).sum();
     ensure!(
         cursor + total_args_len <= body.len(),
@@ -270,10 +272,11 @@ pub fn encode_accounting_response(response: &AccountingResponse) -> Result<Vec<u
         response.data.len() <= u16::MAX as usize,
         "accounting data too long"
     );
+    // RFC 8907 Section 7.2: server_msg_len(2) + data_len(2) + status(1)
     let mut buf: BytesMut = BytesMut::new();
-    buf.put_u8(response.status);
     buf.put_u16(response.server_msg.len() as u16);
     buf.put_u16(response.data.len() as u16);
+    buf.put_u8(response.status);
     buf.put_u8(response.args.len() as u8);
     for arg in &response.args {
         buf.put_u8(arg.len() as u8);
@@ -461,11 +464,11 @@ mod tests {
             0x09,            // rem_addr_len = 9
             0x02,            // arg_cnt = 2
         ];
+        body.push(13); // arg[0] len = "service=shell"
+        body.push(10); // arg[1] len = "task_id=42"
         body.extend_from_slice(b"alice"); // user
         body.extend_from_slice(b"tty0"); // port
         body.extend_from_slice(b"127.0.0.1"); // rem_addr
-        body.push(13); // arg[0] len = "service=shell"
-        body.push(10); // arg[1] len = "task_id=42"
         body.extend_from_slice(b"service=shell");
         body.extend_from_slice(b"task_id=42");
 
@@ -495,8 +498,8 @@ mod tests {
             0x00,           // rem_addr_len = 0
             0x01,           // arg_cnt = 1
         ];
-        body.extend_from_slice(b"alice"); // user
         body.push(13); // arg[0] len
+        body.extend_from_slice(b"alice"); // user
         body.extend_from_slice(b"service=shell");
 
         let req = parse_accounting_body(header, &body).unwrap();
@@ -518,8 +521,8 @@ mod tests {
             0x00,               // rem_addr_len = 0
             0x01,               // arg_cnt = 1
         ];
-        body.extend_from_slice(b"alice"); // user
         body.push(13); // arg[0] len
+        body.extend_from_slice(b"alice"); // user
         body.extend_from_slice(b"service=shell");
 
         let req = parse_accounting_body(header, &body).unwrap();
@@ -671,7 +674,8 @@ mod tests {
 
         let encoded = encode_accounting_response(&response).unwrap();
 
-        assert_eq!(encoded[0], ACCT_STATUS_SUCCESS);
+        // RFC 8907: server_msg_len(2) + data_len(2) + status(1)
+        assert_eq!(encoded[4], ACCT_STATUS_SUCCESS);
     }
 
     #[test]

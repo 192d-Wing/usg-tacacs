@@ -206,7 +206,9 @@ fn parse_author_variable_fields(
     let port_len = body[5] as usize;
     let rem_addr_len = body[6] as usize;
     let arg_cnt = body[7] as usize;
-    let mut cursor = 8;
+    // Per RFC 8907 Section 6.1: arg lengths come after the 8 fixed bytes,
+    // then user, port, rem_addr, then arg data.
+    let mut cursor = 8 + arg_cnt;
     let (user, next) = read_string(body, cursor, user_len, "user")?;
     cursor = next;
     let (port, next) = read_string(body, cursor, port_len, "port")?;
@@ -216,11 +218,15 @@ fn parse_author_variable_fields(
     Ok((user, port, rem_addr, cursor, arg_cnt))
 }
 
+/// Read arg length bytes from positions [8..8+arg_cnt] in the body.
+fn read_author_arg_lens(body: &[u8], arg_cnt: usize) -> Result<&[u8]> {
+    body.get(8..8 + arg_cnt)
+        .ok_or_else(|| anyhow!("authorization arg lengths truncated"))
+}
+
 fn parse_author_args(body: &[u8], cursor: usize, arg_cnt: usize) -> Result<Vec<String>> {
-    let arg_lens = body
-        .get(cursor..cursor + arg_cnt)
-        .ok_or_else(|| anyhow!("authorization args length truncated"))?;
-    let mut cursor = cursor + arg_cnt;
+    let arg_lens = read_author_arg_lens(body, arg_cnt)?;
+    let mut cursor = cursor;
     let total_args_len: usize = arg_lens.iter().map(|l| *l as usize).sum();
     ensure!(
         cursor + total_args_len <= body.len(),
@@ -549,11 +555,11 @@ mod tests {
             0x09, // rem_addr_len = 9
             0x02, // arg_cnt = 2
         ];
+        body.push(13); // arg[0] len = "service=shell"
+        body.push(13); // arg[1] len = "protocol=exec"
         body.extend_from_slice(b"alice"); // user
         body.extend_from_slice(b"tty0"); // port
         body.extend_from_slice(b"127.0.0.1"); // rem_addr
-        body.push(13); // arg[0] len = "service=shell"
-        body.push(13); // arg[1] len = "protocol=exec"
         body.extend_from_slice(b"service=shell");
         body.extend_from_slice(b"protocol=exec");
 

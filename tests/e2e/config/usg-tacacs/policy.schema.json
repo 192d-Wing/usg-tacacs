@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["default_allow", "rules"],
+  "properties": {
+    "default_allow": { "type": "boolean" },
+    "shell_start": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "ascii_prompts": {
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "password": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "ascii_user_prompts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Per-user overrides for username prompt; keys are usernames (case-insensitive)."
+    },
+    "ascii_password_prompts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Per-user overrides for password prompt; keys are usernames (case-insensitive)."
+    },
+    "ascii_port_prompts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Per-port overrides for username prompt; keys are port strings."
+    },
+    "ascii_remaddr_prompts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Per-remote-address overrides for username prompt; keys are rem_addr strings."
+    },
+    "allow_raw_server_msg": {
+      "type": "boolean",
+      "description": "When false, auth replies carrying raw server_msg bytes will be blocked/errored."
+    },
+    "raw_server_msg_allow_prefixes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional list of hex prefixes that are allowed for raw server_msg; if set, raw messages must match one of these prefixes."
+    },
+    "raw_server_msg_deny_prefixes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional list of hex prefixes that are denied for raw server_msg; deny takes precedence over allow."
+    },
+    "raw_server_msg_user_overrides": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "allow": { "type": "boolean" },
+          "allow_prefixes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "deny_prefixes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "allow_services": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+          },
+          "allow_actions": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Per-user overrides for raw server_msg enforcement; keys are usernames (case-insensitive)."
+    },
+    "ascii_messages": {
+      "type": "object",
+      "properties": {
+        "success": { "type": "string" },
+        "failure": { "type": "string" },
+        "abort": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "priority", "effect", "pattern"],
+        "properties": {
+          "id": { "type": "string" },
+          "priority": { "type": "integer" },
+          "effect": { "type": "string", "enum": ["allow", "deny"] },
+          "pattern": { "type": "string" },
+          "users": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

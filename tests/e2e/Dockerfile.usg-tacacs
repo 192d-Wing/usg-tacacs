@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# Multi-arch build of usg-tacacs for e2e testing.
+FROM rust:alpine AS builder
+
+RUN apk add --no-cache musl-dev openssl-dev pkgconfig build-base openssl-libs-static
+
+WORKDIR /app
+COPY . .
+RUN cargo build --release -p usg-tacacs-server
+
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+
+RUN adduser -D -H -s /sbin/nologin tacacs
+USER tacacs
+
+COPY --from=builder /app/target/release/usg-tacacs-server /usr/local/bin/usg-tacacs
+
+EXPOSE 300/tcp 49/tcp
+ENTRYPOINT ["/usr/local/bin/usg-tacacs"]
+CMD ["--help"]

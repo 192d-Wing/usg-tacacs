@@ -167,8 +167,8 @@ where
         bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body = author::encode_author_response(response)?;
-    crypto::apply_body_crypto(request_header, &mut body, secret)?;
     let header = request_header.response(body.len() as u32)?;
+    crypto::apply_body_crypto(&header, &mut body, secret)?;
     header::validate_response_header(
         &header,
         Some(TYPE_AUTHOR),
@@ -204,8 +204,8 @@ where
         bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body: Vec<u8> = authen::encode_authen_reply(reply)?;
-    crypto::apply_body_crypto(request_header, &mut body, secret)?;
     let header: Header = request_header.response(body.len() as u32)?;
+    crypto::apply_body_crypto(&header, &mut body, secret)?;
     header::validate_response_header(
         &header,
         Some(TYPE_AUTHEN),
@@ -241,8 +241,8 @@ where
         bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body: Vec<u8> = accounting::encode_accounting_response(response)?;
-    crypto::apply_body_crypto(request_header, &mut body, secret)?;
     let header: Header = request_header.response(body.len() as u32)?;
+    crypto::apply_body_crypto(&header, &mut body, secret)?;
     header::validate_response_header(&header, Some(TYPE_ACCT), ALLOWED_FLAGS, true, VERSION >> 4)?;
     header::write_header(writer, &header).await?;
     writer
@@ -270,8 +270,8 @@ where
         "shared secret too short; minimum {MIN_SECRET_LEN} bytes required"
     );
     let mut body = encode_capability(cap)?;
-    crypto::apply_body_crypto(request_header, &mut body, secret)?;
     let header: Header = request_header.response(body.len() as u32)?;
+    crypto::apply_body_crypto(&header, &mut body, secret)?;
     header::validate_response_header(
         &header,
         Some(TYPE_CAPABILITY),
@@ -779,8 +779,11 @@ pub fn validate_authen_continue(req: &authen::AuthenContinue) -> Result<()> {
 
 // NIST 800-53 Rev5: SI-10 Information Input Validation
 fn parse_acct_response_body(body: &[u8]) -> Result<accounting::AccountingResponse> {
+    // RFC 8907 Section 7.2: server_msg_len(2) + data_len(2) + status(1)
     ensure!(body.len() >= 6, "accounting response too short");
-    let status = body[0];
+    let server_msg_len = u16::from_be_bytes([body[0], body[1]]) as usize;
+    let data_len = u16::from_be_bytes([body[2], body[3]]) as usize;
+    let status = body[4];
     ensure!(
         status == ACCT_STATUS_SUCCESS
             || status == ACCT_STATUS_ERROR
@@ -791,8 +794,6 @@ fn parse_acct_response_body(body: &[u8]) -> Result<accounting::AccountingRespons
         warn!("accounting response uses deprecated FOLLOW status");
         bail!("accounting response uses deprecated FOLLOW status");
     }
-    let server_msg_len = u16::from_be_bytes([body[1], body[2]]) as usize;
-    let data_len = u16::from_be_bytes([body[3], body[4]]) as usize;
     let arg_cnt = body[5] as usize;
     let mut cursor = 6;
     let arg_lens = body

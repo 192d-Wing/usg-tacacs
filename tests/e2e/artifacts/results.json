@@ -1,0 +1,132 @@
+{
+  "valid_auth": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "status=1 (PASS)"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "status=98 (UNKNOWN: 98)"
+    }
+  },
+  "invalid_password": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "status=2 (FAIL)"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "status=163 (UNKNOWN: 163)"
+    }
+  },
+  "unknown_user": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "status=2 (FAIL)"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "status=173 (UNKNOWN: 173)"
+    }
+  },
+  "empty_credentials": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "status=7 (ERROR)"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "status=248 (UNKNOWN: 248)"
+    }
+  },
+  "long_credentials": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "status=2 (FAIL)"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "status=102 (UNKNOWN: 102)"
+    }
+  },
+  "secret_mismatch": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "exception=ValueError"
+    },
+    "tac_plus": {
+      "ok": true,
+      "detail": "status=119 (should not PASS)"
+    }
+  },
+  "author_permit": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "status=17 (ERROR)"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "EXCEPTION: error: unpack requires a buffer of 127 bytes"
+    }
+  },
+  "author_deny": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "status=17 (ERROR)"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "EXCEPTION: error: unpack requires a buffer of 93 bytes"
+    }
+  },
+  "acct_start_stop": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "start=2 stop=2"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "start=198 stop=251"
+    }
+  },
+  "malformed_packet": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "resp_len=0"
+    },
+    "tac_plus": {
+      "ok": true,
+      "detail": "resp_len=0"
+    }
+  },
+  "truncated_packet": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "resp_len=0"
+    },
+    "tac_plus": {
+      "ok": true,
+      "detail": "resp_len=0"
+    }
+  },
+  "invalid_length": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "resp_len=0"
+    },
+    "tac_plus": {
+      "ok": true,
+      "detail": "resp_len=0"
+    }
+  },
+  "concurrent_burst": {
+    "usg-tacacs": {
+      "ok": true,
+      "detail": "pass=20/20"
+    },
+    "tac_plus": {
+      "ok": false,
+      "detail": "pass=0/20"
+    }
+  }
+}

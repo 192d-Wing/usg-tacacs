@@ -1,0 +1,11 @@
+# Exclude build artifacts and non-essential files from Docker context
+target/
+.git/
+crates/tacacs-proto/fuzz/target/
+crates/tacacs-proto/fuzz/corpus/
+tests/e2e/artifacts/
+docs/
+iac/
+dashboards/
+*.md
+!README.md

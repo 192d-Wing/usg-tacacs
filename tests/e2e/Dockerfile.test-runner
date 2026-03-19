@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# Test runner for TACACS+ e2e interoperability tests.
+FROM python:3.11-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends netcat-openbsd && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir tacacs_plus==2.6 six
+
+WORKDIR /opt/e2e
+COPY scripts/ /opt/e2e/scripts/
+
+ENTRYPOINT ["python3", "/opt/e2e/scripts/run_tests.py"]

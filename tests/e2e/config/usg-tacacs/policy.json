@@ -1,0 +1,57 @@
+{
+  "default_allow": false,
+  "shell_start": {
+    "alice": ["priv-lvl=15"],
+    "bob": ["priv-lvl=1"]
+  },
+  "ascii_prompts": {
+    "username": "Username:",
+    "password": "Password:"
+  },
+  "ascii_user_prompts": {},
+  "ascii_password_prompts": {},
+  "ascii_port_prompts": {},
+  "ascii_remaddr_prompts": {},
+  "allow_raw_server_msg": false,
+  "ascii_messages": {
+    "success": "",
+    "failure": "",
+    "abort": ""
+  },
+  "raw_server_msg_allow_prefixes": [],
+  "raw_server_msg_deny_prefixes": [],
+  "raw_server_msg_user_overrides": {},
+  "rules": [
+    {
+      "id": "allow-show",
+      "priority": 10,
+      "effect": "allow",
+      "pattern": "show(\\s+.*)?"
+    },
+    {
+      "id": "allow-ping",
+      "priority": 20,
+      "effect": "allow",
+      "pattern": "ping(\\s+.*)?"
+    },
+    {
+      "id": "deny-reload",
+      "priority": 30,
+      "effect": "deny",
+      "pattern": "reload(\\s+.*)?"
+    },
+    {
+      "id": "deny-config",
+      "priority": 50,
+      "effect": "deny",
+      "pattern": "(configure|conf)(\\s+.*)?"
+    },
+    {
+      "id": "allow-config-alice",
+      "priority": 60,
+      "effect": "allow",
+      "users": ["alice"],
+      "pattern": "(configure|conf)(\\s+.*)?"
+    }
+  ]
+}
