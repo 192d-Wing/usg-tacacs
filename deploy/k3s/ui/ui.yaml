@@ -1,0 +1,62 @@
+# tacacs-ui: Cloudscape SPA + BFF. Talks to Loki/Prometheus in the monitoring
+# namespace. Deployed in `tacacs` to reuse the ghcr-pull secret. Internal
+# ClusterIP only; public exposure is via Traefik + oauth2-proxy (ingress.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tacacs-ui
+  namespace: tacacs
+  labels: { app: tacacs-ui }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: tacacs-ui }
+  template:
+    metadata:
+      labels: { app: tacacs-ui }
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ui
+          image: ghcr.io/192d-wing/tacacs-ui:0.1.0-arm64
+          imagePullPolicy: Always
+          env:
+            - { name: LOKI_URL, value: "http://loki.monitoring.svc:3100" }
+            - { name: PROM_URL, value: "http://prometheus.monitoring.svc:9090" }
+            - { name: TACACS_NAMESPACE, value: "tacacs" }
+            - { name: BFF_LISTEN, value: "0.0.0.0:8088" }
+          ports:
+            - { name: http, containerPort: 8088 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8088 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8088 }
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "50m", memory: "64Mi", ephemeral-storage: "32Mi" }
+            limits: { cpu: "500m", memory: "256Mi", ephemeral-storage: "128Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tacacs-ui
+  namespace: tacacs
+  labels: { app: tacacs-ui }
+spec:
+  type: ClusterIP
+  selector: { app: tacacs-ui }
+  ports:
+    - { name: http, port: 80, targetPort: 8088 }

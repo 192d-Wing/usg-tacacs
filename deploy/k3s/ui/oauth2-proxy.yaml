@@ -1,0 +1,76 @@
+# oauth2-proxy in forward-auth mode for Keycloak OIDC. The ingress oidc-auth
+# Middleware calls /oauth2/auth; oauth2-proxy redirects unauthenticated users to
+# Keycloak and, on success, returns X-Auth-Request-* identity headers.
+#
+# Operator must create the Secret `tacacs-ui-oidc` (namespace tacacs) with:
+#   oidc-issuer-url : https://icam.oopl.dev.mil/realms/<REALM>
+#   client-id       : <keycloak client id for tacacs-ui>
+#   client-secret   : <keycloak client secret>
+#   cookie-secret   : openssl rand -base64 32 | head -c 32
+# and register the client redirect URI https://tacacs-ui.oopl.dev.mil/oauth2/callback
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: tacacs
+  labels: { app: oauth2-proxy }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: oauth2-proxy }
+  template:
+    metadata:
+      labels: { app: oauth2-proxy }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 2000
+        runAsGroup: 2000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+          args:
+            - "--provider=oidc"
+            - "--http-address=0.0.0.0:4180"
+            - "--reverse-proxy=true"
+            - "--set-xauthrequest=true"
+            - "--pass-access-token=false"
+            - "--email-domain=*"
+            - "--cookie-secure=true"
+            - "--cookie-name=_tacacs_ui"
+            - "--whitelist-domain=tacacs-ui.oopl.dev.mil"
+            - "--redirect-url=https://tacacs-ui.oopl.dev.mil/oauth2/callback"
+            - "--upstream=static://200"
+            - "--skip-provider-button=true"
+          env:
+            - { name: OAUTH2_PROXY_OIDC_ISSUER_URL, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: oidc-issuer-url } } }
+            - { name: OAUTH2_PROXY_CLIENT_ID, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: client-id } } }
+            - { name: OAUTH2_PROXY_CLIENT_SECRET, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: client-secret } } }
+            - { name: OAUTH2_PROXY_COOKIE_SECRET, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: cookie-secret } } }
+          ports:
+            - { name: http, containerPort: 4180 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /ready, port: 4180 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "25m", memory: "64Mi" }
+            limits: { cpu: "250m", memory: "128Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: tacacs
+  labels: { app: oauth2-proxy }
+spec:
+  type: ClusterIP
+  selector: { app: oauth2-proxy }
+  ports:
+    - { name: http, port: 80, targetPort: 4180 }
