@@ -48,7 +48,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: tacacs
-          image: ghcr.io/192d-wing/usg-tacacs:0.78.1-arm64
+          image: ghcr.io/192d-wing/usg-tacacs:0.78.1-icam-arm64
           imagePullPolicy: Always
           args:
             # Bind [::] for dual-stack: on Linux (bindv6only=0) this accepts both
@@ -73,12 +73,20 @@ spec:
             - "/etc/tacacs/policy/policy.json"
             - "--schema"
             - "/etc/tacacs/policy/policy.schema.json"
-            - "--allow-static-credentials"
-            # Credentials are argon2id hashes mounted from the tacacs-creds
-            # Secret (no cleartext in the pod spec / process args / etcd).
-            # Generate with deploy/k3s/gen-creds.sh.
-            - "--user-password-hash-file"
-            - "/etc/tacacs/creds/user-hashes"
+            # ICAM/OIDC authentication — credentials forwarded to Keycloak via ROPC.
+            # Uses the HTTPS ingress endpoint; CoreDNS forwards oopl.dev.mil to Pi-hole.
+            - "--icam-token-endpoint"
+            - "https://icam.oopl.dev.mil/realms/dcim/protocol/openid-connect/token"
+            - "--icam-client-id"
+            - "tacacs-server"
+            - "--icam-client-secret-file"
+            - "/run/secrets/icam/client-secret"
+            - "--icam-ca-file"
+            - "/run/secrets/icam-ca/ca.pem"
+            - "--icam-groups-claim"
+            - "groups"
+            - "--icam-timeout-ms"
+            - "5000"
           env:
             - name: TACACS_SECRET
               valueFrom:
@@ -111,7 +119,8 @@ spec:
           volumeMounts:
             - { name: tls, mountPath: /etc/tacacs/tls, readOnly: true }
             - { name: policy, mountPath: /etc/tacacs/policy, readOnly: true }
-            - { name: creds, mountPath: /etc/tacacs/creds, readOnly: true }
+            - { name: icam, mountPath: /run/secrets/icam, readOnly: true }
+            - { name: icam-ca, mountPath: /run/secrets/icam-ca, readOnly: true }
             - { name: tmp, mountPath: /tmp }
       volumes:
         - name: tls
@@ -120,8 +129,11 @@ spec:
         - name: policy
           configMap:
             name: tacacs-policy
-        - name: creds
+        - name: icam
           secret:
-            secretName: tacacs-creds
+            secretName: tacacs-icam
+        - name: icam-ca
+          secret:
+            secretName: oopl-ca
         - name: tmp
           emptyDir: {}

@@ -110,9 +110,11 @@ x509-parser = "0.18"
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "rustls",
+  "form",
 ] }
 backon = "1"
 async-trait = "0.1"
+base64 = "0.22"
 
 [profile.release]
 lto = "thin"

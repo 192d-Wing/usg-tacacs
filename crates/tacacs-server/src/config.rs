@@ -478,6 +478,57 @@ pub struct Args {
     /// | SC-8 | Transmission Confidentiality | Requires explicit opt-in to disable TLS protection |
     #[arg(long, default_value_t = false)]
     pub api_allow_plaintext: bool,
+
+    // ==================== ICAM / OIDC Integration ====================
+    /// OIDC token endpoint URL for ICAM-delegated authentication (ROPC grant).
+    ///
+    /// When set, PAP and ASCII authentication forwards credentials to this
+    /// OIDC endpoint instead of checking local or LDAP credentials.
+    /// Example: `https://keycloak.example.com/realms/tacacs/protocol/openid-connect/token`
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | IA-2 | Identification and Authentication | Delegates credential validation to enterprise ICAM |
+    /// | IA-8 | Non-Organizational User Auth | Enterprise identity federation |
+    #[arg(long, env = "ICAM_TOKEN_ENDPOINT")]
+    pub icam_token_endpoint: Option<String>,
+
+    /// OIDC client ID registered in the ICAM provider for this TACACS+ service.
+    #[arg(long, env = "ICAM_CLIENT_ID")]
+    pub icam_client_id: Option<String>,
+
+    /// OIDC client secret for the TACACS+ service account in ICAM.
+    ///
+    /// **Security Note**: Prefer --icam-client-secret-file or ICAM_CLIENT_SECRET env var.
+    #[arg(long, env = "ICAM_CLIENT_SECRET")]
+    pub icam_client_secret: Option<String>,
+
+    /// Path to file containing the ICAM client secret (recommended for production).
+    ///
+    /// Takes precedence over --icam-client-secret and ICAM_CLIENT_SECRET.
+    #[arg(long)]
+    pub icam_client_secret_file: Option<PathBuf>,
+
+    /// JWT claim name containing user group memberships returned by ICAM (default: `groups`).
+    ///
+    /// The claim value may be a JSON array of strings or a single string.
+    /// Groups are lowercased and matched against policy rule `groups` fields.
+    #[arg(long, default_value = "groups")]
+    pub icam_groups_claim: String,
+
+    /// ICAM HTTP request timeout in milliseconds (default: 5000).
+    #[arg(long, default_value_t = 5000)]
+    pub icam_timeout_ms: u64,
+
+    /// Optional CA certificate (PEM) for validating the ICAM HTTPS endpoint.
+    ///
+    /// Required when the ICAM token endpoint uses a private/internal CA
+    /// (e.g. the oopl-ca used by `https://icam.oopl.dev.mil`).
+    /// When omitted, the system CA bundle is used.
+    #[arg(long)]
+    pub icam_ca_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -652,6 +703,26 @@ pub fn credentials_map(args: &Args) -> std::result::Result<StaticCreds, String> 
     }
 
     Ok(creds)
+}
+
+/// Resolve the ICAM client secret from file, CLI argument, or environment variable.
+///
+/// Priority order (highest to lowest):
+/// 1. --icam-client-secret-file (file-based secret)
+/// 2. --icam-client-secret or ICAM_CLIENT_SECRET environment variable
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | SC-12 | Cryptographic Key Establishment | Secure secret provisioning via file |
+pub fn resolve_icam_client_secret(args: &Args) -> std::result::Result<Option<String>, String> {
+    if let Some(path) = &args.icam_client_secret_file {
+        let secret = read_secret_file(path)
+            .map_err(|e| format!("failed to read ICAM client secret file {path:?}: {e}"))?;
+        return Ok(Some(secret));
+    }
+    Ok(args.icam_client_secret.clone())
 }
 
 fn load_user_pass_file(
@@ -1120,6 +1191,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1224,6 +1302,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1326,6 +1411,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1428,6 +1520,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1531,6 +1630,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1633,6 +1739,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1800,6 +1913,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -1899,6 +2019,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -1998,6 +2125,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -2102,6 +2236,13 @@ mod tests {
             est_renewal_check_interval_secs: 3600,
             est_bootstrap_timeout_secs: 300,
             est_initial_enrollment_required: false,
+            icam_token_endpoint: None,
+            icam_client_id: None,
+            icam_client_secret: None,
+            icam_client_secret_file: None,
+            icam_groups_claim: "groups".into(),
+            icam_timeout_ms: 5000,
+            icam_ca_file: None,
         };
 
         let result = resolve_ldap_bind_password(&args);

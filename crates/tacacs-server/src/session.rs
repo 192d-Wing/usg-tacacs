@@ -56,6 +56,10 @@ pub struct SingleConnectState {
     pub active: bool,
     pub locked: bool,
     pub session: Option<u32>,
+    /// ICAM groups extracted from the OIDC JWT at authentication time.
+    /// Populated when ICAM authentication succeeds; used during authorization
+    /// to map OIDC claims to TACACS+ policy rules (AC-2, AC-3).
+    pub icam_groups: Vec<String>,
 }
 
 impl SingleConnectState {
@@ -64,6 +68,7 @@ impl SingleConnectState {
         self.active = false;
         self.locked = false;
         self.session = None;
+        self.icam_groups = Vec::new();
     }
 
     pub fn activate(&mut self, user: String, session: u32) {

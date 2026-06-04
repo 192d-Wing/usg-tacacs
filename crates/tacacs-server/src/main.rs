@@ -74,7 +74,10 @@
 
 use crate::ascii::AsciiConfig;
 use crate::auth::LdapConfig;
-use crate::config::{Args, LogFormat, StaticCreds, build_est_config, credentials_map};
+use crate::config::{
+    Args, LogFormat, StaticCreds, build_est_config, credentials_map, resolve_icam_client_secret,
+};
+use crate::icam::{IcamConfig, icam_build_client};
 use crate::http::{ServerState, serve_http};
 use crate::metrics::metrics;
 use crate::server::{
@@ -110,6 +113,7 @@ struct AppState {
     shared_secret: Option<Arc<Vec<u8>>>,
     credentials: Arc<StaticCreds>,
     ldap_config: Option<Arc<LdapConfig>>,
+    icam_config: Option<Arc<IcamConfig>>,
     legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
     conn_limiter: ConnLimiter,
     session_registry: Arc<SessionRegistry>,
@@ -468,6 +472,7 @@ fn build_tls_contexts(
         secret: state.shared_secret.clone(),
         credentials: state.credentials.clone(),
         ldap: state.ldap_config.clone(),
+        icam: state.icam_config.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let tls_identity = TlsIdentityConfig {
@@ -545,6 +550,7 @@ fn setup_legacy_listener(
         secret: state.shared_secret.clone(),
         credentials: state.credentials.clone(),
         ldap: state.ldap_config.clone(),
+        icam: state.icam_config.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let nad_secrets = state.legacy_nad_secrets.clone();
@@ -719,6 +725,52 @@ async fn handle_graceful_shutdown(
     }
 }
 
+/// Build ICAM config from CLI args, returning None if not configured.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | ICAM delegation configuration |
+/// | SC-8 | Transmission Confidentiality | HTTPS-only reqwest client built once |
+fn build_icam_config(args: &Args) -> Result<Option<Arc<IcamConfig>>> {
+    let Some(endpoint) = args.icam_token_endpoint.as_ref() else {
+        return Ok(None);
+    };
+    let client_id = args
+        .icam_client_id
+        .as_ref()
+        .context("--icam-client-id is required when --icam-token-endpoint is set")?
+        .clone();
+    let client_secret = resolve_icam_client_secret(args)
+        .map_err(anyhow::Error::msg)?
+        .context("--icam-client-secret or --icam-client-secret-file is required when --icam-token-endpoint is set")?;
+    let timeout = std::time::Duration::from_millis(args.icam_timeout_ms);
+    let ca_file = args.icam_ca_file.clone();
+    let ca_pem: Option<Vec<u8>> = if let Some(ref path) = ca_file {
+        Some(
+            std::fs::read(path)
+                .with_context(|| format!("failed to read ICAM CA file {path:?}"))?,
+        )
+    } else {
+        None
+    };
+    let https_only = endpoint.starts_with("https://");
+    let http_client = icam_build_client(timeout, ca_pem.as_deref(), https_only)
+        .context("failed to build ICAM HTTP client")?;
+    let cfg = IcamConfig {
+        token_endpoint: endpoint.clone(),
+        client_id,
+        client_secret,
+        groups_claim: args.icam_groups_claim.clone(),
+        timeout,
+        ca_file,
+        http_client,
+    };
+    info!(endpoint = %endpoint, "ICAM/OIDC authentication enabled");
+    Ok(Some(Arc::new(cfg)))
+}
+
 /// Build application state from parsed arguments.
 async fn build_app_state(args: &Args) -> Result<AppState> {
     let policy_path = args
@@ -727,6 +779,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         .context("a --policy path is required to start the server")?
         .clone();
     let ldap_config = validate_secrets_and_build_ldap(args)?;
+    let icam_config = build_icam_config(args)?;
     let (est_provider, est_config) = setup_est_provider(args).await?;
 
     Ok(AppState {
@@ -740,6 +793,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
             .map(|s| Arc::new(s.clone().into_bytes())),
         credentials: Arc::new(credentials_map(args).map_err(anyhow::Error::msg)?),
         ldap_config,
+        icam_config,
         legacy_nad_secrets: Arc::new(
             args.legacy_nad_secret
                 .iter()
@@ -818,6 +872,7 @@ mod ascii;
 mod auth;
 mod config;
 mod http;
+mod icam;
 mod metrics;
 mod policy;
 mod server;

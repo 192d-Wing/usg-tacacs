@@ -264,12 +264,23 @@ fn handle_empty_password_with_backoff(pwd_prompt: Vec<u8>) -> AuthenReply {
 /// # NIST SP 800-53 Controls
 /// - IA-2: User identification and authentication
 /// - IA-5: Authenticator management
+/// - IA-8: Non-organizational user authentication (ICAM delegation)
 async fn verify_password_all_sources(
     state: &AuthSessionState,
     password: &[u8],
     credentials: &crate::config::StaticCreds,
     ldap: Option<&Arc<LdapConfig>>,
+    icam: Option<&crate::icam::IcamConfig>,
+    icam_groups_out: &mut Vec<String>,
 ) -> bool {
+    // ICAM-delegated authentication: forward credentials to OIDC exclusively.
+    if let (Some(icam_cfg), Some(user)) = (icam, state.username.as_deref())
+        && let Ok(pwd) = std::str::from_utf8(password)
+    {
+        let result = crate::icam::icam_authenticate(icam_cfg, user, pwd).await;
+        *icam_groups_out = result.groups;
+        return result.authenticated;
+    }
     // Try static credentials first
     let mut ok = if let Some(raw_user) = state.username_raw.as_ref() {
         verify_pap_bytes_username(raw_user, password, credentials)
@@ -338,6 +349,8 @@ async fn handle_password_phase(
     credentials: &crate::config::StaticCreds,
     config: &AsciiConfig,
     ldap: Option<&Arc<LdapConfig>>,
+    icam: Option<&crate::icam::IcamConfig>,
+    icam_groups_out: &mut Vec<String>,
     pwd_prompt: Vec<u8>,
 ) -> AuthenReply {
     state.ascii_pass_attempts = state.ascii_pass_attempts.saturating_add(1);
@@ -355,7 +368,15 @@ async fn handle_password_phase(
 
     state.ascii_need_pass = false;
 
-    let ok = verify_password_all_sources(state, cont_user_msg, credentials, ldap).await;
+    let ok = verify_password_all_sources(
+        state,
+        cont_user_msg,
+        credentials,
+        ldap,
+        icam,
+        icam_groups_out,
+    )
+    .await;
 
     if !ok
         && let Some(delay) = calc_ascii_backoff_capped(
@@ -518,6 +539,8 @@ pub async fn handle_ascii_continue(
     credentials: &crate::config::StaticCreds,
     config: &AsciiConfig,
     ldap: Option<&Arc<LdapConfig>>,
+    icam: Option<&crate::icam::IcamConfig>,
+    icam_groups_out: &mut Vec<String>,
 ) -> AuthenReply {
     let policy_user = username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
     let policy_port = field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
@@ -559,6 +582,8 @@ pub async fn handle_ascii_continue(
             credentials,
             config,
             ldap,
+            icam,
+            icam_groups_out,
             pwd_prompt,
         )
         .await
@@ -810,6 +835,8 @@ mod tests {
             &creds,
             &config,
             None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -834,7 +861,7 @@ mod tests {
         let config = make_test_config(); // attempt_limit = 5
 
         let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None).await;
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new()).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(
@@ -854,7 +881,7 @@ mod tests {
         let config = make_test_config(); // user_attempt_limit = 3
 
         let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None).await;
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new()).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(reply.server_msg.contains("too many username attempts"));
@@ -870,7 +897,7 @@ mod tests {
         let config = make_test_config(); // pass_attempt_limit = 5
 
         let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None).await;
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new()).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(reply.server_msg.contains("too many password attempts"));
@@ -888,6 +915,8 @@ mod tests {
 
         let reply = handle_ascii_continue(
             b"", b"newuser", 0, &mut state, &policy, &creds, &config, None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -907,6 +936,8 @@ mod tests {
 
         let reply = handle_ascii_continue(
             b"newuser", b"", 0, &mut state, &policy, &creds, &config, None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -930,6 +961,8 @@ mod tests {
         let reply = handle_ascii_continue(
             b"", b"", // Empty username
             0, &mut state, &policy, &creds, &config, None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -948,6 +981,8 @@ mod tests {
         let reply = handle_ascii_continue(
             b"", b"", // Empty password
             0, &mut state, &policy, &creds, &config, None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -974,6 +1009,8 @@ mod tests {
             &creds,
             &config,
             None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -1001,6 +1038,8 @@ mod tests {
             &creds,
             &config,
             None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -1020,7 +1059,7 @@ mod tests {
         let config = make_test_config();
 
         let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None).await;
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new()).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_RESTART);
         assert!(reply.server_msg.contains("restart"));
@@ -1051,6 +1090,8 @@ mod tests {
             &creds,
             &config,
             None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -1075,6 +1116,8 @@ mod tests {
             &creds,
             &config,
             None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -1100,6 +1143,8 @@ mod tests {
             &creds,
             &config,
             None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -1117,7 +1162,7 @@ mod tests {
         config.attempt_limit = 0; // Unlimited
 
         let reply =
-            handle_ascii_continue(b"", b"user", 0, &mut state, &policy, &creds, &config, None)
+            handle_ascii_continue(b"", b"user", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new())
                 .await;
 
         // Should not fail due to attempt limit
@@ -1144,6 +1189,8 @@ mod tests {
             &creds,
             &config,
             None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 
@@ -1170,6 +1217,8 @@ mod tests {
             &creds,
             &config,
             None,
+            None,
+            &mut Vec::new(),
         )
         .await;
 

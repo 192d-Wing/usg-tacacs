@@ -82,6 +82,7 @@ use crate::auth::{
     LdapConfig, handle_chap_continue, ldap_fetch_groups, verify_pap, verify_pap_bytes,
     verify_pap_bytes_username, verify_password_sources,
 };
+use crate::icam::{IcamAuthResult, IcamConfig, icam_authenticate};
 use crate::config::StaticCreds;
 use crate::policy::enforce_server_msg;
 use crate::session::{SingleConnectState, TaskIdTracker};
@@ -287,6 +288,9 @@ pub(crate) struct AuthContext {
     pub credentials: Arc<StaticCreds>,
     /// LDAP configuration for external authentication
     pub ldap: Option<Arc<LdapConfig>>,
+    /// ICAM/OIDC configuration; when set, PAP and ASCII auth delegate to ICAM
+    /// instead of checking local or LDAP credentials (IA-2, IA-8).
+    pub icam: Option<Arc<IcamConfig>>,
 }
 
 /// TLS-specific configuration for client certificate validation.
@@ -1119,6 +1123,7 @@ pub async fn serve_legacy(
                 secret: conn_secret,
                 credentials: conn_auth_ctx.credentials.clone(),
                 ldap: conn_auth_ctx.ldap.clone(),
+                icam: conn_auth_ctx.icam.clone(),
             };
             if let Err(err) = handle_connection(
                 socket,
@@ -1615,15 +1620,30 @@ fn build_authz_semantic_error_response(
 }
 
 /// Execute authorization decision based on request type.
+///
+/// Groups are resolved from ICAM (cached at auth time) when available,
+/// otherwise fetched from LDAP.  This avoids a second ICAM credential
+/// round-trip while still supporting LDAP-only deployments.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Policy evaluated with ICAM or LDAP groups |
+/// | AC-2 | Account Management | Group memberships drive authorization decisions |
 async fn execute_authorization_decision(
     request: &AuthorizationRequest,
     policy: &Arc<RwLock<PolicyEngine>>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam_groups: &[String],
     peer: &str,
 ) -> AuthorizationResponse {
-    // Fetch LDAP groups BEFORE acquiring policy lock to avoid holding
-    // the lock across a potentially slow network call.
-    let ldap_groups = if let Some(ldap_cfg) = ldap.as_ref() {
+    // Prefer ICAM groups cached at auth time; fall back to live LDAP query.
+    let effective_groups = if !icam_groups.is_empty() {
+        icam_groups.to_vec()
+    } else if let Some(ldap_cfg) = ldap.as_ref() {
+        // Fetch LDAP groups BEFORE acquiring policy lock to avoid holding
+        // the lock across a potentially slow network call.
         ldap_fetch_groups(ldap_cfg, &request.user).await
     } else {
         Vec::new()
@@ -1634,7 +1654,7 @@ async fn execute_authorization_decision(
     if request.is_shell_start() {
         authorize_shell_command(request, &policy_guard, peer)
     } else if let Some(cmd) = request.command_string() {
-        authorize_user_command(request, &policy_guard, &ldap_groups, &cmd, peer)
+        authorize_user_command(request, &policy_guard, &effective_groups, &cmd, peer)
     } else {
         authz_reason_response(
             AUTHOR_STATUS_ERROR,
@@ -1666,7 +1686,16 @@ where
     }
 
     let decision = match validate_authorization_semantics(request) {
-        Ok(()) => execute_authorization_decision(request, policy, ldap, peer).await,
+        Ok(()) => {
+            execute_authorization_decision(
+                request,
+                policy,
+                ldap,
+                &single_connect.icam_groups,
+                peer,
+            )
+            .await
+        }
         Err(msg) => build_authz_semantic_error_response(request, msg, peer),
     };
 
@@ -2339,12 +2368,18 @@ async fn build_pap_auth_result(
 
 /// Handle PAP authentication START packet.
 ///
+/// When ICAM is configured, credentials are forwarded to the ICAM OIDC token
+/// endpoint exclusively (no fallback to static or LDAP credentials).
+/// Groups returned from the JWT are placed in `icam_groups_out` for use
+/// during subsequent authorization.
+///
 /// # NIST Controls
 ///
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
-/// | IA-2 | Identification and Authentication | PAP password verification |
-/// | IA-5 | Authenticator Management | Password verification via static creds and LDAP |
+/// | IA-2 | Identification and Authentication | PAP verification via ICAM or local creds |
+/// | IA-5 | Authenticator Management | Password verification via ICAM, static creds, or LDAP |
+/// | IA-8 | Non-Organizational User Auth | ICAM delegation for enterprise identity |
 #[allow(clippy::too_many_arguments)]
 async fn handle_authen_start_pap(
     start: &AuthenStart,
@@ -2352,6 +2387,8 @@ async fn handle_authen_start_pap(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
+    icam_groups_out: &mut Vec<String>,
     peer: &str,
 ) -> Result<AuthenReply> {
     state.authen_type = Some(AUTHEN_TYPE_PAP);
@@ -2368,6 +2405,17 @@ async fn handle_authen_start_pap(
             });
         }
     };
+
+    // ICAM-delegated authentication: forward credentials to OIDC token endpoint.
+    // When ICAM is configured it is the exclusive source; no fallback to local creds.
+    if let Some(icam_cfg) = icam.as_ref() {
+        let result: IcamAuthResult =
+            icam_authenticate(icam_cfg, &start.user, &password).await;
+        *icam_groups_out = result.groups;
+        return Ok(
+            build_pap_auth_result(result.authenticated, start.service, start.action, policy).await,
+        );
+    }
 
     let ok = verify_pap(&start.user, &password, credentials).await
         || verify_password_sources(
@@ -2493,14 +2541,26 @@ fn build_ascii_password_prompt(policy_prompt: Option<&[u8]>, service: Option<u8>
     }
 }
 
-/// Verify ASCII credentials using all available sources (PAP bytes or password verification).
+/// Verify ASCII credentials using ICAM, static creds, or LDAP.
+///
+/// When ICAM is configured, credentials are forwarded exclusively to ICAM.
+/// On ICAM success, `icam_groups_out` is populated with the JWT groups claim.
 async fn verify_ascii_credentials_all_sources(
     username: Option<&str>,
     username_raw: Option<&Vec<u8>>,
     password_data: &[u8],
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
+    icam_groups_out: &mut Vec<String>,
 ) -> bool {
+    if let (Some(icam_cfg), Some(user)) = (icam.as_ref(), username)
+        && let Ok(pwd) = std::str::from_utf8(password_data)
+    {
+        let result: IcamAuthResult = icam_authenticate(icam_cfg, user, pwd).await;
+        *icam_groups_out = result.groups;
+        return result.authenticated;
+    }
     if let Some(raw) = username_raw {
         if verify_pap_bytes_username(raw, password_data, credentials) {
             return true;
@@ -2596,6 +2656,8 @@ async fn handle_authen_start_ascii(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
+    icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
 ) -> AuthenReply {
     state.authen_type = Some(AUTHEN_TYPE_ASCII);
@@ -2615,6 +2677,8 @@ async fn handle_authen_start_ascii(
             &start.data,
             credentials,
             ldap,
+            icam,
+            icam_groups_out,
         )
         .await;
         if !ok
@@ -2855,6 +2919,7 @@ async fn finalize_authentication<S>(
     auth_states: &mut HashMap<u32, AuthSessionState>,
     single_connect: &mut SingleConnectState,
     single_connect_flag: bool,
+    icam_groups: Vec<String>,
     connection_id: u64,
     registry: &Arc<SessionRegistry>,
     policy: &Arc<RwLock<PolicyEngine>>,
@@ -2893,6 +2958,12 @@ where
 
     if is_terminal {
         cleanup_terminal_auth_state(auth_states, single_connect, session_id, reply.status);
+    }
+
+    // Store ICAM groups in connection state so authorization can use them
+    // without requiring a second ICAM call (AC-2, AC-3 — policy enforcement).
+    if matches!(reply.status, AUTHEN_STATUS_PASS) && !icam_groups.is_empty() {
+        single_connect.icam_groups = icam_groups;
     }
 
     activate_single_connect_on_success(
@@ -2955,16 +3026,37 @@ async fn process_authen_start_packet(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
+    icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
     peer: &str,
 ) -> Result<AuthenReply, LoopControl> {
     match start.authen_type {
-        AUTHEN_TYPE_ASCII => {
-            Ok(handle_authen_start_ascii(start, state, policy, credentials, ldap, ascii_cfg).await)
-        }
-        AUTHEN_TYPE_PAP => handle_authen_start_pap(start, state, policy, credentials, ldap, peer)
-            .await
-            .map_err(|_| LoopControl::Break),
+        AUTHEN_TYPE_ASCII => Ok(
+            handle_authen_start_ascii(
+                start,
+                state,
+                policy,
+                credentials,
+                ldap,
+                icam,
+                icam_groups_out,
+                ascii_cfg,
+            )
+            .await,
+        ),
+        AUTHEN_TYPE_PAP => handle_authen_start_pap(
+            start,
+            state,
+            policy,
+            credentials,
+            ldap,
+            icam,
+            icam_groups_out,
+            peer,
+        )
+        .await
+        .map_err(|_| LoopControl::Break),
         AUTHEN_TYPE_CHAP => handle_authen_start_chap(start, state, peer)
             .await
             .map_err(|_| LoopControl::Break),
@@ -2986,6 +3078,8 @@ async fn process_authen_continue_packet(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
+    icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
 ) -> AuthenReply {
     match state.authen_type {
@@ -2999,6 +3093,8 @@ async fn process_authen_continue_packet(
                 credentials,
                 ascii_cfg,
                 ldap.as_ref(),
+                icam.as_deref(),
+                icam_groups_out,
             )
             .await
         }
@@ -3080,18 +3176,36 @@ async fn process_authen_packet(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
+    icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
     peer: &str,
 ) -> Result<AuthenReply, LoopControl> {
     match packet {
-        AuthenPacket::Start(start) => {
-            process_authen_start_packet(start, state, policy, credentials, ldap, ascii_cfg, peer)
-                .await
-        }
+        AuthenPacket::Start(start) => process_authen_start_packet(
+            start,
+            state,
+            policy,
+            credentials,
+            ldap,
+            icam,
+            icam_groups_out,
+            ascii_cfg,
+            peer,
+        )
+        .await,
         AuthenPacket::Continue(cont) => {
-            let reply =
-                process_authen_continue_packet(cont, state, policy, credentials, ldap, ascii_cfg)
-                    .await;
+            let reply = process_authen_continue_packet(
+                cont,
+                state,
+                policy,
+                credentials,
+                ldap,
+                icam,
+                icam_groups_out,
+                ascii_cfg,
+            )
+            .await;
             Ok(reply)
         }
     }
@@ -3108,6 +3222,7 @@ async fn handle_authentication_packet<S>(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3129,13 +3244,23 @@ where
             Some(s) => s,
             None => return Ok(LoopControl::Break),
         };
-    let reply =
-        match process_authen_packet(&packet, state, policy, credentials, ldap, ascii_cfg, peer)
-            .await
-        {
-            Ok(r) => r,
-            Err(ctrl) => return Ok(ctrl),
-        };
+    let mut icam_groups: Vec<String> = Vec::new();
+    let reply = match process_authen_packet(
+        &packet,
+        state,
+        policy,
+        credentials,
+        ldap,
+        icam,
+        &mut icam_groups,
+        ascii_cfg,
+        peer,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(ctrl) => return Ok(ctrl),
+    };
     finalize_authentication(
         stream,
         &packet,
@@ -3145,6 +3270,7 @@ where
         auth_states,
         single_connect,
         single_connect_flag,
+        icam_groups,
         connection_id,
         registry,
         policy,
@@ -3202,6 +3328,7 @@ async fn dispatch_packet_to_handler<S>(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3233,6 +3360,7 @@ where
                 policy,
                 credentials,
                 ldap,
+                icam,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3323,6 +3451,7 @@ async fn connection_loop<S>(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    icam: &Option<Arc<IcamConfig>>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3366,6 +3495,7 @@ where
                 policy,
                 credentials,
                 ldap,
+                icam,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3423,6 +3553,7 @@ where
     let secret = &auth_ctx.secret;
     let credentials = &auth_ctx.credentials;
     let ldap = &auth_ctx.ldap;
+    let icam = &auth_ctx.icam;
     let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
     let single_connect_keepalive_secs = conn_cfg.single_connect_keepalive_secs;
     let packet_read_timeout_secs = conn_cfg.packet_read_timeout_secs;
@@ -3443,6 +3574,7 @@ where
         policy,
         credentials,
         ldap,
+        icam,
         ascii_cfg,
         secret.as_deref().map(|s| s.as_slice()),
         &peer,
