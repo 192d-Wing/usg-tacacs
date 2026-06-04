@@ -1,0 +1,81 @@
+# Keycloak (icam) HTTPS exposure via Traefik.
+#
+# Full HTTPS cutover: Traefik terminates TLS using the OOPL-internal-CA-signed
+# cert (Secret icam-tls), forwards http to the Keycloak pod (KC_HTTP_ENABLED=true,
+# KC_PROXY_HEADERS=xforwarded). KC_HOSTNAME is set to https://icam.oopl.dev.mil so
+# every realm's OIDC issuer is https. The web (:80) Ingress only redirects to https.
+#
+# Backchannel clients (dcim-otter-go, tacacs-ui oauth2-proxy) trust the CA via the
+# oopl-ca Secret. Rollback specs in deploy/k3s/rollback/.
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: icam
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: icam
+spec:
+  headers:
+    stsSeconds: 63072000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    forceSTSHeader: true
+    contentTypeNosniff: true
+    referrerPolicy: "strict-origin-when-cross-origin"
+---
+# HTTPS Ingress (websecure) serving the icam-tls cert.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keycloak
+  namespace: icam
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: icam-security-headers@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: ["icam.oopl.dev.mil"]
+      secretName: icam-tls
+  rules:
+    - host: icam.oopl.dev.mil
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port: { number: 80 }
+---
+# HTTP Ingress (web) that only redirects to HTTPS.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keycloak-redirect
+  namespace: icam
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: icam-https-redirect@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: icam.oopl.dev.mil
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port: { number: 80 }

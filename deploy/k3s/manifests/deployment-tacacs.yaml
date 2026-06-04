@@ -60,6 +60,9 @@ spec:
             - "[::]:300"
             - "--listen-http"
             - "[::]:8080"
+            # JSON logs so the tacacs_audit events are parseable by Alloy->Loki.
+            - "--log-format"
+            - "json"
             - "--tls-cert"
             - "/etc/tacacs/tls/server.pem"
             - "--tls-key"

@@ -1,0 +1,99 @@
+# oauth2-proxy in forward-auth mode for Keycloak OIDC. The ingress oidc-auth
+# Middleware calls /oauth2/auth; oauth2-proxy redirects unauthenticated users to
+# Keycloak and, on success, returns X-Auth-Request-* identity headers.
+#
+# Operator must create the Secret `tacacs-ui-oidc` (namespace tacacs) with:
+#   oidc-issuer-url : http://icam.oopl.dev.mil/realms/<REALM>   (Keycloak is HTTP)
+#   client-id       : <keycloak client id for tacacs-ui>
+#   client-secret   : <keycloak client secret>
+#   cookie-secret   : openssl rand -base64 32 | head -c 32
+# and register the client redirect URI https://tacacs-ui.oopl.dev.mil/oauth2/callback
+#
+# NOTE: Keycloak (icam.oopl.dev.mil) is only reachable via Traefik on the LAN VIP
+# 10.10.10.54, which cluster DNS does not resolve. The hostAliases below let the
+# oauth2-proxy pods reach Keycloak for OIDC discovery + token redemption using the
+# same issuer host the browser sees (no internal/external issuer mismatch).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: tacacs
+  labels: { app: oauth2-proxy }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: oauth2-proxy }
+  template:
+    metadata:
+      labels: { app: oauth2-proxy }
+    spec:
+      automountServiceAccountToken: false
+      # Resolve the Keycloak ingress host to the Traefik LAN VIP so the pod can
+      # reach it for OIDC discovery + token redemption (cluster DNS can't).
+      hostAliases:
+        - ip: "10.10.10.54"
+          hostnames: ["icam.oopl.dev.mil"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 2000
+        runAsGroup: 2000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+          args:
+            - "--provider=oidc"
+            - "--http-address=0.0.0.0:4180"
+            - "--reverse-proxy=true"
+            - "--set-xauthrequest=true"
+            - "--pass-access-token=false"
+            - "--email-domain=*"
+            - "--cookie-secure=true"
+            - "--cookie-name=_tacacs_ui"
+            - "--whitelist-domain=tacacs-ui.oopl.dev.mil"
+            - "--redirect-url=https://tacacs-ui.oopl.dev.mil/oauth2/callback"
+            # Reverse-proxy mode: oauth2-proxy fronts the UI and redirects
+            # unauthenticated users to Keycloak (302), then proxies to the BFF.
+            - "--upstream=http://tacacs-ui.tacacs.svc.cluster.local"
+            - "--skip-provider-button=true"
+            - "--pass-user-headers=true"
+            - "--code-challenge-method=S256"
+            # Trust the OOPL internal CA that signed Keycloak's (icam) cert so
+            # OIDC discovery + token redemption over https succeed.
+            - "--provider-ca-file=/etc/ssl/oopl/ca.pem"
+          env:
+            - { name: OAUTH2_PROXY_OIDC_ISSUER_URL, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: oidc-issuer-url } } }
+            - { name: OAUTH2_PROXY_CLIENT_ID, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: client-id } } }
+            - { name: OAUTH2_PROXY_CLIENT_SECRET, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: client-secret } } }
+            - { name: OAUTH2_PROXY_COOKIE_SECRET, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: cookie-secret } } }
+          ports:
+            - { name: http, containerPort: 4180 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /ready, port: 4180 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "25m", memory: "64Mi" }
+            limits: { cpu: "250m", memory: "128Mi" }
+          volumeMounts:
+            - { name: oopl-ca, mountPath: /etc/ssl/oopl, readOnly: true }
+      volumes:
+        - name: oopl-ca
+          secret:
+            secretName: oopl-ca
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: tacacs
+  labels: { app: oauth2-proxy }
+spec:
+  type: ClusterIP
+  selector: { app: oauth2-proxy }
+  ports:
+    - { name: http, port: 80, targetPort: 4180 }
