@@ -83,6 +83,7 @@ use crate::auth::{
     verify_pap_bytes_username, verify_password_sources,
 };
 use crate::icam::{IcamAuthResult, IcamConfig, icam_authenticate};
+use crate::icam_device::{DeviceFlowConfig, icam_device_auth_start, icam_device_format_prompt};
 use crate::config::StaticCreds;
 use crate::policy::enforce_server_msg;
 use crate::session::{SingleConnectState, TaskIdTracker};
@@ -291,6 +292,9 @@ pub(crate) struct AuthContext {
     /// ICAM/OIDC configuration; when set, PAP and ASCII auth delegate to ICAM
     /// instead of checking local or LDAP credentials (IA-2, IA-8).
     pub icam: Option<Arc<IcamConfig>>,
+    /// RFC 8628 Device Authorization Grant; when set, ASCII auth presents a
+    /// browser URL instead of collecting credentials inline (IA-2, IA-8).
+    pub device_flow: Option<Arc<DeviceFlowConfig>>,
 }
 
 /// TLS-specific configuration for client certificate validation.
@@ -1124,6 +1128,7 @@ pub async fn serve_legacy(
                 credentials: conn_auth_ctx.credentials.clone(),
                 ldap: conn_auth_ctx.ldap.clone(),
                 icam: conn_auth_ctx.icam.clone(),
+                device_flow: conn_auth_ctx.device_flow.clone(),
             };
             if let Err(err) = handle_connection(
                 socket,
@@ -2195,6 +2200,8 @@ fn create_state_from_start(start: &AuthenStart) -> AuthSessionState {
         ascii_attempts: 0,
         ascii_user_attempts: 0,
         ascii_pass_attempts: 0,
+        device_code: None,
+        device_poll_count: 0,
     })
 }
 
@@ -2225,6 +2232,8 @@ fn create_state_from_continue(cont: &AuthenContinue) -> AuthSessionState {
         ascii_pass_attempts: 0,
         service: None,
         action: None,
+        device_code: None,
+        device_poll_count: 0,
     }
 }
 
@@ -2657,12 +2666,19 @@ async fn handle_authen_start_ascii(
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
+    device_flow: &Option<Arc<DeviceFlowConfig>>,
     icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
 ) -> AuthenReply {
     state.authen_type = Some(AUTHEN_TYPE_ASCII);
     state.service = Some(start.service);
     state.action = Some(start.action);
+
+    // Device flow feature gate: bypass username/password, initiate browser auth.
+    if let Some(df_cfg) = device_flow.as_deref() {
+        return handle_ascii_device_flow_start(state, df_cfg).await;
+    }
+
     extract_ascii_username_from_start(start, state);
     let (policy_user_prompt, policy_pass_prompt) =
         fetch_ascii_prompts_from_policy(policy, state).await;
@@ -2694,6 +2710,46 @@ async fn handle_authen_start_ascii(
     } else {
         state.ascii_need_pass = true;
         build_getpass_reply(policy_pass_prompt.as_deref(), state.service)
+    }
+}
+
+/// Initiate RFC 8628 device authorization and return GETDATA reply with verification URL.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | Initiates ICAM device authorization |
+/// | IA-6 | Authenticator Feedback | Returns URL; never echoes credentials |
+/// | AU-2 | Audit Events | Initiation outcome logged via tracing |
+async fn handle_ascii_device_flow_start(
+    state: &mut AuthSessionState,
+    cfg: &DeviceFlowConfig,
+) -> AuthenReply {
+    assert!(cfg.max_polls > 0, "max_polls must be positive");
+    match icam_device_auth_start(cfg).await {
+        Some(resp) => {
+            let msg = icam_device_format_prompt(&resp, 0, cfg.max_polls);
+            state.device_code = Some(resp.device_code);
+            state.device_poll_count = 0;
+            AuthenReply {
+                status: AUTHEN_STATUS_GETDATA,
+                flags: 0,
+                server_msg: msg,
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        }
+        None => {
+            tracing::warn!("device auth start failed; cannot present browser URL");
+            AuthenReply {
+                status: AUTHEN_STATUS_FAIL,
+                flags: 0,
+                server_msg: "device authorization initialization failed".into(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        }
     }
 }
 
@@ -2773,17 +2829,21 @@ fn build_authen_audit_message(reply: &AuthenReply, state_snapshot: &AuthStateSna
 
 /// Log terminal authentication status with detailed audit information.
 ///
+/// `identity_source` is one of `"icam"`, `"ldap"`, or `"local"` and reflects
+/// which backend was used to validate the credential (AU-3: audit record content).
+///
 /// # NIST SP 800-53 Controls
 ///
 /// | Control | Implementation |
 /// |---------|----------------|
 /// | AU-12 | Audit Generation - Terminal authentication events |
-/// | AU-3 | Content of Audit Records - User, session, status, reason |
+/// | AU-3 | Content of Audit Records - User, session, status, identity source |
 fn log_terminal_authen_status(
     reply: &AuthenReply,
     state_snapshot: &AuthStateSnapshot,
     session_id: u32,
     peer: &str,
+    identity_source: &str,
 ) {
     let status_label = match reply.status {
         AUTHEN_STATUS_PASS => "pass",
@@ -2802,14 +2862,17 @@ fn log_terminal_authen_status(
     });
     let msg_data = build_authen_audit_message(reply, state_snapshot);
 
-    audit_event(
-        "authn_terminal",
-        peer,
-        user_for_log,
-        session_id,
-        status_label,
-        "terminal",
-        &msg_data,
+    info!(
+        target: "tacacs_audit",
+        event = "authn_terminal",
+        peer = %peer,
+        user = %user_for_log,
+        session = session_id,
+        status = %status_label,
+        reason = "terminal",
+        identity_source = %identity_source,
+        data = %msg_data,
+        "audit event"
     );
 }
 
@@ -2920,6 +2983,7 @@ async fn finalize_authentication<S>(
     single_connect: &mut SingleConnectState,
     single_connect_flag: bool,
     icam_groups: Vec<String>,
+    identity_source: &str,
     connection_id: u64,
     registry: &Arc<SessionRegistry>,
     policy: &Arc<RwLock<PolicyEngine>>,
@@ -2934,7 +2998,7 @@ where
     let single_user = state_snapshot.username.clone();
 
     if is_terminal {
-        log_terminal_authen_status(&reply, &state_snapshot, session_id, peer);
+        log_terminal_authen_status(&reply, &state_snapshot, session_id, peer, identity_source);
     }
 
     write_authen_reply(stream, header, &reply, secret)
@@ -3027,6 +3091,7 @@ async fn process_authen_start_packet(
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
+    device_flow: &Option<Arc<DeviceFlowConfig>>,
     icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
     peer: &str,
@@ -3040,6 +3105,7 @@ async fn process_authen_start_packet(
                 credentials,
                 ldap,
                 icam,
+                device_flow,
                 icam_groups_out,
                 ascii_cfg,
             )
@@ -3079,6 +3145,7 @@ async fn process_authen_continue_packet(
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
+    device_flow: &Option<Arc<DeviceFlowConfig>>,
     icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
 ) -> AuthenReply {
@@ -3094,6 +3161,7 @@ async fn process_authen_continue_packet(
                 ascii_cfg,
                 ldap.as_ref(),
                 icam.as_deref(),
+                device_flow.as_deref(),
                 icam_groups_out,
             )
             .await
@@ -3177,6 +3245,7 @@ async fn process_authen_packet(
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
+    device_flow: &Option<Arc<DeviceFlowConfig>>,
     icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
     peer: &str,
@@ -3189,6 +3258,7 @@ async fn process_authen_packet(
             credentials,
             ldap,
             icam,
+            device_flow,
             icam_groups_out,
             ascii_cfg,
             peer,
@@ -3202,6 +3272,7 @@ async fn process_authen_packet(
                 credentials,
                 ldap,
                 icam,
+                device_flow,
                 icam_groups_out,
                 ascii_cfg,
             )
@@ -3223,6 +3294,7 @@ async fn handle_authentication_packet<S>(
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
+    device_flow: &Option<Arc<DeviceFlowConfig>>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3245,6 +3317,13 @@ where
             None => return Ok(LoopControl::Break),
         };
     let mut icam_groups: Vec<String> = Vec::new();
+    let identity_source = if icam.is_some() {
+        "icam"
+    } else if ldap.is_some() {
+        "ldap"
+    } else {
+        "local"
+    };
     let reply = match process_authen_packet(
         &packet,
         state,
@@ -3252,6 +3331,7 @@ where
         credentials,
         ldap,
         icam,
+        device_flow,
         &mut icam_groups,
         ascii_cfg,
         peer,
@@ -3271,6 +3351,7 @@ where
         single_connect,
         single_connect_flag,
         icam_groups,
+        identity_source,
         connection_id,
         registry,
         policy,
@@ -3329,6 +3410,7 @@ async fn dispatch_packet_to_handler<S>(
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
+    device_flow: &Option<Arc<DeviceFlowConfig>>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3361,6 +3443,7 @@ where
                 credentials,
                 ldap,
                 icam,
+                device_flow,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3452,6 +3535,7 @@ async fn connection_loop<S>(
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
+    device_flow: &Option<Arc<DeviceFlowConfig>>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3496,6 +3580,7 @@ where
                 credentials,
                 ldap,
                 icam,
+                device_flow,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3554,6 +3639,7 @@ where
     let credentials = &auth_ctx.credentials;
     let ldap = &auth_ctx.ldap;
     let icam = &auth_ctx.icam;
+    let device_flow = &auth_ctx.device_flow;
     let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
     let single_connect_keepalive_secs = conn_cfg.single_connect_keepalive_secs;
     let packet_read_timeout_secs = conn_cfg.packet_read_timeout_secs;
@@ -3575,6 +3661,7 @@ where
         credentials,
         ldap,
         icam,
+        device_flow,
         ascii_cfg,
         secret.as_deref().map(|s| s.as_slice()),
         &peer,
