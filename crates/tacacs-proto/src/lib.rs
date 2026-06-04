@@ -784,9 +784,12 @@ pub fn validate_authen_start(req: &authen::AuthenStart) -> Result<()> {
 
 /// Validate an outgoing authentication continue packet for basic RFC compliance.
 pub fn validate_authen_continue(req: &authen::AuthenContinue) -> Result<()> {
+    // RFC 8907 §4.1: client-originated packets (START and CONTINUE) use odd
+    // sequence numbers; only server replies are even. A CONTINUE is sent by the
+    // client (NAS), so its seq_no must be odd (3, 5, ...).
     ensure!(
-        req.header.seq_no.is_multiple_of(2),
-        "authentication continue must use even sequence number"
+        req.header.seq_no % 2 == 1,
+        "authentication continue must use odd sequence number"
     );
     // Only AUTHEN_FLAG_NOECHO is defined for continue requests per RFC.
     ensure!(
@@ -1285,7 +1288,8 @@ mod tests {
 
     #[test]
     fn validate_authen_continue_valid() {
-        let cont = AuthenContinue::builder(123).with_seq(2);
+        // CONTINUE is a client packet: odd seq (3) is valid.
+        let cont = AuthenContinue::builder(123).with_seq(3);
 
         let result = validate_authen_continue(&cont);
         assert!(result.is_ok());
@@ -1294,7 +1298,7 @@ mod tests {
     #[test]
     fn validate_authen_continue_with_noecho_flag() {
         let cont = AuthenContinue::builder(123)
-            .with_seq(2)
+            .with_seq(3)
             .with_flags(AUTHEN_FLAG_NOECHO);
 
         let result = validate_authen_continue(&cont);
@@ -1302,17 +1306,17 @@ mod tests {
     }
 
     #[test]
-    fn validate_authen_continue_odd_seq_fails() {
-        let cont = AuthenContinue::builder(123).with_seq(3); // Odd sequence
+    fn validate_authen_continue_even_seq_fails() {
+        let cont = AuthenContinue::builder(123).with_seq(2); // Even sequence (server-only)
 
         let result = validate_authen_continue(&cont);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("even"));
+        assert!(result.unwrap_err().to_string().contains("odd"));
     }
 
     #[test]
     fn validate_authen_continue_invalid_flags_fails() {
-        let cont = AuthenContinue::builder(123).with_seq(2).with_flags(0xFF);
+        let cont = AuthenContinue::builder(123).with_seq(3).with_flags(0xFF);
 
         let result = validate_authen_continue(&cont);
         assert!(result.is_err());

@@ -2859,6 +2859,19 @@ where
         .await
         .with_context(|| "sending TACACS+ auth reply")?;
 
+    // Advance the session state machine for non-terminal replies (GETUSER /
+    // GETPASS / GETDATA). The server reply uses seq_no = request_seq + 1; the
+    // next client CONTINUE must be odd and follow it, so mark that a client
+    // packet is now expected. Without this, validate_client() rejects the
+    // following CONTINUE as "unexpected client packet order" and ASCII login
+    // (the default for Cisco NAS) can never complete.
+    if !is_terminal
+        && let Some(st) = auth_states.get_mut(&session_id)
+    {
+        st.last_seq = header.seq_no.wrapping_add(1);
+        st.expect_client = true;
+    }
+
     enforce_server_msg_policy(policy, auth_states, session_id, &mut reply, peer).await;
 
     if is_terminal {

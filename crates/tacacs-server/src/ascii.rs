@@ -333,7 +333,7 @@ async fn build_password_auth_result(
 }
 
 async fn handle_password_phase(
-    cont_data: &[u8],
+    cont_user_msg: &[u8],
     state: &mut AuthSessionState,
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &crate::config::StaticCreds,
@@ -343,7 +343,7 @@ async fn handle_password_phase(
 ) -> AuthenReply {
     state.ascii_pass_attempts = state.ascii_pass_attempts.saturating_add(1);
 
-    if cont_data.is_empty() {
+    if cont_user_msg.is_empty() {
         if let Some(delay) = calc_ascii_backoff_capped(
             config.backoff_ms,
             state.ascii_attempts,
@@ -356,7 +356,7 @@ async fn handle_password_phase(
 
     state.ascii_need_pass = false;
 
-    let ok = verify_password_all_sources(state, cont_data, credentials, ldap).await;
+    let ok = verify_password_all_sources(state, cont_user_msg, credentials, ldap).await;
 
     if !ok
         && let Some(delay) = calc_ascii_backoff_capped(
@@ -380,14 +380,14 @@ async fn handle_password_phase(
 /// | IA-2 | Identification and Authentication | Processes username input and transitions to password phase |
 /// | AC-7 | Unsuccessful Logon Attempts | Applies exponential backoff on empty username |
 async fn handle_username_phase(
-    cont_data: &[u8],
+    cont_user_msg: &[u8],
     state: &mut AuthSessionState,
     config: &AsciiConfig,
     uname_prompt: Vec<u8>,
     pwd_prompt: Vec<u8>,
 ) -> AuthenReply {
     state.ascii_user_attempts = state.ascii_user_attempts.saturating_add(1);
-    let username_raw = cont_data.to_vec();
+    let username_raw = cont_user_msg.to_vec();
 
     if !username_raw.is_empty() {
         // Valid username provided - store and transition to password phase
@@ -545,11 +545,15 @@ pub async fn handle_ascii_continue(
         return reply;
     }
 
+    // RFC 8907 §5.4.1: the user's typed response (username or password) is
+    // carried in the CONTINUE user_msg field, not data. The data field is
+    // action/authen_type-specific and is empty for interactive ASCII login.
+    let _ = cont_data;
     if state.ascii_need_user {
-        handle_username_phase(cont_data, state, config, uname_prompt, pwd_prompt).await
+        handle_username_phase(cont_user_msg, state, config, uname_prompt, pwd_prompt).await
     } else if state.ascii_need_pass {
         handle_password_phase(
-            cont_data,
+            cont_user_msg,
             state,
             policy,
             credentials,
@@ -902,7 +906,7 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"", b"newuser", 0, &mut state, &policy, &creds, &config, None,
+            b"newuser", b"", 0, &mut state, &policy, &creds, &config, None,
         )
         .await;
 
@@ -962,8 +966,8 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"",
             b"testpass", // Correct password
+            b"",
             0,
             &mut state,
             &policy,
@@ -989,8 +993,8 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"",
             b"wrongpass", // Wrong password
+            b"",
             0,
             &mut state,
             &policy,
@@ -1039,8 +1043,8 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"",
             b"testpass",
+            b"",
             0,
             &mut state,
             &policy,
@@ -1132,8 +1136,8 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"",
             b"testpass",
+            b"",
             0,
             &mut state,
             &policy,
@@ -1158,8 +1162,8 @@ mod tests {
 
         // Non-UTF8 username
         let reply = handle_ascii_continue(
-            b"",
             &[0xFF, 0xFE, 0x80],
+            b"",
             0,
             &mut state,
             &policy,
