@@ -16,7 +16,7 @@
   },
   "ascii_prompts": {
     "username": "Username:",
-    "password": "Secret:"
+    "password": "Password:"
   },
   "allow_raw_server_msg": true,
   "ascii_messages": {
