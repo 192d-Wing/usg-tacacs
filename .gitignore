@@ -18,3 +18,8 @@ security-audit/
 # Local deployment PKI (generated, do not commit private keys)
 deploy/kind/pki/
 deploy/k3s/pki/
+
+# UI build artifacts (generated)
+ui/web/node_modules/
+ui/web/dist/
+ui/bff/target/
