@@ -14,3 +14,7 @@ SECURITY_REMEDIATION_PLAN.md
 security-audit/
 *.pentest
 *.vuln
+
+# Local deployment PKI (generated, do not commit private keys)
+deploy/kind/pki/
+deploy/k3s/pki/
