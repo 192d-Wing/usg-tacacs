@@ -9,7 +9,16 @@
       "additionalProperties": {
         "type": "array",
         "items": { "type": "string" }
-      }
+      },
+      "description": "Shell-start attributes keyed by username (case-insensitive)."
+    },
+    "shell_start_groups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "description": "Shell-start attributes keyed by group name (case-insensitive). Checked when the user has no entry in shell_start; first matching group wins."
     },
     "ascii_prompts": {
       "type": "object",

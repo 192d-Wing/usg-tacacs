@@ -1314,6 +1314,17 @@ fn validate_authen_single_connect(
 /// Validate single-connect constraints for accounting requests.
 ///
 /// Returns error message if validation fails, None if validation passes.
+/// Validate single-connect accounting request against the established session.
+///
+/// Accounting transactions generate their own session_id even on a shared
+/// single-connect TCP connection (RFC 8907 §5.3); only the bound username
+/// must be consistent across transactions.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-12 | Audit Generation | Validates accounting requests are from authenticated sessions |
 fn validate_acct_single_connect(
     single_connect: &SingleConnectState,
     request: &AccountingRequest,
@@ -1331,14 +1342,8 @@ fn validate_acct_single_connect(
         return None;
     }
 
-    if let Some(bound) = single_connect.session
-        && bound != request.header.session_id
-    {
-        warn!(peer = %peer, user = %request.user, session = request.header.session_id,
-                bound_session = bound, "single-connect violation: session-id mismatch on accounting");
-        return Some("session-id mismatch".into());
-    }
-
+    // Accounting transactions carry their own session_id (RFC 8907 §5.3);
+    // validate only the bound username, not the session_id.
     if let Some(ref bound_user) = single_connect.user {
         if bound_user != &request.user {
             warn!(peer = %peer, user = %request.user, bound_user = %bound_user,
