@@ -1,0 +1,27 @@
+# kind cluster for usg-tacacs with Cilium CNI doing CNI + service load
+# balancing + LoadBalancer-IP advertisement (L2 announcements / anycast).
+#
+# Default CNI (kindnet) and kube-proxy are disabled so Cilium can install as
+# the CNI and run in kube-proxy replacement mode (Cilium's per-node eBPF LB is
+# the DaemonSet that load-balances across TACACS pods).
+#
+# extraPortMappings forward the host's 49/300 to the TACACS Service NodePorts
+# (30049/30300) on the control-plane node, so the LB is reachable from the Mac
+# (Docker Desktop does not route the LoadBalancer IP subnet to the host).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  kubeProxyMode: "none"
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30049
+        hostPort: 49
+        protocol: TCP
+      - containerPort: 30300
+        hostPort: 300
+        protocol: TCP
+  - role: worker

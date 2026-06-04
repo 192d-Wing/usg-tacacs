@@ -1,0 +1,28 @@
+# Cilium LoadBalancer IPAM pool + L2 announcement policy.
+#
+# Cilium assigns LoadBalancer Service external IPs from this pool and answers
+# ARP for them on the node interfaces (anycast-style advertisement) — replacing
+# the previous HAProxy + FRR/BGP approach. The pool sits high in the kind Docker
+# network subnet (172.19.0.0/16) to avoid colliding with node IPs (172.19.0.x).
+#
+# NIST SP 800-53 Rev. 5: SC-7 (boundary protection / managed interfaces).
+apiVersion: cilium.io/v2alpha1
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: tacacs-pool
+spec:
+  blocks:
+    - cidr: "172.19.255.200/29"
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: tacacs-l2
+spec:
+  loadBalancerIPs: true
+  externalIPs: true
+  interfaces:
+    - ^eth[0-9]+$
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/os: linux
