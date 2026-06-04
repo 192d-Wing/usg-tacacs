@@ -1,0 +1,7 @@
+# Cleartext user:password pairs for the lab deployment.
+# Copy this file to pki/creds.txt (gitignored), set real passwords, then run
+# ./gen-creds.sh to produce pki/user-hashes (argon2id). Only the hashes are
+# mounted into the cluster (tacacs-creds Secret) — never the cleartext.
+admin:CHANGE-ME
+testadmin:CHANGE-ME
+alice:CHANGE-ME

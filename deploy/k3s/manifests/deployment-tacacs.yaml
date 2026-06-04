@@ -44,10 +44,12 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: tacacs
-          image: ghcr.io/192d-wing/usg-tacacs:0.78.0-arm64
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/192d-wing/usg-tacacs:0.78.1-arm64
+          imagePullPolicy: Always
           args:
             # Bind [::] for dual-stack: on Linux (bindv6only=0) this accepts both
             # IPv6 and IPv4, so the v4 (10.10.10.55) and v6 (::55) anycast paths
@@ -69,12 +71,11 @@ spec:
             - "--schema"
             - "/etc/tacacs/policy/policy.schema.json"
             - "--allow-static-credentials"
-            - "--user-password"
-            - "admin:ciscocisco12-"
-            - "--user-password"
-            - "testadmin:Tac@cs-Priv15"
-            - "--user-password"
-            - "alice:alicepass"
+            # Credentials are argon2id hashes mounted from the tacacs-creds
+            # Secret (no cleartext in the pod spec / process args / etcd).
+            # Generate with deploy/k3s/gen-creds.sh.
+            - "--user-password-hash-file"
+            - "/etc/tacacs/creds/user-hashes"
           env:
             - name: TACACS_SECRET
               valueFrom:
@@ -107,6 +108,7 @@ spec:
           volumeMounts:
             - { name: tls, mountPath: /etc/tacacs/tls, readOnly: true }
             - { name: policy, mountPath: /etc/tacacs/policy, readOnly: true }
+            - { name: creds, mountPath: /etc/tacacs/creds, readOnly: true }
             - { name: tmp, mountPath: /tmp }
       volumes:
         - name: tls
@@ -115,5 +117,8 @@ spec:
         - name: policy
           configMap:
             name: tacacs-policy
+        - name: creds
+          secret:
+            secretName: tacacs-creds
         - name: tmp
           emptyDir: {}
