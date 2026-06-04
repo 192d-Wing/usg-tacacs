@@ -1,0 +1,35 @@
+# TACACS+ LoadBalancer service.
+#
+# Cilium LB-IPAM assigns the anycast IPs named in the annotation (from the
+# tacacs-anycast pool) and advertises them over BGP. Dual-stack v4+v6.
+#
+# externalTrafficPolicy: Local — required for NIST AU-3 compliance.
+#
+# With Cluster policy, Cilium SNATs cross-node traffic before forwarding to
+# the pod; the server sees the forwarding node's IP instead of the NAD IP.
+# This corrupts peer_addr in every audit log entry and breaks per-NAD shared
+# secret lookup (server.rs:accept_legacy_connections). Local policy avoids
+# SNAT entirely: Cilium's BGP control plane only advertises routes to nodes
+# that have a local TACACS pod, so traffic arrives directly without rewrite.
+# ECMP is preserved (3 paths for 3 replicas); the real NAD IP is always visible
+# at the socket.
+apiVersion: v1
+kind: Service
+metadata:
+  name: tacacs
+  namespace: tacacs
+  labels:
+    app: tacacs
+    app.kubernetes.io/name: tacacs
+  annotations:
+    lbipam.cilium.io/ips: "10.10.10.55,2601:443:c200:575::55"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ipFamilyPolicy: PreferDualStack
+  ipFamilies: ["IPv4", "IPv6"]
+  selector:
+    app: tacacs
+  ports:
+    - { name: legacy, port: 49, targetPort: 49 }
+    - { name: tls, port: 300, targetPort: 300 }

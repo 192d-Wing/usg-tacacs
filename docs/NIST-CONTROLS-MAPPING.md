@@ -181,6 +181,15 @@ This document maps the security controls implemented in **usg-tacacs** (a produc
 - **Outcome:** Success/failure, rule ID, decision reason
 - **Context:** Session ID, sequence number, groups
 
+**Deployment prerequisite — Kubernetes (k3s / Cilium):** The Kubernetes
+LoadBalancer service must be configured with `externalTrafficPolicy: Local`.
+With the default `Cluster` policy, Cilium SNATs cross-node traffic and the
+server records the forwarding node IP rather than the NAD IP, rendering the
+`peer` field non-compliant with AU-3 (source identification). See
+`deploy/k3s/manifests/service-tacacs.yaml` and the
+[Kubernetes deployment](../docs/operations.md#kubernetes-deployment-k3s--cilium)
+section of the operations guide.
+
 ---
 
 ### AU-4: Audit Storage Capacity
