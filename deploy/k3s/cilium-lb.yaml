@@ -3,8 +3,9 @@
 # Mirrors the existing pihole/dcim anycast pattern on this k3s cluster:
 #   - a /32 (+ /128) pool scoped to services labelled app=tacacs
 #   - a CiliumBGPAdvertisement labelled `advertise: k3s-pod-cidrs` (the label the
-#     CiliumBGPPeerConfig `upstream-k3s` selects) so the LB IP is advertised over
-#     BGP to the upstream router (10.0.111.1 / 2601:443:c200:572::1, ASN 64599).
+#     CiliumBGPPeerConfig `upstream-k3s-v4/v6` selects) so the LB IP is advertised
+#     over BGP to the upstream router (10.0.111.1 / 2601:443:c200:572::1, ASN 64599).
+#   - BGP peer configs and CiliumBGPClusterConfig live in cilium-bgp.yaml.
 #
 # NIST SP 800-53 Rev. 5: SC-7 (boundary protection / managed interface).
 apiVersion: cilium.io/v2

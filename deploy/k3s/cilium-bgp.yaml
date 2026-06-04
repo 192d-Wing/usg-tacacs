@@ -1,0 +1,71 @@
+# Cilium BGP peer configs and cluster config for the k3s upstream router.
+#
+# Two peer configs to prevent extended next-hop (RFC 5549) from advertising
+# IPv6 prefixes with an IPv4 next-hop over the IPv4 BGP session, which most
+# routers reject. The IPv4 session carries ipv4/unicast only; the IPv6 session
+# carries both families with a valid IPv6 next-hop.
+#
+# Router: 10.0.111.1 / 2601:443:c200:572::1, ASN 64599, local ASN 64600.
+#
+# NIST SP 800-53 Rev. 5: SC-7 (boundary protection / managed interface).
+---
+# IPv4 BGP session: ipv4 unicast only.
+apiVersion: cilium.io/v2
+kind: CiliumBGPPeerConfig
+metadata:
+  name: upstream-k3s-v4
+spec:
+  ebgpMultihop: 1
+  families:
+  - advertisements:
+      matchLabels:
+        advertise: k3s-pod-cidrs
+    afi: ipv4
+    safi: unicast
+  timers:
+    connectRetryTimeSeconds: 3
+    holdTimeSeconds: 9
+    keepAliveTimeSeconds: 3
+---
+# IPv6 BGP session: both address families with a valid IPv6 next-hop.
+apiVersion: cilium.io/v2
+kind: CiliumBGPPeerConfig
+metadata:
+  name: upstream-k3s-v6
+spec:
+  ebgpMultihop: 1
+  families:
+  - advertisements:
+      matchLabels:
+        advertise: k3s-pod-cidrs
+    afi: ipv4
+    safi: unicast
+  - advertisements:
+      matchLabels:
+        advertise: k3s-pod-cidrs
+    afi: ipv6
+    safi: unicast
+  timers:
+    connectRetryTimeSeconds: 3
+    holdTimeSeconds: 9
+    keepAliveTimeSeconds: 3
+---
+apiVersion: cilium.io/v2
+kind: CiliumBGPClusterConfig
+metadata:
+  name: k3s-upstream
+spec:
+  bgpInstances:
+  - localASN: 64600
+    name: k3s
+    peers:
+    - name: upstream-ipv4
+      peerASN: 64599
+      peerAddress: 10.0.111.1
+      peerConfigRef:
+        name: upstream-k3s-v4
+    - name: upstream-ipv6
+      peerASN: 64599
+      peerAddress: 2601:443:c200:572::1
+      peerConfigRef:
+        name: upstream-k3s-v6
