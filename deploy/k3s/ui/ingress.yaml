@@ -58,8 +58,7 @@ metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/router.middlewares: >-
-      tacacs-security-headers@kubernetescrd,tacacs-oidc-auth@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: tacacs-security-headers@kubernetescrd
 spec:
   ingressClassName: traefik
   tls:
@@ -69,18 +68,14 @@ spec:
     - host: tacacs-ui.oopl.dev.mil
       http:
         paths:
-          # oauth2-proxy's own callback/sign-in routes (no auth middleware).
-          - path: /oauth2
-            pathType: Prefix
-            backend:
-              service:
-                name: oauth2-proxy
-                port: { number: 80 }
+          # All traffic flows through oauth2-proxy (reverse-proxy mode): it
+          # redirects unauthenticated users to Keycloak and proxies the rest to
+          # the tacacs-ui BFF. /oauth2/* is handled by oauth2-proxy internally.
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: tacacs-ui
+                name: oauth2-proxy
                 port: { number: 80 }
 ---
 # Companion HTTP Ingress that only redirects to HTTPS.

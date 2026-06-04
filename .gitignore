@@ -23,3 +23,6 @@ deploy/k3s/pki/
 ui/bff/target/
 ui/web/node_modules/
 ui/web/dist/
+
+# Cluster rollback captures (live specs, do not commit)
+deploy/k3s/rollback/
