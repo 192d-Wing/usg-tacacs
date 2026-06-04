@@ -255,8 +255,9 @@ fn handle_empty_password_with_backoff(pwd_prompt: Vec<u8>) -> AuthenReply {
         status: AUTHEN_STATUS_GETPASS,
         flags: AUTHEN_FLAG_NOECHO,
         server_msg: String::new(),
-        server_msg_raw: Vec::new(),
-        data: pwd_prompt,
+        // RFC 8907 §5.2: prompt goes in server_msg, not data.
+        server_msg_raw: pwd_prompt,
+        data: Vec::new(),
     }
 }
 
@@ -399,8 +400,9 @@ async fn handle_username_phase(
             status: AUTHEN_STATUS_GETPASS,
             flags: AUTHEN_FLAG_NOECHO,
             server_msg: String::new(),
-            server_msg_raw: Vec::new(),
-            data: pwd_prompt,
+            // RFC 8907 §5.2: prompt goes in server_msg, not data.
+            server_msg_raw: pwd_prompt,
+            data: Vec::new(),
         }
     } else {
         // Empty username - apply backoff and re-prompt
@@ -415,8 +417,9 @@ async fn handle_username_phase(
             status: AUTHEN_STATUS_GETUSER,
             flags: 0,
             server_msg: String::new(),
-            server_msg_raw: Vec::new(),
-            data: uname_prompt,
+            // RFC 8907 §5.2: prompt goes in server_msg, not data.
+            server_msg_raw: uname_prompt,
+            data: Vec::new(),
         }
     }
 }

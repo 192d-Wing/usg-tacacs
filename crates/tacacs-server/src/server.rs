@@ -2558,8 +2558,10 @@ fn build_getuser_reply(prompt: Option<&[u8]>, service: Option<u8>) -> AuthenRepl
         status: AUTHEN_STATUS_GETUSER,
         flags: 0,
         server_msg: String::new(),
-        server_msg_raw: Vec::new(),
-        data: build_ascii_username_prompt(prompt, service),
+        // RFC 8907 §5.2: the prompt shown to the user goes in server_msg, not
+        // data. Cisco IOS displays server_msg; an empty one shows no prompt.
+        server_msg_raw: build_ascii_username_prompt(prompt, service),
+        data: Vec::new(),
     }
 }
 
@@ -2568,8 +2570,9 @@ fn build_getpass_reply(prompt: Option<&[u8]>, service: Option<u8>) -> AuthenRepl
         status: AUTHEN_STATUS_GETPASS,
         flags: AUTHEN_FLAG_NOECHO,
         server_msg: String::new(),
-        server_msg_raw: Vec::new(),
-        data: build_ascii_password_prompt(prompt, service),
+        // RFC 8907 §5.2: prompt goes in server_msg, not data.
+        server_msg_raw: build_ascii_password_prompt(prompt, service),
+        data: Vec::new(),
     }
 }
 
