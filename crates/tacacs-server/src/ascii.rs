@@ -142,20 +142,20 @@ pub fn field_for_policy<'a>(decoded: Option<&'a str>, raw: Option<&'a Vec<u8>>) 
 fn build_ascii_prompts(
     policy: &PolicyEngine,
     state: &AuthSessionState,
-    user_msg: &[u8],
     username_for_policy: Option<&str>,
     port_for_policy: Option<&str>,
     rem_for_policy: Option<&str>,
 ) -> (Vec<u8>, Vec<u8>) {
+    // Prompts are the text the NAS displays to the user (carried in server_msg).
+    // They come from policy or a sensible default; they must never echo the
+    // user's own input, or the password prompt ends up showing the username.
     let policy_user_prompt = policy
         .prompt_username(username_for_policy, port_for_policy, rem_for_policy)
         .map(|s| s.as_bytes().to_vec());
     let policy_pass_prompt = policy
         .prompt_password(username_for_policy)
         .map(|s| s.as_bytes().to_vec());
-    let uname_prompt = if !user_msg.is_empty() {
-        user_msg.to_vec()
-    } else if let Some(custom) = policy_user_prompt {
+    let uname_prompt = if let Some(custom) = policy_user_prompt {
         custom
     } else {
         match (state.service, state.action) {
@@ -166,9 +166,7 @@ fn build_ascii_prompts(
             _ => b"Username:".to_vec(),
         }
     };
-    let pwd_prompt = if !user_msg.is_empty() {
-        user_msg.to_vec()
-    } else if let Some(custom) = policy_pass_prompt {
+    let pwd_prompt = if let Some(custom) = policy_pass_prompt {
         custom
     } else {
         match (state.service, state.action) {
@@ -529,7 +527,6 @@ pub async fn handle_ascii_continue(
         build_ascii_prompts(
             &policy,
             state,
-            cont_user_msg,
             policy_user.as_deref(),
             policy_port.as_deref(),
             policy_rem.as_deref(),
