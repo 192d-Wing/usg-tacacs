@@ -478,6 +478,23 @@ pub struct Args {
     /// | SC-8 | Transmission Confidentiality | Requires explicit opt-in to disable TLS protection |
     #[arg(long, default_value_t = false)]
     pub api_allow_plaintext: bool,
+
+    /// PostgreSQL connection URL for the user store (SSH public key management).
+    ///
+    /// When set, the server connects to this database at startup, applies the schema,
+    /// and enables SSH public key authorization (service=sshd) and the user management
+    /// API endpoints (`/api/v1/users`).
+    ///
+    /// Example: `postgresql://tacacs:password@localhost/tacacs`
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-2    | Account Management | Enables database-backed user accounts |
+    /// | IA-5(2) | PKI-Based Auth     | Enables SSH public key storage and lookup |
+    #[arg(long, env = "TACACS_DB_URL")]
+    pub db_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1103,6 +1120,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1207,6 +1225,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1309,6 +1328,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1411,6 +1431,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1514,6 +1535,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1616,6 +1638,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1783,6 +1806,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1882,6 +1906,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -1981,6 +2006,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,
@@ -2085,6 +2111,7 @@ mod tests {
             api_client_ca: None,
             api_rbac_config: None,
             api_allow_plaintext: false,
+            db_url: None,
             est_enabled: false,
             est_server_url: None,
             est_username: None,

@@ -175,3 +175,75 @@ pub struct PolicyUploadResponse {
     /// Number of rules in the uploaded policy
     pub rule_count: Option<usize>,
 }
+
+/// A user record returned by the management API.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-2 | Account Management | Exposes user enabled/disabled state |
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserRecord {
+    pub id: i64,
+    pub username: String,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+/// Response for the list-users endpoint.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UsersResponse {
+    pub users: Vec<UserRecord>,
+    pub total: usize,
+}
+
+/// A single SSH public key record.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5(2) | PKI-Based Authentication | Public key metadata for management |
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SshKeyRecord {
+    pub id: i64,
+    pub key_type: String,
+    pub key_data: String,
+    pub comment: String,
+    pub created_at: String,
+}
+
+/// Response for listing a user's SSH keys.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SshKeysResponse {
+    pub username: String,
+    pub keys: Vec<SshKeyRecord>,
+    pub total: usize,
+}
+
+/// Request body for adding an SSH key.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5(2) | PKI-Based Authentication | Registers a new public key for a user |
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AddSshKeyRequest {
+    /// SSH key type, e.g. `ssh-ed25519`.
+    pub key_type: String,
+    /// Base64-encoded key material (the second field in authorized_keys format).
+    pub key_data: String,
+    /// Optional free-text comment (third field in authorized_keys format).
+    #[serde(default)]
+    pub comment: String,
+}
+
+/// Response for a successful SSH key addition.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AddSshKeyResponse {
+    pub success: bool,
+    pub message: String,
+    pub key_id: Option<i64>,
+}

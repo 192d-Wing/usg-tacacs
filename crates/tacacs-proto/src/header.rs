@@ -159,6 +159,7 @@ pub fn is_known_service(service: &str) -> bool {
         "tty-daemon",
         "connection",
         "none",
+        "sshd",
     ]
     .iter()
     .any(|s| service.eq_ignore_ascii_case(s))
@@ -381,6 +382,8 @@ mod tests {
         assert!(is_known_service("tty-daemon"));
         assert!(is_known_service("connection"));
         assert!(is_known_service("none"));
+        assert!(is_known_service("sshd"));
+        assert!(is_known_service("SSHD"));
     }
 
     #[test]

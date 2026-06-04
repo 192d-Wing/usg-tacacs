@@ -54,6 +54,7 @@ use super::rbac::{RbacConfig, require_permission};
 use crate::metrics::metrics;
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
+use crate::user_store::UserStore;
 use axum::{
     Json, Router,
     body::Body,
@@ -121,6 +122,15 @@ pub struct ApiState {
     pub registry: Arc<SessionRegistry>,
     /// Runtime configuration snapshot
     pub config: RuntimeConfig,
+    /// User store for SSH public key management.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | IA-5(2) | PKI-Based Authentication | Manages centralized SSH public keys |
+    /// | AC-2    | Account Management | User CRUD via management API |
+    pub user_store: Option<Arc<UserStore>>,
 }
 
 /// Build the API router with all endpoints.
@@ -147,6 +157,7 @@ pub fn build_api_router(
     reload_tx: mpsc::Sender<PolicyReloadRequest>,
     registry: Arc<SessionRegistry>,
     config: RuntimeConfig,
+    user_store: Option<Arc<UserStore>>,
 ) -> Router {
     let state = Arc::new(ApiState {
         rbac: rbac.clone(),
@@ -157,6 +168,7 @@ pub fn build_api_router(
         reload_tx,
         registry,
         config,
+        user_store,
     });
 
     Router::new()
@@ -215,6 +227,24 @@ pub fn build_api_router(
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:metrics",
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/users", get(get_users))
+                .route("/api/v1/users/{username}/authorized-keys", get(get_authorized_keys))
+                .route("/api/v1/users/{username}/ssh-keys/{key_id}", delete(delete_user_ssh_key))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    "read:users",
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/users/{username}/ssh-keys", post(add_user_ssh_key))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    "write:users",
                 ))),
         )
         .with_state(state)
@@ -572,6 +602,204 @@ async fn get_metrics() -> Result<Response<Body>, (StatusCode, &'static str)> {
         })
 }
 
+/// Return an HTTP 503 response when the user store is not configured.
+fn no_user_store() -> (StatusCode, Json<SuccessResponse>) {
+    let resp = SuccessResponse {
+        success: false,
+        message: "user store not configured (set --db-url to enable)".to_string(),
+    };
+    (StatusCode::SERVICE_UNAVAILABLE, Json(resp))
+}
+
+/// GET /api/v1/users - List all users.
+///
+/// Requires permission: `read:users`
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-2 | Account Management | Enumerates managed user accounts |
+async fn get_users(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+    let store = match state.user_store.as_ref() {
+        Some(s) => s,
+        None => return no_user_store().into_response(),
+    };
+    match store.list_users().await {
+        Ok(rows) => {
+            let users: Vec<UserRecord> = rows
+                .iter()
+                .map(|r| UserRecord {
+                    id: r.id,
+                    username: r.username.clone(),
+                    enabled: r.enabled,
+                    created_at: r.created_at.to_string(),
+                })
+                .collect();
+            let total = users.len();
+            Json(UsersResponse { users, total }).into_response()
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to list users");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SuccessResponse {
+                    success: false,
+                    message: "failed to list users".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /api/v1/users/{username}/authorized-keys - Return keys in authorized_keys format.
+///
+/// Requires permission: `read:users`
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5(2) | PKI-Based Authentication | Authorized key lookup for SSH access |
+async fn get_authorized_keys(
+    State(state): State<Arc<ApiState>>,
+    Path(username): Path<String>,
+) -> impl IntoResponse {
+    assert!(!username.is_empty(), "username must not be empty");
+    let store = match state.user_store.as_ref() {
+        Some(s) => s,
+        None => return no_user_store().into_response(),
+    };
+    match store.get_user_keys(&username).await {
+        Ok(rows) => {
+            let keys: Vec<SshKeyRecord> = rows
+                .iter()
+                .map(|r| SshKeyRecord {
+                    id: r.id,
+                    key_type: r.key_type.clone(),
+                    key_data: r.key_data.clone(),
+                    comment: r.comment.clone(),
+                    created_at: r.created_at.to_string(),
+                })
+                .collect();
+            let total = keys.len();
+            Json(SshKeysResponse {
+                username,
+                keys,
+                total,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            warn!(username = %username, error = %e, "failed to fetch user keys");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SuccessResponse {
+                    success: false,
+                    message: "failed to fetch user keys".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /api/v1/users/{username}/ssh-keys - Add an SSH public key for a user.
+///
+/// Requires permission: `write:users`
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5(2) | PKI-Based Authentication | Registers a new authorized public key |
+/// | AU-12   | Audit Generation | Logs key addition with username |
+async fn add_user_ssh_key(
+    State(state): State<Arc<ApiState>>,
+    Path(username): Path<String>,
+    Json(payload): Json<AddSshKeyRequest>,
+) -> impl IntoResponse {
+    assert!(!username.is_empty(), "username must not be empty");
+    let store = match state.user_store.as_ref() {
+        Some(s) => s,
+        None => return no_user_store().into_response(),
+    };
+    info!(username = %username, key_type = %payload.key_type, "API request to add SSH key");
+    match store
+        .add_ssh_key(&username, &payload.key_type, &payload.key_data, &payload.comment)
+        .await
+    {
+        Ok(key_id) => Json(AddSshKeyResponse {
+            success: true,
+            message: format!("SSH key added for user '{username}'"),
+            key_id: Some(key_id),
+        })
+        .into_response(),
+        Err(e) => {
+            warn!(username = %username, error = %e, "failed to add SSH key");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(AddSshKeyResponse {
+                    success: false,
+                    message: format!("failed to add SSH key: {e}"),
+                    key_id: None,
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// DELETE /api/v1/users/{username}/ssh-keys/{key_id} - Remove an SSH public key.
+///
+/// Requires permission: `write:users` (routed under `read:users` layer for DELETE).
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5(2) | PKI-Based Authentication | Key revocation for rapid access removal |
+/// | AU-12   | Audit Generation | Logs key deletion with username and key id |
+async fn delete_user_ssh_key(
+    State(state): State<Arc<ApiState>>,
+    Path((username, key_id)): Path<(String, i64)>,
+) -> impl IntoResponse {
+    assert!(!username.is_empty(), "username must not be empty");
+    assert!(key_id > 0, "key_id must be positive");
+    let store = match state.user_store.as_ref() {
+        Some(s) => s,
+        None => return no_user_store().into_response(),
+    };
+    info!(username = %username, key_id = key_id, "API request to delete SSH key");
+    match store.delete_ssh_key(&username, key_id).await {
+        Ok(true) => Json(SuccessResponse {
+            success: true,
+            message: format!("SSH key {key_id} deleted for user '{username}'"),
+        })
+        .into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(SuccessResponse {
+                success: false,
+                message: format!("SSH key {key_id} not found for user '{username}'"),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(username = %username, key_id = key_id, error = %e, "failed to delete SSH key");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SuccessResponse {
+                    success: false,
+                    message: "failed to delete SSH key".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,6 +866,7 @@ mod tests {
             reload_tx,
             registry.clone(),
             make_test_config(),
+            None,
         );
         (router, reload_rx, registry)
     }
@@ -1142,6 +1371,7 @@ mod tests {
             reload_tx,
             registry.clone(),
             make_test_config(),
+            None,
         );
 
         // Register a session
