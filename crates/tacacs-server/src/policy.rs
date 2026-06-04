@@ -100,6 +100,7 @@ mod tests {
         let doc = PolicyDocument {
             default_allow: true,
             shell_start: Default::default(),
+            shell_start_groups: Default::default(),
             ascii_prompts: None,
             ascii_user_prompts: Default::default(),
             ascii_password_prompts: Default::default(),

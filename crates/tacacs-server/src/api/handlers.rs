@@ -594,6 +594,7 @@ mod tests {
             default_allow: false,
             rules: vec![],
             shell_start: std::collections::HashMap::new(),
+            shell_start_groups: std::collections::HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: std::collections::HashMap::new(),
             ascii_password_prompts: std::collections::HashMap::new(),

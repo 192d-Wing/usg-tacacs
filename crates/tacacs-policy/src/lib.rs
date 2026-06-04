@@ -92,6 +92,10 @@ pub struct PolicyDocument {
     pub default_allow: bool,
     #[serde(default)]
     pub shell_start: HashMap<String, Vec<String>>,
+    /// Shell start attributes keyed by group name (lowercased). Checked when
+    /// the user has no entry in `shell_start`; first matching group wins.
+    #[serde(default)]
+    pub shell_start_groups: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub ascii_prompts: Option<AsciiPrompts>,
     #[serde(default)]
@@ -157,6 +161,7 @@ pub struct Rule {
 pub struct PolicyEngine {
     default_allow: bool,
     shell_start: HashMap<String, Vec<String>>,
+    shell_start_groups: HashMap<String, Vec<String>>,
     ascii_prompts: Option<AsciiPrompts>,
     ascii_user_prompts: HashMap<String, String>,
     ascii_password_prompts: HashMap<String, String>,
@@ -233,6 +238,11 @@ impl PolicyEngine {
                 .shell_start
                 .into_iter()
                 .map(|(u, v)| (u.to_lowercase(), v))
+                .collect(),
+            shell_start_groups: document
+                .shell_start_groups
+                .into_iter()
+                .map(|(g, v)| (g.to_lowercase(), v))
                 .collect(),
             ascii_prompts: document.ascii_prompts,
             ascii_user_prompts: document
@@ -324,8 +334,36 @@ impl PolicyEngine {
         decision
     }
 
+    /// Return shell-start attributes for a user by username (exact match, case-insensitive).
     pub fn shell_attributes_for(&self, user: &str) -> Option<Vec<String>> {
         self.shell_start.get(&user.to_lowercase()).cloned()
+    }
+
+    /// Return shell-start attributes, checking username first then groups.
+    ///
+    /// User-level entry takes priority; if absent, the first matching group
+    /// (in iteration order) wins. Returns `None` if neither matches.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Group-based privilege attribute lookup |
+    pub fn shell_attributes_for_with_groups(
+        &self,
+        user: &str,
+        groups: &[String],
+    ) -> Option<Vec<String>> {
+        assert!(!user.is_empty(), "user must not be empty");
+        if let Some(attrs) = self.shell_start.get(&user.to_lowercase()) {
+            return Some(attrs.clone());
+        }
+        for group in groups {
+            if let Some(attrs) = self.shell_start_groups.get(&group.to_lowercase()) {
+                return Some(attrs.clone());
+            }
+        }
+        None
     }
 
     /// Returns the number of authorization rules in the policy.
@@ -563,6 +601,7 @@ mod tests {
         PolicyDocument {
             default_allow: false,
             shell_start: HashMap::new(),
+            shell_start_groups: HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),

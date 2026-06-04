@@ -1115,7 +1115,7 @@ pub async fn serve_legacy(
             let conn_secret = if conn_nad_secrets.is_empty() {
                 conn_auth_ctx.secret.clone()
             } else {
-                conn_nad_secrets.get(&peer_addr.ip()).cloned()
+                conn_nad_secrets.get(&normalize_ip(peer_addr.ip())).cloned()
             };
             if conn_secret.is_none() {
                 warn!(peer = %peer_addr, "legacy connection rejected: NAD not in allowlist");
@@ -1209,6 +1209,19 @@ async fn cleanup_connection(connection_id: u64, peer: &str, registry: &Arc<Sessi
 /// Validate single-connect constraints for authorization requests.
 ///
 /// Returns error message if validation fails, None if validation passes.
+/// Validate single-connect authorization request against the established session.
+///
+/// RFC 8907 §5.3: in single-connect mode, auth, authz, and accounting are
+/// independent TACACS+ sessions that share one TCP connection and each carry
+/// their own randomly-generated `session_id`.  The `session_id` fields are
+/// NOT required to match across transaction types; only the bound username
+/// must be consistent.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-11 | Re-authentication | Enforces user binding across sessions on a connection |
 fn validate_authz_single_connect(
     single_connect: &SingleConnectState,
     request: &AuthorizationRequest,
@@ -1226,14 +1239,9 @@ fn validate_authz_single_connect(
         return None;
     }
 
-    if let Some(bound) = single_connect.session
-        && bound != request.header.session_id
-    {
-        warn!(peer = %peer, user = %request.user, session = request.header.session_id,
-                bound_session = bound, "single-connect violation: session-id mismatch on authorization");
-        return Some("session-id mismatch".into());
-    }
-
+    // Only verify that the authenticated user matches the authz request user.
+    // Each TACACS+ transaction (auth, authz, acct) generates its own session_id
+    // even in single-connect mode; comparing them across transaction types is wrong.
     if let Some(ref bound_user) = single_connect.user {
         if bound_user != &request.user {
             warn!(peer = %peer, user = %request.user, bound_user = %bound_user,
@@ -1407,11 +1415,12 @@ where
 fn authorize_shell_command(
     request: &AuthorizationRequest,
     policy: &PolicyEngine,
+    groups: &[String],
     peer: &str,
 ) -> AuthorizationResponse {
     let ctx = authz_context(request);
     let attrs = policy
-        .shell_attributes_for(&request.user)
+        .shell_attributes_for_with_groups(&request.user, groups)
         .unwrap_or_else(|| vec!["service=shell".to_string(), "protocol=shell".to_string()]);
     let attrs = ensure_priv_attr(attrs, request.priv_lvl);
     let resp = AuthorizationResponse {
@@ -1657,7 +1666,7 @@ async fn execute_authorization_decision(
     let policy_guard = policy.read().await;
 
     if request.is_shell_start() {
-        authorize_shell_command(request, &policy_guard, peer)
+        authorize_shell_command(request, &policy_guard, &effective_groups, peer)
     } else if let Some(cmd) = request.command_string() {
         authorize_user_command(request, &policy_guard, &effective_groups, &cmd, peer)
     } else {
