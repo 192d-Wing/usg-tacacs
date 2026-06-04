@@ -46,7 +46,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: tacacs
-          image: ghcr.io/192d-wing/usg-tacacs:0.77.1-fix5-arm64
+          image: ghcr.io/192d-wing/usg-tacacs:0.77.1-authz2-arm64
           imagePullPolicy: IfNotPresent
           args:
             # Bind [::] for dual-stack: on Linux (bindv6only=0) this accepts both
