@@ -136,7 +136,7 @@ pub fn icam_build_client(
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | SI-10 | Information Input Validation | Rejects oversized or malformed JWT segments |
-fn icam_decode_jwt_payload(token: &str) -> Option<Value> {
+pub(crate) fn icam_decode_jwt_payload(token: &str) -> Option<Value> {
     let mut iter = token.splitn(3, '.');
     let _ = iter.next()?; // skip header
     let payload_b64 = iter.next()?;
@@ -161,7 +161,7 @@ fn icam_decode_jwt_payload(token: &str) -> Option<Value> {
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | AC-2 | Account Management | Maps ICAM groups to TACACS+ policy group identifiers |
-fn icam_extract_groups_from_claim(claim_val: &Value) -> Vec<String> {
+pub(crate) fn icam_extract_groups_from_claim(claim_val: &Value) -> Vec<String> {
     match claim_val {
         Value::Array(arr) => arr
             .iter()
@@ -298,6 +298,25 @@ pub async fn icam_authenticate(
         authenticated: true,
         groups,
     }
+}
+
+/// Extract groups from a JWT access token using the configured claim name.
+///
+/// Used by both ROPC and Device Flow paths to extract policy groups from a JWT.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-2 | Account Management | Maps ICAM JWT claim to TACACS+ policy groups |
+/// | SI-10 | Information Input Validation | Rejects malformed JWT payloads silently |
+pub fn icam_groups_from_jwt(token: &str, groups_claim: &str) -> Vec<String> {
+    assert!(!token.is_empty(), "token must not be empty");
+    assert!(!groups_claim.is_empty(), "groups_claim must not be empty");
+    icam_decode_jwt_payload(token)
+        .and_then(|payload| payload.get(groups_claim).cloned())
+        .map(|val| icam_extract_groups_from_claim(&val))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

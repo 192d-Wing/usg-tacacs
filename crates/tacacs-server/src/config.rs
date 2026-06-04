@@ -529,6 +529,40 @@ pub struct Args {
     /// When omitted, the system CA bundle is used.
     #[arg(long)]
     pub icam_ca_file: Option<PathBuf>,
+
+    // ==================== ICAM Device Authorization Grant (RFC 8628) ====================
+    /// Enable RFC 8628 Device Authorization Grant (browser CAC auth) for ASCII sessions.
+    ///
+    /// When enabled, TACACS+ ASCII authentication presents a browser URL to the user
+    /// at the NAD terminal rather than collecting a password inline.  The user opens
+    /// the URL in a browser, authenticates with their CAC, then presses ENTER to
+    /// complete the TACACS+ session.
+    ///
+    /// Requires `--icam-token-endpoint`, `--icam-client-id`, and `--icam-client-secret`
+    /// (or file equivalents).
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | IA-2 | Identification and Authentication | Browser-based CAC authentication |
+    /// | IA-8 | Non-Organizational User Auth | Enterprise CAC identity federation |
+    #[arg(long, default_value_t = false, env = "ICAM_DEVICE_FLOW")]
+    pub icam_device_flow: bool,
+
+    /// OIDC device authorization endpoint URL (RFC 8628 §3.1).
+    ///
+    /// If not set and `--icam-device-flow` is enabled, the server derives this from
+    /// `--icam-token-endpoint` by replacing the trailing `/token` segment with
+    /// `/auth/device`.  Set explicitly when the ICAM provider uses a non-standard path.
+    #[arg(long, env = "ICAM_DEVICE_AUTH_ENDPOINT")]
+    pub icam_device_auth_endpoint: Option<String>,
+
+    /// Maximum browser-auth check cycles (ENTER presses) before the session expires.
+    ///
+    /// Default 48 ≈ 4 minutes at the RFC 8628 recommended 5-second poll interval.
+    #[arg(long, default_value_t = 48, env = "ICAM_DEVICE_AUTH_MAX_POLLS")]
+    pub icam_device_auth_max_polls: u8,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1198,6 +1232,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = credentials_map(&args);
@@ -1309,6 +1346,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = credentials_map(&args);
@@ -1418,6 +1458,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = credentials_map(&args);
@@ -1527,6 +1570,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = credentials_map(&args);
@@ -1637,6 +1683,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = credentials_map(&args);
@@ -1746,6 +1795,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = credentials_map(&args);
@@ -1920,6 +1972,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -2026,6 +2081,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -2132,6 +2190,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -2243,6 +2304,9 @@ mod tests {
             icam_groups_claim: "groups".into(),
             icam_timeout_ms: 5000,
             icam_ca_file: None,
+            icam_device_flow: false,
+            icam_device_auth_endpoint: None,
+            icam_device_auth_max_polls: 48,
         };
 
         let result = resolve_ldap_bind_password(&args);

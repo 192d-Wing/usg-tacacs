@@ -191,6 +191,10 @@ pub struct AuthSessionState {
     pub ascii_pass_attempts: u8,
     pub service: Option<u8>,
     pub action: Option<u8>,
+    /// RFC 8628 device_code pending browser authentication (device flow feature gate).
+    pub device_code: Option<String>,
+    /// Number of times the device code has been polled (bound for rule 2).
+    pub device_poll_count: u8,
 }
 
 impl AuthSessionState {
@@ -226,6 +230,8 @@ impl AuthSessionState {
             ascii_pass_attempts: 0,
             service: Some(start.service),
             action: Some(start.action),
+            device_code: None,
+            device_poll_count: 0,
         })
     }
 
@@ -272,6 +278,8 @@ impl AuthSessionState {
             ascii_pass_attempts: 0,
             service: Some(service),
             action: Some(action),
+            device_code: None,
+            device_poll_count: 0,
         })
     }
 

@@ -114,6 +114,7 @@ struct AppState {
     credentials: Arc<StaticCreds>,
     ldap_config: Option<Arc<LdapConfig>>,
     icam_config: Option<Arc<IcamConfig>>,
+    device_flow_config: Option<Arc<crate::icam_device::DeviceFlowConfig>>,
     legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
     conn_limiter: ConnLimiter,
     session_registry: Arc<SessionRegistry>,
@@ -473,6 +474,7 @@ fn build_tls_contexts(
         credentials: state.credentials.clone(),
         ldap: state.ldap_config.clone(),
         icam: state.icam_config.clone(),
+        device_flow: state.device_flow_config.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let tls_identity = TlsIdentityConfig {
@@ -551,6 +553,7 @@ fn setup_legacy_listener(
         credentials: state.credentials.clone(),
         ldap: state.ldap_config.clone(),
         icam: state.icam_config.clone(),
+        device_flow: state.device_flow_config.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let nad_secrets = state.legacy_nad_secrets.clone();
@@ -771,6 +774,52 @@ fn build_icam_config(args: &Args) -> Result<Option<Arc<IcamConfig>>> {
     Ok(Some(Arc::new(cfg)))
 }
 
+/// Build device authorization grant configuration from CLI arguments.
+///
+/// Returns None when `--icam-device-flow` is disabled or ICAM is unconfigured.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | RFC 8628 device flow configuration |
+/// | SC-8 | Transmission Confidentiality | HTTPS-only client enforced |
+fn build_device_flow_config(
+    args: &Args,
+    icam_cfg: Option<&IcamConfig>,
+) -> Result<Option<Arc<crate::icam_device::DeviceFlowConfig>>> {
+    if !args.icam_device_flow {
+        return Ok(None);
+    }
+    let icam = icam_cfg.context(
+        "--icam-device-flow requires --icam-token-endpoint, --icam-client-id, and --icam-client-secret",
+    )?;
+    let device_auth_endpoint = match args.icam_device_auth_endpoint.as_ref() {
+        Some(ep) => ep.clone(),
+        None => {
+            // Derive from token endpoint: replace trailing /token with /auth/device.
+            let base = icam.token_endpoint.trim_end_matches("/token");
+            format!("{base}/auth/device")
+        }
+    };
+    let cfg = crate::icam_device::DeviceFlowConfig {
+        device_auth_endpoint: device_auth_endpoint.clone(),
+        token_endpoint: icam.token_endpoint.clone(),
+        client_id: icam.client_id.clone(),
+        client_secret: icam.client_secret.clone(),
+        groups_claim: icam.groups_claim.clone(),
+        max_polls: args.icam_device_auth_max_polls,
+        ca_file: icam.ca_file.clone(),
+        http_client: icam.http_client.clone(),
+    };
+    info!(
+        device_auth_endpoint = %device_auth_endpoint,
+        max_polls = cfg.max_polls,
+        "RFC 8628 device authorization flow enabled"
+    );
+    Ok(Some(Arc::new(cfg)))
+}
+
 /// Build application state from parsed arguments.
 async fn build_app_state(args: &Args) -> Result<AppState> {
     let policy_path = args
@@ -780,6 +829,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         .clone();
     let ldap_config = validate_secrets_and_build_ldap(args)?;
     let icam_config = build_icam_config(args)?;
+    let device_flow_config = build_device_flow_config(args, icam_config.as_deref())?;
     let (est_provider, est_config) = setup_est_provider(args).await?;
 
     Ok(AppState {
@@ -794,6 +844,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         credentials: Arc::new(credentials_map(args).map_err(anyhow::Error::msg)?),
         ldap_config,
         icam_config,
+        device_flow_config,
         legacy_nad_secrets: Arc::new(
             args.legacy_nad_secret
                 .iter()
@@ -873,6 +924,7 @@ mod auth;
 mod config;
 mod http;
 mod icam;
+mod icam_device;
 mod metrics;
 mod policy;
 mod server;

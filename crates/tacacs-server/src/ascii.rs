@@ -59,6 +59,8 @@
 //!   lockouts are logged with relevant context.
 
 use crate::auth::{LdapConfig, verify_pap_bytes, verify_pap_bytes_username};
+use crate::icam::icam_groups_from_jwt;
+use crate::icam_device::{DeviceFlowConfig, DevicePollResult, icam_device_poll_token};
 use openssl::rand::rand_bytes;
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,8 +68,9 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::{
-    AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER,
-    AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART, AuthSessionState, AuthenReply,
+    AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS,
+    AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART, AuthSessionState,
+    AuthenReply,
 };
 
 const AUTHEN_CONT_ABORT: u8 = 0x01;
@@ -495,6 +498,98 @@ fn check_attempt_limits(state: &AuthSessionState, config: &AsciiConfig) -> Optio
     None
 }
 
+/// Handle the device flow poll phase: called when `state.device_code` is set.
+///
+/// The user has pressed ENTER; poll ICAM once and respond accordingly.
+/// Enforces the `max_polls` fixed upper bound (rule 2).
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | Polls ICAM for browser auth completion |
+/// | IA-6 | Authenticator Feedback | Does not expose device_code to user |
+/// | AC-7 | Unsuccessful Logon Attempts | max_polls bounds the attempt loop |
+/// | AU-12 | Audit Generation | Outcome logged via tracing |
+async fn handle_device_poll_phase(
+    state: &mut AuthSessionState,
+    device_flow: Option<&DeviceFlowConfig>,
+    icam_groups_out: &mut Vec<String>,
+) -> AuthenReply {
+    let Some(code) = state.device_code.clone() else {
+        return AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: "device auth state lost".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        };
+    };
+    assert!(!code.is_empty(), "stored device_code must not be empty");
+    let Some(cfg) = device_flow else {
+        state.device_code = None;
+        return AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: "device flow not configured".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        };
+    };
+    state.device_poll_count = state.device_poll_count.saturating_add(1);
+    assert!(cfg.max_polls > 0, "max_polls must be positive");
+    if state.device_poll_count > cfg.max_polls {
+        state.device_code = None;
+        tracing::debug!(polls = state.device_poll_count, "device auth timed out");
+        return AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: "device authorization timed out".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        };
+    }
+    match icam_device_poll_token(cfg, &code).await {
+        DevicePollResult::Authorized(token) => {
+            *icam_groups_out = icam_groups_from_jwt(&token, &cfg.groups_claim);
+            state.device_code = None;
+            tracing::debug!(groups = icam_groups_out.len(), "device auth succeeded");
+            AuthenReply {
+                status: AUTHEN_STATUS_PASS,
+                flags: 0,
+                server_msg: "authentication succeeded".into(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        }
+        DevicePollResult::Pending => {
+            let msg = format!(
+                "Still waiting for browser authentication ({}/{}).\nPress ENTER to check again.",
+                state.device_poll_count,
+                cfg.max_polls
+            );
+            AuthenReply {
+                status: AUTHEN_STATUS_GETDATA,
+                flags: 0,
+                server_msg: msg,
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        }
+        DevicePollResult::Denied => {
+            state.device_code = None;
+            tracing::debug!("device auth denied");
+            AuthenReply {
+                status: AUTHEN_STATUS_FAIL,
+                flags: 0,
+                server_msg: "device authorization denied".into(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        }
+    }
+}
+
 /// Handle ASCII authentication continuation packets.
 ///
 /// # NIST Controls
@@ -540,6 +635,7 @@ pub async fn handle_ascii_continue(
     config: &AsciiConfig,
     ldap: Option<&Arc<LdapConfig>>,
     icam: Option<&crate::icam::IcamConfig>,
+    device_flow: Option<&DeviceFlowConfig>,
     icam_groups_out: &mut Vec<String>,
 ) -> AuthenReply {
     let policy_user = username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
@@ -558,6 +654,11 @@ pub async fn handle_ascii_continue(
 
     if cont_flags & AUTHEN_CONT_ABORT != 0 {
         return handle_abort(state, policy).await;
+    }
+
+    // Device flow path: bypass regular username/password auth, poll ICAM instead.
+    if state.device_code.is_some() {
+        return handle_device_poll_phase(state, device_flow, icam_groups_out).await;
     }
 
     if let Some(reply) = check_attempt_limits(state, config) {
@@ -648,6 +749,8 @@ mod tests {
             ascii_pass_attempts: 0,
             service: Some(1),
             action: Some(1),
+            device_code: None,
+            device_poll_count: 0,
         }
     }
 
@@ -836,6 +939,7 @@ mod tests {
             &config,
             None,
             None,
+            None,
             &mut Vec::new(),
         )
         .await;
@@ -861,7 +965,7 @@ mod tests {
         let config = make_test_config(); // attempt_limit = 5
 
         let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new()).await;
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new()).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(
@@ -881,7 +985,7 @@ mod tests {
         let config = make_test_config(); // user_attempt_limit = 3
 
         let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new()).await;
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new()).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(reply.server_msg.contains("too many username attempts"));
@@ -897,7 +1001,7 @@ mod tests {
         let config = make_test_config(); // pass_attempt_limit = 5
 
         let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new()).await;
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new()).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(reply.server_msg.contains("too many password attempts"));
@@ -915,6 +1019,7 @@ mod tests {
 
         let reply = handle_ascii_continue(
             b"", b"newuser", 0, &mut state, &policy, &creds, &config, None,
+            None,
             None,
             &mut Vec::new(),
         )
@@ -936,6 +1041,7 @@ mod tests {
 
         let reply = handle_ascii_continue(
             b"newuser", b"", 0, &mut state, &policy, &creds, &config, None,
+            None,
             None,
             &mut Vec::new(),
         )
@@ -962,6 +1068,7 @@ mod tests {
             b"", b"", // Empty username
             0, &mut state, &policy, &creds, &config, None,
             None,
+            None,
             &mut Vec::new(),
         )
         .await;
@@ -981,6 +1088,7 @@ mod tests {
         let reply = handle_ascii_continue(
             b"", b"", // Empty password
             0, &mut state, &policy, &creds, &config, None,
+            None,
             None,
             &mut Vec::new(),
         )
@@ -1008,6 +1116,7 @@ mod tests {
             &policy,
             &creds,
             &config,
+            None,
             None,
             None,
             &mut Vec::new(),
@@ -1039,6 +1148,7 @@ mod tests {
             &config,
             None,
             None,
+            None,
             &mut Vec::new(),
         )
         .await;
@@ -1059,7 +1169,7 @@ mod tests {
         let config = make_test_config();
 
         let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new()).await;
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new()).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_RESTART);
         assert!(reply.server_msg.contains("restart"));
@@ -1091,6 +1201,7 @@ mod tests {
             &config,
             None,
             None,
+            None,
             &mut Vec::new(),
         )
         .await;
@@ -1115,6 +1226,7 @@ mod tests {
             &policy,
             &creds,
             &config,
+            None,
             None,
             None,
             &mut Vec::new(),
@@ -1144,6 +1256,7 @@ mod tests {
             &config,
             None,
             None,
+            None,
             &mut Vec::new(),
         )
         .await;
@@ -1162,7 +1275,7 @@ mod tests {
         config.attempt_limit = 0; // Unlimited
 
         let reply =
-            handle_ascii_continue(b"", b"user", 0, &mut state, &policy, &creds, &config, None, None, &mut Vec::new())
+            handle_ascii_continue(b"", b"user", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new())
                 .await;
 
         // Should not fail due to attempt limit
@@ -1188,6 +1301,7 @@ mod tests {
             &policy,
             &creds,
             &config,
+            None,
             None,
             None,
             &mut Vec::new(),
@@ -1216,6 +1330,7 @@ mod tests {
             &policy,
             &creds,
             &config,
+            None,
             None,
             None,
             &mut Vec::new(),
