@@ -63,9 +63,14 @@ spec:
             # OIDC discovery + token redemption over https succeed.
             - "--provider-ca-file=/etc/ssl/oopl/ca.pem"
           env:
+            # The Keycloak client is PUBLIC + PKCE (S256), so no real client
+            # secret exists — and none is stored in the realm-import ConfigMap.
+            # oauth2-proxy still requires a non-empty client-secret to start, so
+            # the value below is an unused placeholder; the code exchange is
+            # actually authenticated by the PKCE verifier, which Keycloak enforces.
             - { name: OAUTH2_PROXY_OIDC_ISSUER_URL, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: oidc-issuer-url } } }
             - { name: OAUTH2_PROXY_CLIENT_ID, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: client-id } } }
-            - { name: OAUTH2_PROXY_CLIENT_SECRET, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: client-secret } } }
+            - { name: OAUTH2_PROXY_CLIENT_SECRET, value: "unused-public-client-pkce" }
             - { name: OAUTH2_PROXY_COOKIE_SECRET, valueFrom: { secretKeyRef: { name: tacacs-ui-oidc, key: cookie-secret } } }
           ports:
             - { name: http, containerPort: 4180 }

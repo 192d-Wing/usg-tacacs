@@ -1,0 +1,32 @@
+{
+  "_comment": "Reference copy of the tacacs-ui OIDC client merged into the icam 'keycloak-realm' ConfigMap (dcim-realm.json -> .clients). Keycloak runs start-dev with an in-memory DB, so the realm is re-imported from that ConfigMap on every restart; keeping the client here makes it durable. It is a PUBLIC client using PKCE (S256), so there is NO client secret to store. oauth2-proxy authenticates the code exchange with the PKCE verifier (it is given an unused placeholder secret only because oauth2-proxy refuses to start without one).",
+  "clientId": "tacacs-ui",
+  "name": "usg-tacacs Operations UI",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": true,
+  "directAccessGrantsEnabled": false,
+  "redirectUris": ["https://tacacs-ui.oopl.dev.mil/oauth2/callback"],
+  "webOrigins": ["https://tacacs-ui.oopl.dev.mil"],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "post.logout.redirect.uris": "https://tacacs-ui.oopl.dev.mil/*"
+  },
+  "protocolMappers": [
+    {
+      "name": "realm roles",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-usermodel-realm-role-mapper",
+      "consentRequired": false,
+      "config": {
+        "claim.name": "realm_access.roles",
+        "jsonType.label": "String",
+        "multivalued": "true",
+        "id.token.claim": "true",
+        "access.token.claim": "true",
+        "userinfo.token.claim": "true"
+      }
+    }
+  ]
+}
