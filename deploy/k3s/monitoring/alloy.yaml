@@ -1,0 +1,130 @@
+# Grafana Alloy: tails tacacs pod logs via the k8s API, parses the JSON
+# audit lines, and ships them to Loki. Single replica (reads via API, not files).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy-logs
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy-logs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy-logs
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: monitoring
+data:
+  config.alloy: |
+    // Discover only tacacs-namespace pods.
+    discovery.kubernetes "pods" {
+      role = "pod"
+      namespaces {
+        names = ["tacacs"]
+      }
+    }
+
+    // Read container logs via the Kubernetes API.
+    loki.source.kubernetes "tacacs" {
+      targets    = discovery.kubernetes.pods.targets
+      forward_to = [loki.process.audit.receiver]
+    }
+
+    // Parse the server's JSON log lines; promote low-cardinality fields to labels.
+    loki.process "audit" {
+      forward_to = [loki.write.default.receiver]
+
+      stage.json {
+        expressions = {
+          event     = "event",
+          status    = "status",
+          logtarget = "target",
+        }
+      }
+      stage.labels {
+        values = {
+          event     = "event",
+          status    = "status",
+          logtarget = "logtarget",
+        }
+      }
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://loki.monitoring.svc:3100/loki/api/v1/push"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: monitoring
+  labels: { app: alloy }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: alloy }
+  template:
+    metadata:
+      labels: { app: alloy }
+    spec:
+      serviceAccountName: alloy
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 473
+        runAsGroup: 473
+        fsGroup: 473
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.7.5
+          args:
+            - "run"
+            - "/etc/alloy/config.alloy"
+            - "--storage.path=/tmp/alloy"
+            - "--server.http.listen-addr=0.0.0.0:12345"
+          ports:
+            - { name: http, containerPort: 12345 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: 12345 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          volumeMounts:
+            - { name: config, mountPath: /etc/alloy }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: alloy-config }
+        - name: tmp
+          emptyDir: {}

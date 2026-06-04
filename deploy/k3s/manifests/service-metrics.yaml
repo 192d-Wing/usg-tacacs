@@ -1,0 +1,18 @@
+# Internal-only Service exposing the tacacs HTTP port (8080: /metrics + health)
+# for Prometheus endpoint discovery. NOT on the anycast LoadBalancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: tacacs-metrics
+  namespace: tacacs
+  labels:
+    app: tacacs
+    app.kubernetes.io/name: tacacs
+    monitoring: tacacs
+spec:
+  type: ClusterIP
+  clusterIP: None # headless: Prometheus discovers each pod endpoint
+  selector:
+    app: tacacs
+  ports:
+    - { name: http-metrics, port: 8080, targetPort: 8080 }
