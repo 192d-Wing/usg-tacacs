@@ -485,10 +485,10 @@ fn validate_author_service_attr(req: &AuthorizationRequest) -> Result<String> {
 }
 
 fn validate_author_shell_service(req: &AuthorizationRequest) -> Result<()> {
+    // service=shell carries either exec/shell-start authorization (cmd absent or
+    // empty "cmd=") or command authorization (cmd=<value> [+ cmd-arg]). protocol
+    // is optional. See RFC 8907 §8 and the matching server-side validator.
     let attrs = req.attributes();
-    let protocol_attr = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("protocol"));
     let cmd_attrs: Vec<_> = attrs
         .iter()
         .filter(|a| a.name.eq_ignore_ascii_case("cmd"))
@@ -499,19 +499,26 @@ fn validate_author_shell_service(req: &AuthorizationRequest) -> Result<()> {
         .collect();
 
     ensure!(
-        protocol_attr.is_some(),
-        "shell authorization requires protocol attribute"
+        cmd_attrs.len() <= 1,
+        "authorization must include at most one cmd attribute"
     );
-    if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
+    let cmd_is_empty = cmd_attrs
+        .first()
+        .map(|a| a.value.as_deref().unwrap_or("").is_empty())
+        .unwrap_or(true);
+    if cmd_is_empty {
         ensure!(
-            !proto.is_empty(),
-            "authorization protocol attribute must have a value"
+            cmd_arg_attrs.is_empty(),
+            "shell authorization cmd-arg present without a command"
+        );
+    } else {
+        ensure!(
+            cmd_arg_attrs
+                .iter()
+                .all(|a| !a.value.as_deref().unwrap_or("").is_empty()),
+            "cmd-arg attributes must have values"
         );
     }
-    ensure!(
-        cmd_attrs.is_empty() && cmd_arg_attrs.is_empty(),
-        "shell authorization must not include cmd/cmd-arg attributes"
-    );
     Ok(())
 }
 
@@ -999,24 +1006,23 @@ mod tests {
     }
 
     #[test]
-    fn validate_author_request_shell_with_cmd_fails() {
+    fn validate_author_request_shell_command_ok() {
+        // Command authorization: service=shell + cmd=<value> is valid.
         let req = AuthorizationRequest::builder(123)
             .with_service("shell")
             .with_protocol("exec")
             .with_cmd("show");
 
-        let result = validate_author_request(&req);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("cmd"));
+        assert!(validate_author_request(&req).is_ok());
     }
 
     #[test]
-    fn validate_author_request_shell_without_protocol_fails() {
+    fn validate_author_request_shell_exec_ok() {
+        // Exec/shell-start authorization: service=shell with no cmd is valid;
+        // protocol is optional (RFC 8907 §8).
         let req = AuthorizationRequest::builder(123).with_service("shell");
 
-        let result = validate_author_request(&req);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("protocol"));
+        assert!(validate_author_request(&req).is_ok());
     }
 
     #[test]

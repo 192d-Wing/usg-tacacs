@@ -26,13 +26,15 @@ pub struct Attribute {
 }
 
 pub fn parse_attributes(args: &[String]) -> Vec<Attribute> {
+    // RFC 8907 §8.2: an AV pair is delimited by the first '=' (mandatory) or
+    // '*' (optional). Both separators are ASCII, so the byte index is a valid
+    // char boundary. The value may be empty.
     args.iter()
         .map(|s| {
-            if let Some(idx) = s.find('=') {
-                let (name, val) = s.split_at(idx);
+            if let Some(idx) = s.find(['=', '*']) {
                 Attribute {
-                    name: name.to_string(),
-                    value: Some(val[1..].to_string()),
+                    name: s[..idx].to_string(),
+                    value: Some(s[idx + 1..].to_string()),
                 }
             } else {
                 Attribute {
@@ -49,20 +51,24 @@ pub fn validate_attributes(args: &[String], allowed_prefixes: &[&str]) -> Result
         if arg.is_empty() {
             return Err(anyhow!("attr[{idx}] is empty"));
         }
-        let mut parts = arg.splitn(2, '=');
-        let name = parts.next().unwrap_or("");
-        let value = parts.next().unwrap_or("");
-        if name.is_empty() || value.is_empty() {
-            return Err(anyhow!("attr[{idx}] must be name=value"));
+        if arg.len() > 255 {
+            return Err(anyhow!("attr[{idx}] exceeds 255 bytes"));
+        }
+        // RFC 8907 §8.2: name=value (mandatory) or name*value (optional),
+        // delimited by the first '=' or '*'. The value MAY be empty, e.g. the
+        // "cmd=" a NAS sends for shell-login (exec) authorization.
+        let Some(sep) = arg.find(['=', '*']) else {
+            return Err(anyhow!("attr[{idx}] must be name=value or name*value"));
+        };
+        let name = &arg[..sep];
+        if name.is_empty() {
+            return Err(anyhow!("attr[{idx}] has an empty name"));
         }
         if !allowed_prefixes
             .iter()
             .any(|p| name.eq_ignore_ascii_case(p))
         {
             return Err(anyhow!("attr[{idx}] uses unsupported name '{}'", name));
-        }
-        if arg.len() > 255 {
-            return Err(anyhow!("attr[{idx}] exceeds 255 bytes"));
         }
     }
     Ok(())
@@ -209,6 +215,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_attributes_optional_separator() {
+        // Optional AV pairs use '*' as the delimiter (RFC 8907 §8.2).
+        let args = vec!["cmd*show".to_string(), "cmd-arg*".to_string()];
+        let attrs = parse_attributes(&args);
+
+        assert_eq!(attrs[0].name, "cmd");
+        assert_eq!(attrs[0].value, Some("show".to_string()));
+        assert_eq!(attrs[1].name, "cmd-arg");
+        assert_eq!(attrs[1].value, Some(String::new()));
+    }
+
+    #[test]
     fn parse_attributes_value_with_equals() {
         let args = vec!["cmd=show interface=eth0".to_string()];
         let attrs = parse_attributes(&args);
@@ -270,14 +288,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_attributes_empty_value() {
-        let args = vec!["service=".to_string()];
-        let allowed = ["service"];
+    fn validate_attributes_empty_value_is_allowed() {
+        // RFC 8907 §8.2: an empty value is valid (e.g. "cmd=" for shell login).
+        let args = vec!["service=".to_string(), "cmd=".to_string()];
+        let allowed = ["service", "cmd"];
 
         let result = validate_attributes(&args, &allowed);
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("name=value"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_attributes_optional_separator_is_allowed() {
+        // Optional attributes use '*'; value may be present or empty.
+        let args = vec!["service=shell".to_string(), "cmd*".to_string()];
+        let allowed = ["service", "cmd"];
+
+        let result = validate_attributes(&args, &allowed);
+
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -288,7 +317,7 @@ mod tests {
         let result = validate_attributes(&args, &allowed);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("name=value"));
+        assert!(result.unwrap_err().to_string().contains("empty name"));
     }
 
     #[test]

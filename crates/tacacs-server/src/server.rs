@@ -760,9 +760,18 @@ fn validate_service_attribute(req: &AuthorizationRequest) -> Result<String, Auth
     Ok(service_val.to_string())
 }
 
-/// Validate shell service authorization requirements.
+/// Validate shell (service=shell) authorization requirements.
 ///
-/// Shell authorization requires protocol attribute and must not have cmd/cmd-arg.
+/// Covers both flavors a NAS sends with `service=shell` (RFC 8907 §8, Cisco):
+///   - Exec / shell-start authorization: `cmd` absent or empty (`cmd=`). Returns
+///     session attributes such as priv-lvl. A `cmd-arg` without a command is
+///     invalid.
+///   - Command authorization: `cmd=<value>` with optional `cmd-arg`s, each of
+///     which must carry a value.
+///
+/// The `protocol` attribute is optional and `cmd` is permitted (unlike the prior
+/// implementation, which required protocol and forbade cmd — incompatible with
+/// real NAS exec/command authorization).
 ///
 /// # NIST SP 800-53 Controls
 ///
@@ -771,9 +780,6 @@ fn validate_service_attribute(req: &AuthorizationRequest) -> Result<String, Auth
 /// | AC-3 | Shell service-specific validation |
 fn validate_shell_service(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
     let attrs = req.attributes();
-    let protocol_attr = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("protocol"));
     let cmd_attrs: Vec<_> = attrs
         .iter()
         .filter(|a| a.name.eq_ignore_ascii_case("cmd"))
@@ -782,23 +788,31 @@ fn validate_shell_service(req: &AuthorizationRequest) -> Result<(), AuthzSemanti
         .iter()
         .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
         .collect();
-    if protocol_attr.is_none() {
+    if cmd_attrs.len() > 1 {
         return Err(AuthzSemanticError {
-            msg: "shell authorization requires protocol attribute",
+            msg: "authorization must include at most one cmd attribute",
             offending_index: None,
         });
     }
-    if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref())
-        && proto.is_empty()
+    let cmd_is_empty = cmd_attrs
+        .first()
+        .map(|a| a.value.as_deref().unwrap_or("").is_empty())
+        .unwrap_or(true);
+    if cmd_is_empty {
+        // Exec / shell-start: cmd-arg without a command is meaningless.
+        if !cmd_arg_attrs.is_empty() {
+            return Err(AuthzSemanticError {
+                msg: "shell authorization cmd-arg present without a command",
+                offending_index: None,
+            });
+        }
+    } else if cmd_arg_attrs
+        .iter()
+        .any(|a| a.value.as_deref().unwrap_or("").is_empty())
     {
+        // Command authorization: every cmd-arg must carry a value.
         return Err(AuthzSemanticError {
-            msg: "authorization protocol attribute must have a value",
-            offending_index: None,
-        });
-    }
-    if !cmd_attrs.is_empty() || !cmd_arg_attrs.is_empty() {
-        return Err(AuthzSemanticError {
-            msg: "shell authorization must not include cmd/cmd-arg attributes",
+            msg: "cmd-arg attributes must have values",
             offending_index: None,
         });
     }

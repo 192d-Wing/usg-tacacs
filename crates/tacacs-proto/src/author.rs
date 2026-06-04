@@ -139,6 +139,12 @@ impl AuthorizationRequest {
             }
         }
 
+        // A cmd with an empty value (e.g. "cmd=") denotes an exec/shell-start
+        // authorization, not a command. Don't treat it as a command string.
+        if base.as_deref() == Some("") {
+            return None;
+        }
+
         if base.is_none() && !self.args.is_empty() {
             base = Some(self.args.join(" "));
         }
@@ -155,13 +161,16 @@ impl AuthorizationRequest {
     }
 
     pub fn is_shell_start(&self) -> bool {
-        self.args
+        let attrs = self.attributes();
+        let has_shell = attrs
             .iter()
-            .any(|arg| arg.eq_ignore_ascii_case("service=shell"))
-            && self
-                .args
-                .iter()
-                .all(|arg| arg.starts_with("service=") || arg.starts_with("protocol="))
+            .any(|a| a.name.eq_ignore_ascii_case("service") && a.value.as_deref() == Some("shell"));
+        // A cmd with a non-empty value is command authorization, not an exec
+        // (shell-start) authorization. Cisco sends "cmd=" (empty) for exec.
+        let has_command = attrs
+            .iter()
+            .any(|a| a.name.eq_ignore_ascii_case("cmd") && !a.value.as_deref().unwrap_or("").is_empty());
+        has_shell && !has_command
     }
 
     pub fn attributes(&self) -> Vec<crate::util::Attribute> {
@@ -502,6 +511,19 @@ mod tests {
             .with_cmd("show");
 
         assert!(!req.is_shell_start());
+    }
+
+    #[test]
+    fn author_request_is_shell_start_true_with_empty_cmd() {
+        // Cisco exec/shell-start authorization: service=shell + empty "cmd=".
+        // It is an exec authorization (returns session attributes), not a
+        // command, so is_shell_start() is true and command_string() is None.
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .add_arg("cmd=".to_string());
+
+        assert!(req.is_shell_start());
+        assert!(req.command_string().is_none());
     }
 
     #[test]
