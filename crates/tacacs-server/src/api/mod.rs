@@ -60,6 +60,7 @@ mod rbac;
 
 pub use handlers::{RuntimeConfig, build_api_router};
 pub use rbac::{RbacConfig, TlsClientIdentity};
+pub use crate::user_store::UserStore;
 
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
@@ -192,6 +193,7 @@ pub async fn serve_api(
     reload_tx: mpsc::Sender<PolicyReloadRequest>,
     registry: Arc<SessionRegistry>,
     config: RuntimeConfig,
+    user_store: Option<Arc<UserStore>>,
 ) -> anyhow::Result<()> {
     let app = build_api_router(
         rbac,
@@ -201,6 +203,7 @@ pub async fn serve_api(
         reload_tx,
         registry,
         config,
+        user_store,
     );
     let listener = TcpListener::bind(addr).await?;
 

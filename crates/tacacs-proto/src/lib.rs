@@ -549,22 +549,29 @@ fn validate_author_protocol_and_cmd(req: &AuthorizationRequest) -> Result<()> {
             !proto.is_empty(),
             "authorization protocol attribute must have a value"
         );
+        // "publickey" is the SSH authentication method name (RFC 4252) used by
+        // service=sshd authorized-keys requests.
         let allowed = [
             "ip", "ipv6", "lat", "mop", "vpdn", "xremote", "pad", "shell", "ppp", "arap", "none",
+            "publickey",
         ];
         ensure!(
             allowed.iter().any(|p| proto.eq_ignore_ascii_case(p)),
             "authorization protocol attribute value unknown"
         );
     }
+    // cmd is optional for non-shell services (e.g. service=sshd key lookups
+    // where no command is being authorized, only key material returned).
     ensure!(
-        cmd_attrs.len() == 1,
-        "authorization must include exactly one cmd attribute for non-shell services"
+        cmd_attrs.len() <= 1,
+        "authorization must include at most one cmd attribute for non-shell services"
     );
-    ensure!(
-        !cmd_attrs[0].value.as_deref().unwrap_or("").is_empty(),
-        "cmd attribute must have a value"
-    );
+    if let Some(cmd_attr) = cmd_attrs.first() {
+        ensure!(
+            !cmd_attr.value.as_deref().unwrap_or("").is_empty(),
+            "cmd attribute must have a value"
+        );
+    }
     ensure!(
         !cmd_arg_attrs
             .iter()
@@ -1021,6 +1028,17 @@ mod tests {
         // Exec/shell-start authorization: service=shell with no cmd is valid;
         // protocol is optional (RFC 8907 §8).
         let req = AuthorizationRequest::builder(123).with_service("shell");
+
+        assert!(validate_author_request(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_author_request_sshd_key_request_ok() {
+        // SSH public-key lookup: service=sshd, protocol=publickey, no cmd.
+        let req = AuthorizationRequest::builder(123)
+            .add_arg("service=sshd".to_string())
+            .add_arg("protocol=publickey".to_string())
+            .add_arg("request=keys".to_string());
 
         assert!(validate_author_request(&req).is_ok());
     }

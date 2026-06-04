@@ -110,6 +110,7 @@ struct AppState {
     shared_secret: Option<Arc<Vec<u8>>>,
     credentials: Arc<StaticCreds>,
     ldap_config: Option<Arc<LdapConfig>>,
+    user_store: Option<Arc<crate::user_store::UserStore>>,
     legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
     conn_limiter: ConnLimiter,
     session_registry: Arc<SessionRegistry>,
@@ -468,6 +469,7 @@ fn build_tls_contexts(
         secret: state.shared_secret.clone(),
         credentials: state.credentials.clone(),
         ldap: state.ldap_config.clone(),
+        user_store: state.user_store.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let tls_identity = TlsIdentityConfig {
@@ -545,6 +547,7 @@ fn setup_legacy_listener(
         secret: state.shared_secret.clone(),
         credentials: state.credentials.clone(),
         ldap: state.ldap_config.clone(),
+        user_store: state.user_store.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let nad_secrets = state.legacy_nad_secrets.clone();
@@ -600,6 +603,7 @@ fn setup_management_api(
     let api_policy_path = state.policy_path.display().to_string();
     let api_schema_path = args.schema.clone();
     let api_registry = state.session_registry.clone();
+    let api_user_store = state.user_store.clone();
 
     handles.push(tokio::spawn(async move {
         if let Err(err) = crate::api::serve_api(
@@ -612,6 +616,7 @@ fn setup_management_api(
             reload_tx,
             api_registry,
             runtime_config,
+            api_user_store,
         )
         .await
         {
@@ -719,6 +724,24 @@ async fn handle_graceful_shutdown(
     }
 }
 
+/// Connect to the user store database if --db-url is configured.
+///
+/// # NIST Controls
+/// - **IA-5(2)**: Initializes PKI key storage at server startup
+async fn connect_user_store(
+    db_url: Option<&str>,
+) -> Result<Option<Arc<crate::user_store::UserStore>>> {
+    match db_url {
+        Some(url) => {
+            let store = crate::user_store::UserStore::connect(url)
+                .await
+                .context("connecting to user store")?;
+            Ok(Some(Arc::new(store)))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Build application state from parsed arguments.
 async fn build_app_state(args: &Args) -> Result<AppState> {
     let policy_path = args
@@ -728,6 +751,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         .clone();
     let ldap_config = validate_secrets_and_build_ldap(args)?;
     let (est_provider, est_config) = setup_est_provider(args).await?;
+    let user_store = connect_user_store(args.db_url.as_deref()).await?;
 
     Ok(AppState {
         shared_policy: Arc::new(RwLock::new(PolicyEngine::from_path(
@@ -740,6 +764,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
             .map(|s| Arc::new(s.clone().into_bytes())),
         credentials: Arc::new(credentials_map(args).map_err(anyhow::Error::msg)?),
         ldap_config,
+        user_store,
         legacy_nad_secrets: Arc::new(
             args.legacy_nad_secret
                 .iter()
@@ -825,3 +850,4 @@ mod session;
 mod session_registry;
 mod telemetry;
 mod tls;
+mod user_store;

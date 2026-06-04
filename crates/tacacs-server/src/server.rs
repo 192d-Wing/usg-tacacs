@@ -287,6 +287,14 @@ pub(crate) struct AuthContext {
     pub credentials: Arc<StaticCreds>,
     /// LDAP configuration for external authentication
     pub ldap: Option<Arc<LdapConfig>>,
+    /// User store for SSH public key authorization (optional).
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | IA-5(2) | PKI-Based Authentication | SSH public key lookup for service=sshd authz |
+    pub user_store: Option<Arc<crate::user_store::UserStore>>,
 }
 
 /// TLS-specific configuration for client certificate validation.
@@ -1119,6 +1127,7 @@ pub async fn serve_legacy(
                 secret: conn_secret,
                 credentials: conn_auth_ctx.credentials.clone(),
                 ldap: conn_auth_ctx.ldap.clone(),
+                user_store: conn_auth_ctx.user_store.clone(),
             };
             if let Err(err) = handle_connection(
                 socket,
@@ -1614,13 +1623,79 @@ fn build_authz_semantic_error_response(
     resp
 }
 
+/// Detect an SSH public-key lookup request (service=sshd, request=keys).
+///
+/// # NIST Controls
+/// - **IA-5(2)**: Identifies centralized key-distribution requests from SSH daemons
+fn is_ssh_key_request(request: &AuthorizationRequest) -> bool {
+    let attrs = request.attributes();
+    let is_sshd = attrs.iter().any(|a| {
+        a.name.eq_ignore_ascii_case("service")
+            && a.value
+                .as_deref()
+                .map(|v| v.eq_ignore_ascii_case("sshd"))
+                .unwrap_or(false)
+    });
+    let wants_keys = attrs.iter().any(|a| {
+        a.name.eq_ignore_ascii_case("request")
+            && a.value
+                .as_deref()
+                .map(|v| v.eq_ignore_ascii_case("keys"))
+                .unwrap_or(false)
+    });
+    is_sshd && wants_keys
+}
+
+/// Return authorized SSH keys for a user from the user store.
+///
+/// # NIST Controls
+/// - **IA-5(2)**: Distributes PKI authenticators to requesting SSH daemons
+/// - **AC-3**: Only enabled users' keys are returned
+async fn authorize_ssh_key_request(
+    request: &AuthorizationRequest,
+    user_store: &crate::user_store::UserStore,
+    peer: &str,
+) -> AuthorizationResponse {
+    let keys = user_store.lookup_keys_for_authz(&request.user).await;
+    let count = keys.len();
+    audit_event(
+        "authz_ssh_key_lookup",
+        peer,
+        &request.user,
+        request.header.session_id,
+        "pass",
+        "ssh-key-lookup",
+        &format!("keys={count}"),
+    );
+    AuthorizationResponse {
+        status: AUTHOR_STATUS_PASS_ADD,
+        server_msg: String::new(),
+        data: format!("ssh-keys={count}"),
+        args: keys,
+    }
+}
+
 /// Execute authorization decision based on request type.
 async fn execute_authorization_decision(
     request: &AuthorizationRequest,
     policy: &Arc<RwLock<PolicyEngine>>,
     ldap: &Option<Arc<LdapConfig>>,
+    user_store: &Option<Arc<crate::user_store::UserStore>>,
     peer: &str,
 ) -> AuthorizationResponse {
+    // SSH public-key lookup takes precedence over command authorization.
+    if is_ssh_key_request(request) {
+        return match user_store.as_ref() {
+            Some(store) => authorize_ssh_key_request(request, store, peer).await,
+            None => authz_reason_response(
+                AUTHOR_STATUS_FAIL,
+                "SSH key store not configured",
+                "no-user-store",
+                None,
+            ),
+        };
+    }
+
     // Fetch LDAP groups BEFORE acquiring policy lock to avoid holding
     // the lock across a potentially slow network call.
     let ldap_groups = if let Some(ldap_cfg) = ldap.as_ref() {
@@ -1651,6 +1726,7 @@ async fn handle_authorization_packet<S>(
     single_connect: &SingleConnectState,
     policy: &Arc<RwLock<PolicyEngine>>,
     ldap: &Option<Arc<LdapConfig>>,
+    user_store: &Option<Arc<crate::user_store::UserStore>>,
     secret: Option<&[u8]>,
     peer: &str,
 ) -> Result<LoopControl>
@@ -1666,7 +1742,9 @@ where
     }
 
     let decision = match validate_authorization_semantics(request) {
-        Ok(()) => execute_authorization_decision(request, policy, ldap, peer).await,
+        Ok(()) => {
+            execute_authorization_decision(request, policy, ldap, user_store, peer).await
+        }
         Err(msg) => build_authz_semantic_error_response(request, msg, peer),
     };
 
@@ -3202,6 +3280,7 @@ async fn dispatch_packet_to_handler<S>(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    user_store: &Option<Arc<crate::user_store::UserStore>>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3217,6 +3296,7 @@ where
                 single_connect,
                 policy,
                 ldap,
+                user_store,
                 secret,
                 peer,
             )
@@ -3323,6 +3403,7 @@ async fn connection_loop<S>(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &Arc<StaticCreds>,
     ldap: &Option<Arc<LdapConfig>>,
+    user_store: &Option<Arc<crate::user_store::UserStore>>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3366,6 +3447,7 @@ where
                 policy,
                 credentials,
                 ldap,
+                user_store,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3423,6 +3505,7 @@ where
     let secret = &auth_ctx.secret;
     let credentials = &auth_ctx.credentials;
     let ldap = &auth_ctx.ldap;
+    let user_store = &auth_ctx.user_store;
     let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
     let single_connect_keepalive_secs = conn_cfg.single_connect_keepalive_secs;
     let packet_read_timeout_secs = conn_cfg.packet_read_timeout_secs;
@@ -3443,6 +3526,7 @@ where
         policy,
         credentials,
         ldap,
+        user_store,
         ascii_cfg,
         secret.as_deref().map(|s| s.as_slice()),
         &peer,
