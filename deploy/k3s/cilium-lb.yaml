@@ -1,0 +1,36 @@
+# Cilium LoadBalancer IPAM pool + BGP advertisement for the TACACS+ anycast IP.
+#
+# Mirrors the existing pihole/dcim anycast pattern on this k3s cluster:
+#   - a /32 (+ /128) pool scoped to services labelled app=tacacs
+#   - a CiliumBGPAdvertisement labelled `advertise: k3s-pod-cidrs` (the label the
+#     CiliumBGPPeerConfig `upstream-k3s` selects) so the LB IP is advertised over
+#     BGP to the upstream router (10.0.111.1 / 2601:443:c200:572::1, ASN 64599).
+#
+# NIST SP 800-53 Rev. 5: SC-7 (boundary protection / managed interface).
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: tacacs-anycast
+spec:
+  blocks:
+    - cidr: "10.10.10.55/32"
+    - cidr: "2601:443:c200:575::55/128"
+  serviceSelector:
+    matchLabels:
+      app: tacacs
+---
+apiVersion: cilium.io/v2
+kind: CiliumBGPAdvertisement
+metadata:
+  name: tacacs-loadbalancer
+  labels:
+    advertise: k3s-pod-cidrs
+spec:
+  advertisements:
+    - advertisementType: Service
+      selector:
+        matchLabels:
+          app: tacacs
+      service:
+        addresses:
+          - LoadBalancerIP

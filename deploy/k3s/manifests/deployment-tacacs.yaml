@@ -1,0 +1,119 @@
+# TACACS+ server Deployment for the k3s (arm64) cluster.
+#
+# Configured via CLI flags (no --config file loader). The shared secret comes
+# from the TACACS_SECRET env (the --secret-file flag is not wired to the
+# obfuscation secret in this binary). Listens on legacy :49, TLS/mTLS :300,
+# and HTTP health/metrics :8080.
+#
+# NIST SP 800-53 Rev. 5: SC-8 (TLS), AC-3 (mTLS client CA), AC-6/CM-6
+# (non-root, dropped capabilities, read-only rootfs).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tacacs
+  namespace: tacacs
+  labels:
+    app: tacacs
+    app.kubernetes.io/name: tacacs
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: tacacs
+  template:
+    metadata:
+      labels:
+        app: tacacs
+        app.kubernetes.io/name: tacacs
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-pull
+      # Spread replicas across nodes for HA (best-effort).
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: tacacs
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: tacacs
+          image: ghcr.io/192d-wing/usg-tacacs:0.77.1-fix4-arm64
+          imagePullPolicy: IfNotPresent
+          args:
+            # Bind [::] for dual-stack: on Linux (bindv6only=0) this accepts both
+            # IPv6 and IPv4, so the v4 (10.10.10.55) and v6 (::55) anycast paths
+            # both reach the listeners.
+            - "--listen-legacy"
+            - "[::]:49"
+            - "--listen-tls"
+            - "[::]:300"
+            - "--listen-http"
+            - "[::]:8080"
+            - "--tls-cert"
+            - "/etc/tacacs/tls/server.pem"
+            - "--tls-key"
+            - "/etc/tacacs/tls/server-key.pem"
+            - "--client-ca"
+            - "/etc/tacacs/tls/ca.pem"
+            - "--policy"
+            - "/etc/tacacs/policy/policy.json"
+            - "--schema"
+            - "/etc/tacacs/policy/policy.schema.json"
+            - "--allow-static-credentials"
+            - "--user-password"
+            - "admin:ciscocisco12-"
+            - "--user-password"
+            - "testadmin:Tac@cs-Priv15"
+            - "--user-password"
+            - "alice:alicepass"
+          env:
+            - name: TACACS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tacacs-tls
+                  key: secret
+          ports:
+            - { name: legacy, containerPort: 49 }
+            - { name: tls, containerPort: 300 }
+            - { name: http, containerPort: 8080 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          resources:
+            requests: { memory: "256Mi", cpu: "100m", ephemeral-storage: "64Mi" }
+            limits: { memory: "1Gi", cpu: "1000m", ephemeral-storage: "256Mi" }
+          startupProbe:
+            httpGet: { path: /live, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: { path: /live, port: 8080 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /ready, port: 8080 }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: tls, mountPath: /etc/tacacs/tls, readOnly: true }
+            - { name: policy, mountPath: /etc/tacacs/policy, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tls
+          secret:
+            secretName: tacacs-tls
+        - name: policy
+          configMap:
+            name: tacacs-policy
+        - name: tmp
+          emptyDir: {}
