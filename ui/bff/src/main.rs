@@ -21,6 +21,19 @@ pub struct AppState {
     pub prom_url: String,
     pub namespace: String,
     pub audit_target: String,
+    /// Active authentication source: "icam", "ldap", or "local".
+    pub auth_source: Option<String>,
+    /// ICAM OIDC token endpoint URL (when auth_source = "icam").
+    pub icam_endpoint: Option<String>,
+    /// Internal (HTTP) base URL for the ICAM provider — used for reachability
+    /// checks from the BFF, which has no TLS client. Optional; omit to skip probing.
+    pub icam_internal_base: Option<String>,
+    /// ICAM OIDC client ID (when auth_source = "icam").
+    pub icam_client_id: Option<String>,
+    /// JWT claim used for group membership (default: "groups").
+    pub icam_groups_claim: Option<String>,
+    /// LDAP server URL (when auth_source = "ldap").
+    pub ldap_url: Option<String>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -36,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    let opt_env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let state = AppState {
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
@@ -44,6 +58,12 @@ async fn main() -> anyhow::Result<()> {
         prom_url: env_or("PROM_URL", "http://prometheus.monitoring.svc:9090"),
         namespace: env_or("TACACS_NAMESPACE", "tacacs"),
         audit_target: env_or("AUDIT_TARGET", "tacacs_audit"),
+        auth_source: opt_env("AUTH_SOURCE"),
+        icam_endpoint: opt_env("ICAM_ENDPOINT"),
+        icam_internal_base: opt_env("ICAM_INTERNAL_BASE"),
+        icam_client_id: opt_env("ICAM_CLIENT_ID"),
+        icam_groups_claim: opt_env("ICAM_GROUPS_CLAIM"),
+        ldap_url: opt_env("LDAP_URL"),
     };
     let listen: SocketAddr = env_or("BFF_LISTEN", "0.0.0.0:8088").parse()?;
     let static_dir = env_or("UI_STATIC_DIR", "/app/web");
@@ -54,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     let api = Router::new()
         .route("/me", get(handlers::me))
+        .route("/config", get(handlers::config))
         .route("/audit", get(handlers::audit))
         .route("/flows", get(handlers::flows))
         .route("/metrics", get(handlers::metrics))

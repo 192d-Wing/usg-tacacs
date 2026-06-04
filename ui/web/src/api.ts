@@ -37,6 +37,19 @@ export interface Alert {
   at: number;
 }
 
+export interface AuthConfig {
+  auth_source: "icam" | "ldap" | "local";
+  icam?: {
+    endpoint: string;
+    client_id: string;
+    groups_claim: string;
+    reachable: boolean | null;
+  };
+  ldap?: {
+    url: string;
+  };
+}
+
 export const fmtTs = (ns: number) => new Date(ns / 1e6).toLocaleString();
 export const nadIp = (peer?: string) =>
   peer ? peer.replace(/^\[/, "").replace(/\]:\d+$/, "").replace(/^::ffff:/, "") : "";

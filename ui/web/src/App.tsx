@@ -8,6 +8,7 @@ import AuditPage from "./pages/Audit";
 import FlowsPage from "./pages/Flows";
 import AlertsPage from "./pages/Alerts";
 import ResourcesPage from "./pages/Resources";
+import ConfigurationPage from "./pages/Configuration";
 
 export default function App() {
   const nav = useNavigate();
@@ -49,6 +50,8 @@ export default function App() {
               { type: "link", text: "NAD flow", href: "/flows" },
               { type: "link", text: "Alerts", href: "/alerts" },
               { type: "link", text: "Resources", href: "/resources" },
+              { type: "divider" },
+              { type: "link", text: "Configuration", href: "/configuration" },
             ]}
           />
         }
@@ -59,6 +62,7 @@ export default function App() {
             <Route path="/flows" element={<FlowsPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/resources" element={<ResourcesPage />} />
+            <Route path="/configuration" element={<ConfigurationPage />} />
           </Routes>
         }
       />

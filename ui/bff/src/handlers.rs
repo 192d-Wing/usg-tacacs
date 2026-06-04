@@ -35,6 +35,59 @@ fn err(e: anyhow::Error) -> (StatusCode, Json<Value>) {
     (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() })))
 }
 
+/// GET /api/config — active authentication source and (for ICAM) endpoint metadata.
+///
+/// The `auth_source` field is one of `"icam"`, `"ldap"`, or `"local"`.
+/// When ICAM is configured the handler probes the OIDC discovery endpoint and
+/// reports reachability so the UI can display a live health indicator.
+pub async fn config(State(st): State<AppState>) -> impl IntoResponse {
+    let source = st.auth_source.as_deref().unwrap_or("local");
+    let mut resp = json!({ "auth_source": source });
+
+    if source == "icam" {
+        if let Some(ep) = &st.icam_endpoint {
+            // Reachability check uses the internal HTTP base URL (BFF has no TLS client).
+            // e.g. ICAM_INTERNAL_BASE=http://keycloak.icam.svc.cluster.local
+            let reachable: Option<bool> = if let Some(base) = &st.icam_internal_base {
+                let realm_path = ep
+                    .split("/protocol/openid-connect/token")
+                    .next()
+                    .and_then(|s| s.split("/realms/").nth(1))
+                    .map(|r| format!("{base}/realms/{r}/.well-known/openid-configuration"));
+                if let Some(url) = realm_path {
+                    Some(
+                        st.http
+                            .get(&url)
+                            .timeout(std::time::Duration::from_secs(3))
+                            .send()
+                            .await
+                            .map(|r| r.status().is_success())
+                            .unwrap_or(false),
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            resp["icam"] = json!({
+                "endpoint": ep,
+                "client_id": st.icam_client_id.as_deref().unwrap_or(""),
+                "groups_claim": st.icam_groups_claim.as_deref().unwrap_or("groups"),
+                "reachable": reachable,
+            });
+        }
+    }
+
+    if source == "ldap" {
+        if let Some(url) = &st.ldap_url {
+            resp["ldap"] = json!({ "url": url });
+        }
+    }
+
+    Json(resp)
+}
+
 /// Identity injected by oauth2-proxy (Keycloak OIDC).
 pub async fn me(headers: HeaderMap) -> Json<Value> {
     let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).map(String::from);
