@@ -191,7 +191,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install --quiet cargo-audit
-      - run: cargo audit --deny warnings
+        # Accepted/mitigated advisories documented in audit.toml:
+        #   RUSTSEC-2023-0071 (rsa Marvin) - no upstream fix; EST path disabled
+        #   RUSTSEC-2025-0134 (rustls-pemfile unmaintained) - transitive
+      - run: cargo audit --deny warnings --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0134
 
   cargo-deny:
     name: Dependency Check
@@ -232,4 +235,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features --all-targets
-      - run: cargo install --quiet cargo-audit && cargo audit
+      - run: cargo install --quiet cargo-audit && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0134

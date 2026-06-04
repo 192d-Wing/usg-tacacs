@@ -1,0 +1,25 @@
+# cargo-audit configuration.
+#
+# Run: cargo audit
+#
+# Accepted / mitigated advisories (review each release):
+
+[advisories]
+ignore = [
+    # rsa "Marvin Attack" timing side-channel (RUSTSEC-2023-0071).
+    # No upstream fix exists in the `rsa` crate. It is pulled transitively by
+    # `usg-est-client` (EST certificate enrollment), NOT by sqlx. The EST code
+    # path is disabled in this deployment (est.enabled = false / no --est-*
+    # flags), so RSA PKCS#1 v1.5 decryption is not exercised at runtime.
+    # Re-evaluate if EST is enabled or when usg-est-client moves off `rsa`.
+    "RUSTSEC-2023-0071",
+
+    # rustls-pemfile is unmaintained (RUSTSEC-2025-0134). Pulled transitively
+    # (its functionality merged into rustls-pki-types). No action available here;
+    # will drop out when upstream TLS crates migrate.
+    "RUSTSEC-2025-0134",
+]
+
+# Note: cargo-audit does not auto-read this project-local file; CI passes these
+# same IDs via `cargo audit --ignore` (see .github/workflows/ci.yml). This file
+# is the human-readable record of why each is accepted.
