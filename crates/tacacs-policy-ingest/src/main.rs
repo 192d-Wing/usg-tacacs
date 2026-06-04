@@ -24,6 +24,10 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install the aws-lc-rs rustls CryptoProvider before any TLS use (rustls
+    // 0.23 cannot auto-select when both aws-lc-rs and ring are in the tree).
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())

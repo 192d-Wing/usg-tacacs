@@ -795,6 +795,13 @@ async fn run_server(args: &Args, state: &AppState, otel_enabled: bool) -> Result
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // rustls 0.23 cannot auto-select a CryptoProvider when both the aws-lc-rs
+    // and ring backends are present in the dependency tree (ring is pulled via
+    // rcgen in usg-est-client and via reqwest's hyper-rustls). Install aws-lc-rs
+    // as the process-level provider before any TLS use; Err means it is already
+    // installed, which is fine.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let args = Args::parse();
     let otel_enabled = init_tracing(&args)?;
 
