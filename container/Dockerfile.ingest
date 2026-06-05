@@ -1,4 +1,4 @@
-FROM registry1.dso.mil/ironbank/opensource/rustlang/rust:1.95.0 AS builder
+FROM rust:1.95-alpine AS builder
 
 RUN apk add --no-cache musl-dev openssl-dev pkgconfig build-base && \
     rustup target add x86_64-unknown-linux-musl
