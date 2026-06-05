@@ -103,6 +103,7 @@ mod tests {
             shell_start_groups: Default::default(),
             device_flow_exclude_users: Default::default(),
             nad_groups: Default::default(),
+            enable_groups: Default::default(),
             ascii_prompts: None,
             ascii_user_prompts: Default::default(),
             ascii_password_prompts: Default::default(),
@@ -138,6 +139,7 @@ mod tests {
             ascii_pass_attempts: 0,
             service: Some(1), // AUTHEN_SVC_LOGIN
             action: Some(1),  // TAC_PLUS_AUTHEN_LOGIN
+            priv_lvl: Some(1),
             device_code: None,
             device_poll_count: 0,
             ascii_device_flow_pending: false,

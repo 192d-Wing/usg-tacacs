@@ -16,10 +16,12 @@
   a matching group.  No new crate dependencies; CIDR matching is pure `std::net` bit
   arithmetic.  7 unit tests; schema updated (all 3 copies).
 
-- [ ] **Dynamic `enable` via device flow** — When a user requests privilege escalation
-  (`ACTION_ENABLE`), trigger a second device flow / ICAM just-in-time approval instead of
-  a static enable secret.  The TACACS+ enable action is already handled; the change is in
-  the ASCII auth state machine and the policy approval step.
+- [x] **Dynamic `enable` via device flow** — `ACTION_ENABLE` requests route through the
+  RFC 8628 device flow (CAC re-authentication in browser) when `--icam-device-flow` is on,
+  then gate on the new policy `enable_groups` map (priv-lvl → permitted ICAM/LDAP groups).
+  Privilege is hierarchical: a group cleared for level 15 may also enable to lower levels.
+  Empty `enable_groups` preserves legacy behavior (any authenticated user may enable).
+  AuthSessionState now carries `priv_lvl`; `can_enable()` performs the check.
 
 ## Observability
 

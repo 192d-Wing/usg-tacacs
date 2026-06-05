@@ -68,9 +68,9 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::{
-    AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS,
-    AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART, AuthSessionState,
-    AuthenReply,
+    AUTHEN_ACTION_ENABLE, AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_GETDATA,
+    AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART,
+    AuthSessionState, AuthenReply,
 };
 
 const AUTHEN_CONT_ABORT: u8 = 0x01;
@@ -541,8 +541,39 @@ fn check_attempt_limits(state: &AuthSessionState, config: &AsciiConfig) -> Optio
 /// | IA-6 | Authenticator Feedback | Does not expose device_code to user |
 /// | AC-7 | Unsuccessful Logon Attempts | max_polls bounds the attempt loop |
 /// | AU-12 | Audit Generation | Outcome logged via tracing |
+/// Build the reply for a successful device-flow authorization.
+///
+/// For an `enable` action, gates on `policy.can_enable` for the requested
+/// privilege level (AC-6); for a normal login, returns PASS.
+async fn device_flow_authorized_reply(
+    state: &AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    groups: &[String],
+) -> AuthenReply {
+    if state.action != Some(AUTHEN_ACTION_ENABLE) {
+        tracing::debug!(groups = groups.len(), "device auth succeeded");
+        return authen_reply(AUTHEN_STATUS_PASS, "authentication succeeded");
+    }
+    let priv_lvl = state.priv_lvl.unwrap_or(15);
+    if policy.read().await.can_enable(priv_lvl, groups) {
+        tracing::debug!(priv_lvl, "enable authorized via device flow (CAC)");
+        authen_reply(AUTHEN_STATUS_PASS, "enable authorized")
+    } else {
+        tracing::warn!(
+            priv_lvl,
+            groups = groups.len(),
+            "enable denied: no matching group"
+        );
+        authen_reply(
+            AUTHEN_STATUS_FAIL,
+            "privilege escalation denied for your groups",
+        )
+    }
+}
+
 async fn handle_device_poll_phase(
     state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
     device_flow: Option<&DeviceFlowConfig>,
     icam_groups_out: &mut Vec<String>,
 ) -> AuthenReply {
@@ -565,8 +596,7 @@ async fn handle_device_poll_phase(
         DevicePollResult::Authorized(token) => {
             *icam_groups_out = icam_groups_from_jwt(&token, &cfg.groups_claim);
             state.device_code = None;
-            tracing::debug!(groups = icam_groups_out.len(), "device auth succeeded");
-            authen_reply(AUTHEN_STATUS_PASS, "authentication succeeded")
+            device_flow_authorized_reply(state, policy, icam_groups_out).await
         }
         DevicePollResult::Pending => {
             let msg = format!(
@@ -723,7 +753,7 @@ pub async fn handle_ascii_continue(
 
     // Device flow path: bypass regular username/password auth, poll ICAM instead.
     if state.device_code.is_some() {
-        return handle_device_poll_phase(state, device_flow, icam_groups_out).await;
+        return handle_device_poll_phase(state, policy, device_flow, icam_groups_out).await;
     }
 
     // Deferred device-flow decision: username arrived in this CONTINUE.
@@ -777,6 +807,7 @@ mod tests {
             shell_start_groups: Default::default(),
             device_flow_exclude_users: Default::default(),
             nad_groups: Default::default(),
+            enable_groups: Default::default(),
             ascii_prompts: None,
             ascii_user_prompts: Default::default(),
             ascii_password_prompts: Default::default(),
@@ -823,6 +854,7 @@ mod tests {
             ascii_pass_attempts: 0,
             service: Some(1),
             action: Some(1),
+            priv_lvl: Some(1),
             device_code: None,
             device_poll_count: 0,
             ascii_device_flow_pending: false,

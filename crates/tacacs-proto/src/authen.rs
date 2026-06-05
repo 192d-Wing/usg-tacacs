@@ -224,6 +224,8 @@ pub struct AuthSessionState {
     pub ascii_pass_attempts: u8,
     pub service: Option<u8>,
     pub action: Option<u8>,
+    /// Privilege level requested in the START packet (drives enable gating).
+    pub priv_lvl: Option<u8>,
     /// RFC 8628 device_code pending browser authentication (device flow feature gate).
     pub device_code: Option<String>,
     /// Number of times the device code has been polled (bound for rule 2).
@@ -266,6 +268,7 @@ impl AuthSessionState {
             ascii_pass_attempts: 0,
             service: Some(start.service),
             action: Some(start.action),
+            priv_lvl: Some(start.priv_lvl),
             device_code: None,
             device_poll_count: 0,
             ascii_device_flow_pending: false,
@@ -315,6 +318,7 @@ impl AuthSessionState {
             ascii_pass_attempts: 0,
             service: Some(service),
             action: Some(action),
+            priv_lvl: None,
             device_code: None,
             device_poll_count: 0,
             ascii_device_flow_pending: false,

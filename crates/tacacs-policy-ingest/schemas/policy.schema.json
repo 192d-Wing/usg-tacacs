@@ -24,6 +24,17 @@
       },
       "description": "Named NAD groups mapping a label to CIDR membership criteria. Referenced from rule nad_groups fields."
     },
+    "enable_groups": {
+      "type": "object",
+      "patternProperties": {
+        "^([0-9]|1[0-5])$": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false,
+      "description": "Privilege-escalation gating: maps a requested privilege level (\"0\"-\"15\") to the ICAM/LDAP groups permitted to `enable` to it. When empty, enable is allowed for any authenticated user. Privilege is hierarchical: a group cleared for a higher level may also enable to lower levels."
+    },
     "shell_start": {
       "type": "object",
       "additionalProperties": {

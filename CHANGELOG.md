@@ -5,6 +5,33 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.0] - 2026-06-05
+
+### Added
+
+- **Dynamic `enable` via device flow**: privilege-escalation (`ACTION_ENABLE`) requests
+  now route through the RFC 8628 device flow when `--icam-device-flow` is enabled, forcing
+  fresh CAC re-authentication in the browser instead of a static enable secret. On success
+  the request is gated against a new policy field `enable_groups` — a map of privilege
+  level (`"0"`–`"15"`) to the ICAM/LDAP groups permitted to escalate to it. Privilege is
+  hierarchical: a group cleared for level 15 may also enable to lower levels. An empty
+  `enable_groups` map preserves legacy behavior (any authenticated user may enable).
+
+  ```json
+  { "enable_groups": { "15": ["netops-admin"], "7": ["netops"] } }
+  ```
+
+  Schema updated (all 3 copies). `AuthSessionState` gains a `priv_lvl` field;
+  `PolicyEngine::can_enable(priv_lvl, groups)` performs the check.
+
+### Fixed
+
+- CI: resolved fmt/clippy/cargo-deny/NASA-Rule-4/NIST-header gate failures introduced by
+  the 0.80.0 feature additions; added `deny.toml`, the `NASA-RULE4-EXEMPT` mechanism for
+  dispatch-fan-out functions, and fixed the NASA Rule 4 CI wrapper's zero-violation bug.
+
+---
+
 ## [0.80.0] - 2026-06-05
 
 ### Added

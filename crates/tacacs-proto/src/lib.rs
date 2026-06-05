@@ -102,6 +102,11 @@ pub const AUTHEN_TYPE_PAP: u8 = 0x02;
 pub const AUTHEN_TYPE_CHAP: u8 = 0x03;
 pub const AUTHEN_TYPE_ARAP: u8 = 0x04;
 
+/// Authentication action: standard login (RFC 8907 §5.1).
+pub const AUTHEN_ACTION_LOGIN: u8 = 0x01;
+/// Authentication action: privilege escalation / enable (RFC 8907 §5.1).
+pub const AUTHEN_ACTION_ENABLE: u8 = 0x02;
+
 pub const AUTHOR_STATUS_PASS_ADD: u8 = 0x01;
 pub const AUTHOR_STATUS_PASS_REPL: u8 = 0x02;
 pub const AUTHOR_STATUS_FAIL: u8 = 0x10;

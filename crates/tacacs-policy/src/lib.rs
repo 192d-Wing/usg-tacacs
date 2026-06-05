@@ -340,6 +340,12 @@ pub struct PolicyDocument {
     /// Groups are referenced from rule `nad_groups` fields.
     #[serde(default)]
     pub nad_groups: HashMap<String, NadGroupConfig>,
+    /// Privilege-escalation gating: maps a requested privilege level (as a
+    /// string, e.g. "15") to the ICAM/LDAP groups permitted to `enable` to it.
+    /// When empty, enable is allowed for any authenticated user (legacy behavior).
+    /// When non-empty but a level has no entry, enable to that level is denied.
+    #[serde(default)]
+    pub enable_groups: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub ascii_prompts: Option<AsciiPrompts>,
     #[serde(default)]
@@ -413,6 +419,8 @@ pub struct PolicyEngine {
     device_flow_exclude_users: Vec<String>,
     /// Compiled NAD groups: name → list of CIDR ranges.
     nad_groups: HashMap<String, Vec<ParsedCidr>>,
+    /// Compiled enable gating: priv-lvl → groups permitted to escalate to it.
+    enable_groups: HashMap<u8, Vec<String>>,
     ascii_prompts: Option<AsciiPrompts>,
     ascii_user_prompts: HashMap<String, String>,
     ascii_password_prompts: HashMap<String, String>,
@@ -492,6 +500,24 @@ fn compile_rules(configs: Vec<RuleConfig>) -> Result<Vec<Rule>> {
     Ok(rules)
 }
 
+/// Compile the enable-gating map: parse string priv-lvl keys into u8 and
+/// lowercase the group names for case-insensitive matching.
+fn compile_enable_groups(groups: HashMap<String, Vec<String>>) -> Result<HashMap<u8, Vec<String>>> {
+    let mut map = HashMap::new();
+    for (lvl_s, allowed) in groups {
+        let lvl: u8 = lvl_s.parse().map_err(|e| {
+            anyhow::anyhow!("enable_groups key {lvl_s:?} is not a valid priv-lvl (0-15): {e}")
+        })?;
+        if lvl > 15 {
+            return Err(anyhow::anyhow!(
+                "enable_groups priv-lvl {lvl} exceeds max 15"
+            ));
+        }
+        map.insert(lvl, allowed.into_iter().map(|g| g.to_lowercase()).collect());
+    }
+    Ok(map)
+}
+
 /// Compile the NAD group configuration map into parsed CIDR entries.
 fn compile_nad_group_map(
     groups: HashMap<String, NadGroupConfig>,
@@ -552,6 +578,7 @@ impl PolicyEngine {
     pub fn from_document(document: PolicyDocument) -> Result<Self> {
         let rules = compile_rules(document.rules)?;
         let nad_groups = compile_nad_group_map(document.nad_groups)?;
+        let enable_groups = compile_enable_groups(document.enable_groups)?;
         Ok(Self {
             default_allow: document.default_allow,
             shell_start: document
@@ -570,6 +597,7 @@ impl PolicyEngine {
                 .map(|u| u.to_lowercase())
                 .collect(),
             nad_groups,
+            enable_groups,
             ascii_prompts: document.ascii_prompts,
             ascii_user_prompts: document
                 .ascii_user_prompts
@@ -727,6 +755,34 @@ impl PolicyEngine {
             }
         }
         result
+    }
+
+    /// Return true if a user with `groups` is permitted to `enable` to `priv_lvl`.
+    ///
+    /// Semantics:
+    /// - No `enable_groups` configured at all → allow (legacy: any authed user).
+    /// - A group is permitted for `priv_lvl` if it appears in the entry for that
+    ///   level, OR in the entry for any higher level (privilege is hierarchical:
+    ///   a user cleared for level 15 may also enable to level 7).
+    /// - Configured but no matching group at or above `priv_lvl` → deny.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-6 | Least Privilege | Gates privilege escalation by group membership |
+    /// | AC-3 | Access Enforcement | Enforces enable authorization at the policy layer |
+    pub fn can_enable(&self, priv_lvl: u8, groups: &[String]) -> bool {
+        if self.enable_groups.is_empty() {
+            return true;
+        }
+        let user_groups: Vec<String> = groups.iter().map(|g| g.to_lowercase()).collect();
+        for (lvl, allowed) in &self.enable_groups {
+            if *lvl >= priv_lvl && allowed.iter().any(|a| user_groups.iter().any(|ug| ug == a)) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Return true if the username matches an entry in `device_flow_exclude_users`.
@@ -1005,6 +1061,7 @@ mod tests {
             shell_start_groups: HashMap::new(),
             device_flow_exclude_users: Vec::new(),
             nad_groups: HashMap::new(),
+            enable_groups: HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),
@@ -2127,6 +2184,7 @@ mod tests {
             shell_start_groups: HashMap::new(),
             device_flow_exclude_users: vec![],
             nad_groups: HashMap::new(),
+            enable_groups: HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),
@@ -2156,6 +2214,7 @@ mod tests {
             shell_start_groups: HashMap::new(),
             device_flow_exclude_users: vec![],
             nad_groups,
+            enable_groups: HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),
@@ -2277,6 +2336,7 @@ mod tests {
             shell_start_groups: HashMap::new(),
             device_flow_exclude_users: patterns.iter().map(|s| s.to_string()).collect(),
             nad_groups: HashMap::new(),
+            enable_groups: HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),
@@ -2360,5 +2420,85 @@ mod tests {
     fn glob_match_star_alone_matches_all() {
         assert!(glob_match("*", "anything"));
         assert!(glob_match("*", ""));
+    }
+
+    // ==================== Enable Gating Tests ====================
+
+    fn make_engine_with_enable(enable: HashMap<String, Vec<String>>) -> PolicyEngine {
+        let doc = PolicyDocument {
+            default_allow: false,
+            shell_start: HashMap::new(),
+            shell_start_groups: HashMap::new(),
+            device_flow_exclude_users: vec![],
+            nad_groups: HashMap::new(),
+            enable_groups: enable,
+            ascii_prompts: None,
+            ascii_user_prompts: HashMap::new(),
+            ascii_password_prompts: HashMap::new(),
+            ascii_port_prompts: HashMap::new(),
+            ascii_remaddr_prompts: HashMap::new(),
+            allow_raw_server_msg: true,
+            raw_server_msg_allow_prefixes: vec![],
+            raw_server_msg_deny_prefixes: vec![],
+            raw_server_msg_user_overrides: HashMap::new(),
+            ascii_messages: None,
+            rules: vec![],
+        };
+        PolicyEngine::from_document(doc).unwrap()
+    }
+
+    #[test]
+    fn can_enable_empty_config_allows_any() {
+        let e = make_engine_with_enable(HashMap::new());
+        assert!(e.can_enable(15, &[]));
+        assert!(e.can_enable(15, &["whatever".into()]));
+    }
+
+    #[test]
+    fn can_enable_matching_group_at_level() {
+        let mut cfg = HashMap::new();
+        cfg.insert("15".into(), vec!["netops-admin".into()]);
+        let e = make_engine_with_enable(cfg);
+        assert!(e.can_enable(15, &["netops-admin".into()]));
+        assert!(!e.can_enable(15, &["netops".into()]));
+    }
+
+    #[test]
+    fn can_enable_configured_but_no_entry_denies() {
+        let mut cfg = HashMap::new();
+        cfg.insert("15".into(), vec!["admin".into()]);
+        let e = make_engine_with_enable(cfg);
+        // requesting level 7, no entry for 7, and level-15 entry doesn't apply
+        // downward to a user lacking the admin group
+        assert!(!e.can_enable(7, &["netops".into()]));
+    }
+
+    #[test]
+    fn can_enable_hierarchical_higher_level_covers_lower() {
+        let mut cfg = HashMap::new();
+        cfg.insert("15".into(), vec!["admin".into()]);
+        let e = make_engine_with_enable(cfg);
+        // admin is cleared for 15, so may also enable to 7
+        assert!(e.can_enable(7, &["admin".into()]));
+        assert!(e.can_enable(15, &["admin".into()]));
+    }
+
+    #[test]
+    fn can_enable_case_insensitive() {
+        let mut cfg = HashMap::new();
+        cfg.insert("15".into(), vec!["NetOps-Admin".into()]);
+        let e = make_engine_with_enable(cfg);
+        assert!(e.can_enable(15, &["netops-admin".into()]));
+        assert!(e.can_enable(15, &["NETOPS-ADMIN".into()]));
+    }
+
+    #[test]
+    fn compile_enable_groups_rejects_bad_level() {
+        let mut cfg = HashMap::new();
+        cfg.insert("99".into(), vec!["admin".into()]);
+        assert!(compile_enable_groups(cfg).is_err());
+        let mut cfg2 = HashMap::new();
+        cfg2.insert("notanum".into(), vec!["admin".into()]);
+        assert!(compile_enable_groups(cfg2).is_err());
     }
 }
