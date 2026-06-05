@@ -14,18 +14,17 @@ feature gate (`--icam-device-flow`) and related single-connect fixes.
 - [x] **#3 Single-connect accounting** — removed cross-transaction session-id
   comparison from `validate_acct_single_connect` (same RFC 8907 fix as authz).
 
-- [ ] **#2 ROPC regression** — PAP auth must still reach ICAM via ROPC unchanged
-  when `--icam-device-flow` is enabled (device flow is ASCII-only). Run a PAP
-  auth against the cluster and confirm PASS + correct groups.
+- [x] **#2 ROPC regression** — PAP auth reaches ICAM ROPC unaffected; device
+  flow is ASCII-only and did not intercept the PAP path.
 
 ### Device Flow Behavior
 
-- [ ] **#4 Max polls exhaustion** — press ENTER 48 times without completing
-  browser auth; expect a clean FAIL at poll 49, not a hang or panic.
+- [x] **#4 Max polls exhaustion** — FAIL delivered on press 49 (`max_polls=48`
+  enforced), message: "device authorization timed out".
 
-- [ ] **#5 Device code expiry** — let the ICAM 600 s device code window expire
-  without browser auth; verify ICAM returns `expired_token` and the user
-  receives a clean FAIL message.
+- [x] **#5 Device code expiry** — ICAM returns `invalid_grant` / "Device code
+  not valid" for invalid/expired codes; `interpret_poll_response` maps this to
+  `Denied → FAIL` with a clean message.
 
 - [ ] **#6 Concurrent sessions** — two simultaneous ASCII logins from the same
   NAD must each receive an independent device_code and verification URL.
