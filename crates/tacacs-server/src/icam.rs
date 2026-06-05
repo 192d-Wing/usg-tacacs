@@ -121,10 +121,10 @@ pub fn icam_build_client(
     https_only: bool,
 ) -> Result<Client, reqwest::Error> {
     let mut builder = Client::builder().timeout(timeout).https_only(https_only);
-    if let Some(pem) = ca_pem {
-        if let Ok(cert) = reqwest::Certificate::from_pem(pem) {
-            builder = builder.add_root_certificate(cert);
-        }
+    if let Some(pem) = ca_pem
+        && let Ok(cert) = reqwest::Certificate::from_pem(pem)
+    {
+        builder = builder.add_root_certificate(cert);
     }
     builder.build()
 }
@@ -257,11 +257,7 @@ async fn icam_call_token_endpoint(
         icam.client_id = %cfg.client_id,
     )
 )]
-pub async fn icam_authenticate(
-    cfg: &IcamConfig,
-    username: &str,
-    password: &str,
-) -> IcamAuthResult {
+pub async fn icam_authenticate(cfg: &IcamConfig, username: &str, password: &str) -> IcamAuthResult {
     if username.is_empty() {
         tracing::warn!("ICAM authenticate called with empty username; returning fail");
         return IcamAuthResult {
@@ -365,8 +361,8 @@ mod tests {
         // Build a minimal JWT: header.payload.sig
         // payload = {"sub":"alice","groups":["netops"]}
         let payload_json = r#"{"sub":"alice","groups":["netops"]}"#;
-        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(payload_json.as_bytes());
+        let payload_b64 =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
         let token = format!("eyJhbGciOiJSUzI1NiJ9.{payload_b64}.fakesig");
         let result = icam_decode_jwt_payload(&token);
         assert!(result.is_some());

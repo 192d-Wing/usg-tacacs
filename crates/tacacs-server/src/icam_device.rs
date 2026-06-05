@@ -133,13 +133,13 @@ pub enum DevicePollResult {
 /// |---------|------|----------------|
 /// | SI-10 | Information Input Validation | Rejects oversized or missing fields |
 fn parse_device_auth_response(raw: DeviceAuthRaw) -> Option<DeviceAuthResponse> {
-    assert!(
+    const _: () = assert!(
         MAX_DEVICE_CODE_BYTES > 0,
         "device code size limit must be positive"
     );
-    assert!(
+    const _: () = assert!(
         MAX_VERIFICATION_URI_BYTES > 0,
-        "verification URI size limit must be positive"
+        "uri size limit must be positive"
     );
     let device_code = raw
         .device_code
@@ -273,20 +273,14 @@ pub async fn icam_device_auth_start(cfg: &DeviceFlowConfig) -> Option<DeviceAuth
     skip(cfg, device_code),
     fields(icam.token_endpoint = %cfg.token_endpoint)
 )]
-pub async fn icam_device_poll_token(
-    cfg: &DeviceFlowConfig,
-    device_code: &str,
-) -> DevicePollResult {
+pub async fn icam_device_poll_token(cfg: &DeviceFlowConfig, device_code: &str) -> DevicePollResult {
     assert!(!device_code.is_empty(), "device_code must not be empty");
     assert!(
         device_code.len() <= MAX_DEVICE_CODE_BYTES,
         "device_code exceeds maximum length"
     );
     let form = [
-        (
-            "grant_type",
-            "urn:ietf:params:oauth:grant-type:device_code",
-        ),
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ("client_id", cfg.client_id.as_str()),
         ("client_secret", cfg.client_secret.as_str()),
         ("device_code", device_code),
@@ -469,7 +463,10 @@ mod tests {
         };
         let msg = icam_device_format_prompt(&resp, 0, 48);
         assert!(msg.contains("?user_code=ABCD-1234"));
-        assert!(!msg.contains("Code:"), "code should not appear separately when URI is complete");
+        assert!(
+            !msg.contains("Code:"),
+            "code should not appear separately when URI is complete"
+        );
     }
 
     #[test]

@@ -1,5 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TACACS+ authentication packet structures plus parsing/encoding helpers.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | IA-2 | Identification and Authentication | Implemented | 2026-06-05 | See functions below |
+//! | SC-23 | System and Communications Protection | Implemented | 2026-06-05 | See functions below |
+//! | SI-10 | System and Information Integrity | Implemented | 2026-06-05 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-06-05",
+//!   "control_families": [
+//!     "IA",
+//!     "SC",
+//!     "SI"
+//!   ],
+//!   "total_controls": 3,
+//!   "file_path": "crates/tacacs-proto/src/authen.rs"
+//! }
+//! ```
+//!
+//! </details>
 
 use crate::header::Header;
 use crate::util::read_bytes;

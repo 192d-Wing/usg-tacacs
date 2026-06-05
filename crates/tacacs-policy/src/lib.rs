@@ -157,13 +157,13 @@ impl CompiledSchedule {
 fn parse_day_name(s: &str) -> Option<u8> {
     assert!(!s.is_empty(), "day name must not be empty");
     match s.to_lowercase().as_str() {
-        "sun" | "sunday"    => Some(0),
-        "mon" | "monday"    => Some(1),
-        "tue" | "tuesday"   => Some(2),
+        "sun" | "sunday" => Some(0),
+        "mon" | "monday" => Some(1),
+        "tue" | "tuesday" => Some(2),
         "wed" | "wednesday" => Some(3),
-        "thu" | "thursday"  => Some(4),
-        "fri" | "friday"    => Some(5),
-        "sat" | "saturday"  => Some(6),
+        "thu" | "thursday" => Some(4),
+        "fri" | "friday" => Some(5),
+        "sat" | "saturday" => Some(6),
         _ => None,
     }
 }
@@ -174,7 +174,9 @@ fn parse_hhmm(s: &str) -> Option<u16> {
     let (h, m) = s.split_once(':')?;
     let h: u16 = h.parse().ok()?;
     let m: u16 = m.parse().ok()?;
-    if h > 23 || m > 59 { return None; }
+    if h > 23 || m > 59 {
+        return None;
+    }
     Some(h * 60 + m)
 }
 
@@ -205,15 +207,19 @@ fn compile_schedule(cfg: &ScheduleConfig) -> Result<CompiledSchedule, String> {
         let (start_s, end_s) = h
             .split_once('-')
             .ok_or_else(|| format!("hours must be HH:MM-HH:MM, got: {h:?}"))?;
-        let start = parse_hhmm(start_s.trim())
-            .ok_or_else(|| format!("invalid start time: {start_s:?}"))?;
-        let end = parse_hhmm(end_s.trim())
-            .ok_or_else(|| format!("invalid end time: {end_s:?}"))?;
+        let start =
+            parse_hhmm(start_s.trim()).ok_or_else(|| format!("invalid start time: {start_s:?}"))?;
+        let end = parse_hhmm(end_s.trim()).ok_or_else(|| format!("invalid end time: {end_s:?}"))?;
         (start, end, start > end)
     } else {
         (0, 1440, false) // 00:00–24:00 = all hours
     };
-    Ok(CompiledSchedule { day_mask, hour_start_min, hour_end_min, wraps_midnight })
+    Ok(CompiledSchedule {
+        day_mask,
+        hour_start_min,
+        hour_end_min,
+        wraps_midnight,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -434,10 +440,73 @@ fn glob_match(pattern: &str, text: &str) -> bool {
                 !suffix.contains('*'),
                 "only one wildcard per pattern is supported"
             );
-            text.starts_with(prefix) && text.ends_with(suffix)
+            text.starts_with(prefix)
+                && text.ends_with(suffix)
                 && text.len() >= prefix.len() + suffix.len()
         }
     }
+}
+
+/// Compile a list of `RuleConfig` entries into indexed `Rule` values.
+/// Update the winning rule based on priority then declaration order.
+fn update_selected<'a>(selected: &mut Option<&'a Rule>, rule: &'a Rule) {
+    match selected {
+        None => *selected = Some(rule),
+        Some(cur) if rule.priority > cur.priority => *selected = Some(rule),
+        Some(cur) if rule.priority == cur.priority && rule.order > cur.order => {
+            *selected = Some(rule);
+        }
+        _ => {}
+    }
+}
+
+fn compile_rules(configs: Vec<RuleConfig>) -> Result<Vec<Rule>> {
+    let mut rules = Vec::with_capacity(configs.len());
+    for (order, rule) in configs.into_iter().enumerate() {
+        let regex = compile_pattern(&rule.pattern)
+            .with_context(|| format!("compiling rule {} pattern {}", rule.id, rule.pattern))?;
+        let schedule = rule
+            .schedule
+            .as_ref()
+            .map(|s| {
+                compile_schedule(s)
+                    .map_err(|e| anyhow::anyhow!("rule {}: invalid schedule: {}", rule.id, e))
+            })
+            .transpose()?;
+        rules.push(Rule {
+            id: rule.id,
+            priority: rule.priority,
+            effect: rule.effect,
+            users: rule.users.into_iter().map(|u| u.to_lowercase()).collect(),
+            groups: rule.groups.into_iter().map(|g| g.to_lowercase()).collect(),
+            nad_groups: rule
+                .nad_groups
+                .into_iter()
+                .map(|g| g.to_lowercase())
+                .collect(),
+            regex,
+            order,
+            schedule,
+        });
+    }
+    Ok(rules)
+}
+
+/// Compile the NAD group configuration map into parsed CIDR entries.
+fn compile_nad_group_map(
+    groups: HashMap<String, NadGroupConfig>,
+) -> Result<HashMap<String, Vec<ParsedCidr>>> {
+    let mut map = HashMap::new();
+    for (name, cfg) in groups {
+        let mut cidrs = Vec::new();
+        for cidr_s in &cfg.cidrs {
+            let parsed =
+                parse_cidr(cidr_s).map_err(|e| anyhow::anyhow!("nad_group {name:?}: {e}"))?;
+            cidrs.push(parsed);
+        }
+        map.insert(name.to_lowercase(), cidrs);
+    }
+    Ok(map)
 }
 
 fn default_allow_raw_server_msg() -> bool {
@@ -481,33 +550,8 @@ impl PolicyEngine {
     }
 
     pub fn from_document(document: PolicyDocument) -> Result<Self> {
-        let mut rules = Vec::with_capacity(document.rules.len());
-
-        for (order, rule) in document.rules.into_iter().enumerate() {
-            let regex = compile_pattern(&rule.pattern)
-                .with_context(|| format!("compiling rule {} pattern {}", rule.id, rule.pattern))?;
-            let schedule = rule
-                .schedule
-                .as_ref()
-                .map(|s| {
-                    compile_schedule(s).map_err(|e| {
-                        anyhow::anyhow!("rule {}: invalid schedule: {}", rule.id, e)
-                    })
-                })
-                .transpose()?;
-            rules.push(Rule {
-                id: rule.id,
-                priority: rule.priority,
-                effect: rule.effect,
-                users: rule.users.into_iter().map(|u| u.to_lowercase()).collect(),
-                groups: rule.groups.into_iter().map(|g| g.to_lowercase()).collect(),
-                nad_groups: rule.nad_groups.into_iter().map(|g| g.to_lowercase()).collect(),
-                regex,
-                order,
-                schedule,
-            });
-        }
-
+        let rules = compile_rules(document.rules)?;
+        let nad_groups = compile_nad_group_map(document.nad_groups)?;
         Ok(Self {
             default_allow: document.default_allow,
             shell_start: document
@@ -525,20 +569,7 @@ impl PolicyEngine {
                 .into_iter()
                 .map(|u| u.to_lowercase())
                 .collect(),
-            nad_groups: {
-                let mut map = HashMap::new();
-                for (name, cfg) in document.nad_groups {
-                    let mut cidrs = Vec::new();
-                    for cidr_s in &cfg.cidrs {
-                        let parsed = parse_cidr(cidr_s).map_err(|e| {
-                            anyhow::anyhow!("nad_group {name:?}: {e}")
-                        })?;
-                        cidrs.push(parsed);
-                    }
-                    map.insert(name.to_lowercase(), cidrs);
-                }
-                map
-            },
+            nad_groups,
             ascii_prompts: document.ascii_prompts,
             ascii_user_prompts: document
                 .ascii_user_prompts
@@ -608,10 +639,8 @@ impl PolicyEngine {
         let mut selected: Option<&Rule> = None;
         for rule in &self.rules {
             // Skip rules whose time-based schedule is not currently active (AC-3).
-            if let Some(ref sched) = rule.schedule {
-                if !sched.active_now() {
-                    continue;
-                }
+            if rule.schedule.as_ref().is_some_and(|s| !s.active_now()) {
+                continue;
             }
             if !rule.users.is_empty() && !rule.users.iter().any(|u| u == &normalized_user) {
                 continue;
@@ -634,16 +663,7 @@ impl PolicyEngine {
                 continue;
             }
             if rule.regex.is_match(&normalized_cmd) {
-                match selected {
-                    None => selected = Some(rule),
-                    Some(current) if rule.priority > current.priority => selected = Some(rule),
-                    Some(current)
-                        if rule.priority == current.priority && rule.order > current.order =>
-                    {
-                        selected = Some(rule)
-                    }
-                    _ => {}
-                }
+                update_selected(&mut selected, rule);
             }
         }
 
@@ -2043,7 +2063,7 @@ mod tests {
         assert!((s.day_mask >> 1) & 1 == 1, "Monday");
         assert!((s.day_mask >> 3) & 1 == 1, "Wednesday");
         assert!((s.day_mask >> 5) & 1 == 1, "Friday");
-        assert!((s.day_mask >> 0) & 1 == 0, "Sunday not set");
+        assert!(s.day_mask & 1 == 0, "Sunday not set");
     }
 
     #[test]
@@ -2097,7 +2117,10 @@ mod tests {
     #[test]
     fn rule_with_always_active_schedule_fires() {
         let mut rule = make_rule("r", 10, Effect::Allow, "show.*");
-        rule.schedule = Some(ScheduleConfig { days: vec![], hours: None });
+        rule.schedule = Some(ScheduleConfig {
+            days: vec![],
+            hours: None,
+        });
         let doc = PolicyDocument {
             default_allow: false,
             shell_start: HashMap::new(),
@@ -2123,7 +2146,10 @@ mod tests {
 
     // ==================== NAD Group Tests ====================
 
-    fn make_engine_with_nad(nad_groups: HashMap<String, NadGroupConfig>, rules: Vec<RuleConfig>) -> PolicyEngine {
+    fn make_engine_with_nad(
+        nad_groups: HashMap<String, NadGroupConfig>,
+        rules: Vec<RuleConfig>,
+    ) -> PolicyEngine {
         let doc = PolicyDocument {
             default_allow: false,
             shell_start: HashMap::new(),
@@ -2176,8 +2202,18 @@ mod tests {
     #[test]
     fn resolve_nad_groups_matches_cidr() {
         let mut nads = HashMap::new();
-        nads.insert("core".into(), NadGroupConfig { cidrs: vec!["10.0.0.0/8".into()] });
-        nads.insert("access".into(), NadGroupConfig { cidrs: vec!["192.168.0.0/16".into()] });
+        nads.insert(
+            "core".into(),
+            NadGroupConfig {
+                cidrs: vec!["10.0.0.0/8".into()],
+            },
+        );
+        nads.insert(
+            "access".into(),
+            NadGroupConfig {
+                cidrs: vec!["192.168.0.0/16".into()],
+            },
+        );
         let engine = make_engine_with_nad(nads, vec![]);
         let groups = engine.resolve_nad_groups("10.0.1.1:49");
         assert_eq!(groups, vec!["core"]);
@@ -2190,7 +2226,12 @@ mod tests {
     #[test]
     fn nad_group_rule_fires_for_matching_nad() {
         let mut nads = HashMap::new();
-        nads.insert("core".into(), NadGroupConfig { cidrs: vec!["10.0.0.0/8".into()] });
+        nads.insert(
+            "core".into(),
+            NadGroupConfig {
+                cidrs: vec!["10.0.0.0/8".into()],
+            },
+        );
         let mut rule = make_rule("deny-config-access", 50, Effect::Deny, "(configure|conf).*");
         rule.nad_groups = vec!["core".into()];
         let engine = make_engine_with_nad(nads, vec![rule]);
@@ -2204,8 +2245,18 @@ mod tests {
     #[test]
     fn nad_group_rule_skipped_for_nonmatching_nad() {
         let mut nads = HashMap::new();
-        nads.insert("core".into(), NadGroupConfig { cidrs: vec!["10.0.0.0/8".into()] });
-        let mut rule = make_rule("deny-config-core-only", 50, Effect::Deny, "(configure|conf).*");
+        nads.insert(
+            "core".into(),
+            NadGroupConfig {
+                cidrs: vec!["10.0.0.0/8".into()],
+            },
+        );
+        let mut rule = make_rule(
+            "deny-config-core-only",
+            50,
+            Effect::Deny,
+            "(configure|conf).*",
+        );
         rule.nad_groups = vec!["core".into()];
         let mut allow_all = make_rule("allow-all", 10, Effect::Allow, ".*");
         allow_all.nad_groups = vec![];

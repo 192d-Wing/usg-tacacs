@@ -1,5 +1,36 @@
 //! OpenBao/Vault client integration.
 //!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../../docs/NIST-CONTROLS-MAPPING.md](../../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-3 | Access Control | Implemented | 2026-06-05 | See functions below |
+//! | SI-10 | System and Information Integrity | Implemented | 2026-06-05 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-06-05",
+//!   "control_families": [
+//!     "AC",
+//!     "SI"
+//!   ],
+//!   "total_controls": 2,
+//!   "file_path": "crates/tacacs-secrets/src/openbao/mod.rs"
+//! }
+//! ```
+//!
+//! </details>
+//!
 //! This module provides a client for fetching secrets from OpenBao (or HashiCorp Vault).
 //! It supports:
 //! - AppRole authentication

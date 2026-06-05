@@ -216,10 +216,10 @@ impl RbacMiddleware {
         // Test-only fallback: allow X-User-CN header for integration tests
         #[cfg(test)]
         {
-            if let Some(val) = req.headers().get("X-User-CN") {
-                if let Ok(s) = val.to_str() {
-                    return s.to_string();
-                }
+            if let Some(val) = req.headers().get("X-User-CN")
+                && let Ok(s) = val.to_str()
+            {
+                return s.to_string();
             }
         }
 

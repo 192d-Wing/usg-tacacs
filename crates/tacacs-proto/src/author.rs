@@ -167,9 +167,9 @@ impl AuthorizationRequest {
             .any(|a| a.name.eq_ignore_ascii_case("service") && a.value.as_deref() == Some("shell"));
         // A cmd with a non-empty value is command authorization, not an exec
         // (shell-start) authorization. Cisco sends "cmd=" (empty) for exec.
-        let has_command = attrs
-            .iter()
-            .any(|a| a.name.eq_ignore_ascii_case("cmd") && !a.value.as_deref().unwrap_or("").is_empty());
+        let has_command = attrs.iter().any(|a| {
+            a.name.eq_ignore_ascii_case("cmd") && !a.value.as_deref().unwrap_or("").is_empty()
+        });
         has_shell && !has_command
     }
 

@@ -139,6 +139,7 @@ pub struct ApiState {
 /// - `X-User-CN` header (for testing/development only)
 ///
 /// Anonymous users are denied access to all endpoints.
+// NASA-RULE4-EXEMPT: route registration requires one .merge()+.route_layer() block per permission
 pub fn build_api_router(
     rbac: RbacConfig,
     policy: Arc<RwLock<PolicyEngine>>,

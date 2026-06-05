@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-//! HTTP server for health checks and Prometheus metrics.
+//! HTTP server for health checks, Prometheus metrics, and session snapshot.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | AC-10 | Access Control | Implemented | 2026-06-05 | [`sessions_handler`] |
+//! | SI-4 | System and Information Integrity | Implemented | 2026-06-05 | [`sessions_handler`] |
 
 use crate::metrics::metrics;
 use crate::session_registry::SessionRegistry;
@@ -152,39 +159,54 @@ async fn metrics_handler() -> impl IntoResponse {
 /// |---------|------|----------------|
 /// | AC-10 | Concurrent Session Control | Exposes live session count for monitoring |
 /// | SI-4 | System Monitoring | Supports real-time operator visibility |
-async fn sessions_handler(axum::extract::State(state): axum::extract::State<ServerState>) -> Response {
+async fn sessions_handler(
+    axum::extract::State(state): axum::extract::State<ServerState>,
+) -> Response {
     let Some(ref registry) = state.registry else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "session registry unavailable").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session registry unavailable",
+        )
+            .into_response();
     };
     let sessions = registry.list_sessions().await;
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let json: Vec<serde_json::Value> = sessions.iter().map(|s| {
-        let connected = s.connected_at
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let last_active = s.last_activity
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        serde_json::json!({
-            "id":           s.connection_id,
-            "peer":         s.peer_addr.to_string(),
-            "user":         s.username,
-            "session_id":   s.session_id,
-            "connected_at": connected,
-            "last_active":  last_active,
-            "idle_secs":    now_secs.saturating_sub(last_active),
-            "requests":     s.request_count,
+    let json: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|s| {
+            let connected = s
+                .connected_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let last_active = s
+                .last_activity
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            serde_json::json!({
+                "id":           s.connection_id,
+                "peer":         s.peer_addr.to_string(),
+                "user":         s.username,
+                "session_id":   s.session_id,
+                "connected_at": connected,
+                "last_active":  last_active,
+                "idle_secs":    now_secs.saturating_sub(last_active),
+                "requests":     s.request_count,
+            })
         })
-    }).collect();
-    (StatusCode::OK, axum::Json(serde_json::json!({
-        "count": json.len(),
-        "sessions": json,
-    }))).into_response()
+        .collect();
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "count": json.len(),
+            "sessions": json,
+        })),
+    )
+        .into_response()
 }
 
 /// Build the HTTP router with all endpoints.

@@ -1,4 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 //! OpenBao HTTP client with retry logic.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | SC-12 | System and Communications Protection | Implemented | 2026-06-05 | `TokenState` zeroize |
+//! | SC-28 | System and Communications Protection | Implemented | 2026-06-05 | Secret material at rest |
 
 use crate::config::OpenBaoConfig;
 use crate::openbao::{AppRoleAuth, KvClient, PkiClient};

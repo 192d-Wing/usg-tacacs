@@ -20,6 +20,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # opt into Node.js 24 (silence Node 20 deprecation)
 
 jobs:
   # ==========================================================================

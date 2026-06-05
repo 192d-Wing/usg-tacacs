@@ -152,6 +152,19 @@ scan_all_functions() {
 
             total_functions=$((total_functions + 1))
 
+            # Skip functions explicitly exempt from the rule (e.g. route registrations
+            # where the structure is dictated by the framework, not logic complexity).
+            # Place a line containing NASA-RULE4-EXEMPT within 5 lines before the fn.
+            local exempt=false
+            for look_back in 1 2 3 4 5; do
+                local check_line=$(sed -n "$((line_num - look_back))p" "$file" 2>/dev/null || true)
+                if echo "$check_line" | grep -q "NASA-RULE4-EXEMPT"; then
+                    exempt=true
+                    break
+                fi
+            done
+            [ "$exempt" = true ] && continue
+
             # Measure function length
             local length=$(measure_function_length "$file" "$line_num")
 

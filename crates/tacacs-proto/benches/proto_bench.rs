@@ -2,10 +2,10 @@
 //! Benchmarks for TACACS+ protocol hot paths.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use std::io::Cursor;
 
 // ---------- helpers ----------
 
+#[allow(dead_code)]
 fn make_header(pkt_type: u8, seq: u8, session_id: u32, length: u32) -> [u8; 12] {
     let mut buf = [0u8; 12];
     buf[0] = 0xC1; // version (PAP minor=1)
@@ -100,7 +100,7 @@ fn bench_crypto(c: &mut Criterion) {
     let mut group = c.benchmark_group("crypto");
 
     for size in [32, 128, 512, 2048] {
-        let mut body = vec![0xAA; size];
+        let body = vec![0xAA; size];
         group.bench_function(format!("apply_body_crypto_{size}B"), |b| {
             b.iter(|| {
                 let mut data = body.clone();

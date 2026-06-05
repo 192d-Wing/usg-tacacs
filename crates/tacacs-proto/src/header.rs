@@ -1,5 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TACACS+ packet header parsing and serialization for async streams.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | SC-8 | System and Communications Protection | Implemented | 2026-06-05 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-06-05",
+//!   "control_families": [
+//!     "SC"
+//!   ],
+//!   "total_controls": 1,
+//!   "file_path": "crates/tacacs-proto/src/header.rs"
+//! }
+//! ```
+//!
+//! </details>
 
 // NIST 800-53 Rev5: SC-8 Transmission Confidentiality and Integrity
 use anyhow::{Context, Result, ensure};

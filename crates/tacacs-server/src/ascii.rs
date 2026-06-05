@@ -75,6 +75,17 @@ use usg_tacacs_proto::{
 
 const AUTHEN_CONT_ABORT: u8 = 0x01;
 
+/// Build a simple `AuthenReply` with no raw bytes.
+fn authen_reply(status: u8, msg: impl Into<String>) -> AuthenReply {
+    AuthenReply {
+        status,
+        flags: 0,
+        server_msg: msg.into(),
+        server_msg_raw: Vec::new(),
+        data: Vec::new(),
+    }
+}
+
 /// Configuration for ASCII authentication brute-force protection.
 ///
 /// # NIST Controls
@@ -181,6 +192,24 @@ fn build_ascii_prompts(
         }
     };
     (uname_prompt, pwd_prompt)
+}
+
+/// Build ASCII prompts from current session state, reading the policy lock once.
+async fn build_prompts_from_state(
+    policy: &Arc<RwLock<PolicyEngine>>,
+    state: &AuthSessionState,
+) -> (Vec<u8>, Vec<u8>) {
+    let policy_user = username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
+    let policy_port = field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
+    let policy_rem = field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
+    let guard = policy.read().await;
+    build_ascii_prompts(
+        &guard,
+        state,
+        policy_user.as_deref(),
+        policy_port.as_deref(),
+        policy_rem.as_deref(),
+    )
 }
 
 /// Handle ABORT flag - reset authentication state and return failure.
@@ -345,6 +374,7 @@ async fn build_password_auth_result(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_password_phase(
     cont_user_msg: &[u8],
     state: &mut AuthSessionState,
@@ -517,75 +547,38 @@ async fn handle_device_poll_phase(
     icam_groups_out: &mut Vec<String>,
 ) -> AuthenReply {
     let Some(code) = state.device_code.clone() else {
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: "device auth state lost".into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
+        return authen_reply(AUTHEN_STATUS_FAIL, "device auth state lost");
     };
     assert!(!code.is_empty(), "stored device_code must not be empty");
     let Some(cfg) = device_flow else {
         state.device_code = None;
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: "device flow not configured".into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
+        return authen_reply(AUTHEN_STATUS_FAIL, "device flow not configured");
     };
     state.device_poll_count = state.device_poll_count.saturating_add(1);
     assert!(cfg.max_polls > 0, "max_polls must be positive");
     if state.device_poll_count > cfg.max_polls {
         state.device_code = None;
         tracing::debug!(polls = state.device_poll_count, "device auth timed out");
-        return AuthenReply {
-            status: AUTHEN_STATUS_FAIL,
-            flags: 0,
-            server_msg: "device authorization timed out".into(),
-            server_msg_raw: Vec::new(),
-            data: Vec::new(),
-        };
+        return authen_reply(AUTHEN_STATUS_FAIL, "device authorization timed out");
     }
     match icam_device_poll_token(cfg, &code).await {
         DevicePollResult::Authorized(token) => {
             *icam_groups_out = icam_groups_from_jwt(&token, &cfg.groups_claim);
             state.device_code = None;
             tracing::debug!(groups = icam_groups_out.len(), "device auth succeeded");
-            AuthenReply {
-                status: AUTHEN_STATUS_PASS,
-                flags: 0,
-                server_msg: "authentication succeeded".into(),
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            }
+            authen_reply(AUTHEN_STATUS_PASS, "authentication succeeded")
         }
         DevicePollResult::Pending => {
             let msg = format!(
                 "Still waiting for browser authentication ({}/{}).\nPress ENTER to check again.",
-                state.device_poll_count,
-                cfg.max_polls
+                state.device_poll_count, cfg.max_polls
             );
-            AuthenReply {
-                status: AUTHEN_STATUS_GETDATA,
-                flags: 0,
-                server_msg: msg,
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            }
+            authen_reply(AUTHEN_STATUS_GETDATA, msg)
         }
         DevicePollResult::Denied => {
             state.device_code = None;
             tracing::debug!("device auth denied");
-            AuthenReply {
-                status: AUTHEN_STATUS_FAIL,
-                flags: 0,
-                server_msg: "device authorization denied".into(),
-                server_msg_raw: Vec::new(),
-                data: Vec::new(),
-            }
+            authen_reply(AUTHEN_STATUS_FAIL, "device authorization denied")
         }
     }
 }
@@ -619,10 +612,8 @@ async fn handle_pending_device_flow(
     state.username = Some(username.clone());
     state.username_raw = Some(user_msg.to_vec());
     state.ascii_need_user = false;
-    if !excluded {
-        if let Some(cfg) = device_flow {
-            return handle_device_flow_initiate(state, cfg).await;
-        }
+    if !excluded && let Some(cfg) = device_flow {
+        return handle_device_flow_initiate(state, cfg).await;
     }
     // Excluded or no device flow config: transition to password phase.
     state.ascii_need_pass = true;
@@ -724,19 +715,7 @@ pub async fn handle_ascii_continue(
     device_flow: Option<&DeviceFlowConfig>,
     icam_groups_out: &mut Vec<String>,
 ) -> AuthenReply {
-    let policy_user = username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
-    let policy_port = field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
-    let policy_rem = field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
-    let (uname_prompt, pwd_prompt) = {
-        let policy = policy.read().await;
-        build_ascii_prompts(
-            &policy,
-            state,
-            policy_user.as_deref(),
-            policy_port.as_deref(),
-            policy_rem.as_deref(),
-        )
-    };
+    let (uname_prompt, pwd_prompt) = build_prompts_from_state(policy, state).await;
 
     if cont_flags & AUTHEN_CONT_ABORT != 0 {
         return handle_abort(state, policy).await;
@@ -749,14 +728,8 @@ pub async fn handle_ascii_continue(
 
     // Deferred device-flow decision: username arrived in this CONTINUE.
     if state.ascii_device_flow_pending && !cont_user_msg.is_empty() {
-        return handle_pending_device_flow(
-            cont_user_msg,
-            state,
-            policy,
-            device_flow,
-            pwd_prompt,
-        )
-        .await;
+        return handle_pending_device_flow(cont_user_msg, state, policy, device_flow, pwd_prompt)
+            .await;
     }
 
     if let Some(reply) = check_attempt_limits(state, config) {
@@ -1066,8 +1039,20 @@ mod tests {
         let creds = make_test_creds();
         let config = make_test_config(); // attempt_limit = 5
 
-        let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new()).await;
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+        )
+        .await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(
@@ -1086,8 +1071,20 @@ mod tests {
         let creds = make_test_creds();
         let config = make_test_config(); // user_attempt_limit = 3
 
-        let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new()).await;
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+        )
+        .await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(reply.server_msg.contains("too many username attempts"));
@@ -1102,8 +1099,20 @@ mod tests {
         let creds = make_test_creds();
         let config = make_test_config(); // pass_attempt_limit = 5
 
-        let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new()).await;
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+        )
+        .await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(reply.server_msg.contains("too many password attempts"));
@@ -1120,7 +1129,14 @@ mod tests {
         config.lockout_limit = 3;
 
         let reply = handle_ascii_continue(
-            b"", b"newuser", 0, &mut state, &policy, &creds, &config, None,
+            b"",
+            b"newuser",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
             None,
             None,
             &mut Vec::new(),
@@ -1142,7 +1158,14 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"newuser", b"", 0, &mut state, &policy, &creds, &config, None,
+            b"newuser",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
             None,
             None,
             &mut Vec::new(),
@@ -1167,8 +1190,14 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"", b"", // Empty username
-            0, &mut state, &policy, &creds, &config, None,
+            b"",
+            b"", // Empty username
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
             None,
             None,
             &mut Vec::new(),
@@ -1188,8 +1217,14 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"", b"", // Empty password
-            0, &mut state, &policy, &creds, &config, None,
+            b"",
+            b"", // Empty password
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
             None,
             None,
             &mut Vec::new(),
@@ -1270,8 +1305,20 @@ mod tests {
         let creds = make_test_creds();
         let config = make_test_config();
 
-        let reply =
-            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new()).await;
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+        )
+        .await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_RESTART);
         assert!(reply.server_msg.contains("restart"));
@@ -1376,9 +1423,20 @@ mod tests {
         let mut config = make_test_config();
         config.attempt_limit = 0; // Unlimited
 
-        let reply =
-            handle_ascii_continue(b"", b"user", 0, &mut state, &policy, &creds, &config, None, None, None, &mut Vec::new())
-                .await;
+        let reply = handle_ascii_continue(
+            b"",
+            b"user",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+        )
+        .await;
 
         // Should not fail due to attempt limit
         assert_ne!(reply.status, AUTHEN_STATUS_FAIL);

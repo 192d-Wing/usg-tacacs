@@ -77,8 +77,8 @@ use crate::auth::LdapConfig;
 use crate::config::{
     Args, LogFormat, StaticCreds, build_est_config, credentials_map, resolve_icam_client_secret,
 };
-use crate::icam::{IcamConfig, icam_build_client};
 use crate::http::{ServerState, serve_http};
+use crate::icam::{IcamConfig, icam_build_client};
 use crate::metrics::metrics;
 use crate::server::{
     AuthContext, CertificateReloadRequest, ConnLimiter, ConnectionConfig, PolicyReloadRequest,
@@ -758,10 +758,7 @@ fn build_icam_config(args: &Args) -> Result<Option<Arc<IcamConfig>>> {
     let timeout = std::time::Duration::from_millis(args.icam_timeout_ms);
     let ca_file = args.icam_ca_file.clone();
     let ca_pem: Option<Vec<u8>> = if let Some(ref path) = ca_file {
-        Some(
-            std::fs::read(path)
-                .with_context(|| format!("failed to read ICAM CA file {path:?}"))?,
-        )
+        Some(std::fs::read(path).with_context(|| format!("failed to read ICAM CA file {path:?}"))?)
     } else {
         None
     };
@@ -857,7 +854,10 @@ fn resolve_audit_hmac_key(args: &Args) -> std::result::Result<Option<Arc<Vec<u8>
             bytes.len()
         ));
     }
-    info!(key_bytes = bytes.len(), "audit log HMAC signing enabled (AU-9)");
+    info!(
+        key_bytes = bytes.len(),
+        "audit log HMAC signing enabled (AU-9)"
+    );
     Ok(Some(Arc::new(bytes)))
 }
 
@@ -918,8 +918,7 @@ async fn run_server(args: &Args, state: &AppState, otel_enabled: bool) -> Result
         bail!("no listeners configured; set --listen-tls and/or --listen-legacy");
     }
 
-    let server_state = ServerState::new()
-        .with_registry(state.session_registry.clone());
+    let server_state = ServerState::new().with_registry(state.session_registry.clone());
     setup_http_server(args, &server_state, &mut handles);
 
     let (reload_tx, reload_rx) = mpsc::channel::<PolicyReloadRequest>(10);
@@ -976,13 +975,13 @@ mod http;
 mod icam;
 mod icam_device;
 mod metrics;
-mod username_limiter;
 mod policy;
 mod server;
 mod session;
 mod session_registry;
 mod telemetry;
 mod tls;
+mod username_limiter;
 
 #[cfg(test)]
 mod tests {
@@ -990,11 +989,7 @@ mod tests {
 
     #[test]
     fn device_flow_without_icam_returns_error() {
-        let args = config::Args::try_parse_from([
-            "usg-tacacs",
-            "--icam-device-flow",
-        ])
-        .unwrap();
+        let args = config::Args::try_parse_from(["usg-tacacs", "--icam-device-flow"]).unwrap();
         assert!(args.icam_device_flow);
         assert!(args.icam_token_endpoint.is_none());
         let result = build_device_flow_config(&args, None);

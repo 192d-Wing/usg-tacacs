@@ -2,6 +2,35 @@
 //! TACACS+ protocol helpers: headers, authn/authz bodies, and shared-secret body crypto.
 //! Focused on async IO parsing/encoding for server-side use.
 //! The `legacy-md5` feature (on by default) enables the TACACS+ MD5 body obfuscation; disable it for FIPS-only builds.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! **Control Implementation Matrix**
+//!
+//! This module implements controls documented in
+//! [../../../docs/NIST-CONTROLS-MAPPING.md](../../../docs/NIST-CONTROLS-MAPPING.md).
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | SI-10 | System and Information Integrity | Implemented | 2026-06-05 | See functions below |
+//!
+//! <details>
+//! <summary><b>Validation Metadata (JSON)</b></summary>
+//!
+//! ```json
+//! {
+//!   "nist_framework": "NIST SP 800-53 Rev. 5",
+//!   "software_version": "0.77.1",
+//!   "last_validation": "2026-06-05",
+//!   "control_families": [
+//!     "SI"
+//!   ],
+//!   "total_controls": 1,
+//!   "file_path": "crates/tacacs-proto/src/lib.rs"
+//! }
+//! ```
+//!
+//! </details>
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use log::warn;

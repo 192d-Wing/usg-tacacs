@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+# cargo-deny configuration.
+# https://embarkstudios.github.io/cargo-deny/
+
+[licenses]
+# Explicitly allow the permissive licenses that appear in the dependency tree.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "0BSD",
+    "Unlicense",
+    "Zlib",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+    "MIT-0",
+]
+
+[bans]
+# Deny exact duplicate crates (same name, same version) — usually a mistake.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[advisories]
+# Security advisories: error on unignored advisories.
+version = 2
+ignore = [
+    # rsa "Marvin Attack" timing side-channel (RUSTSEC-2023-0071).
+    # No upstream fix. Pulled by usg-est-client (EST path disabled in prod).
+    { id = "RUSTSEC-2023-0071", reason = "EST path disabled; no upstream fix" },
+    # rustls-pemfile unmaintained (RUSTSEC-2025-0134). Transitive dependency.
+    { id = "RUSTSEC-2025-0134", reason = "transitive; waiting on upstream migration" },
+]
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-git = [
+    # usg-est-client is an internal GitLab crate.
+    "https://gitlab.com/192d-wing/usg-est-client.git",
+]

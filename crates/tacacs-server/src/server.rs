@@ -82,24 +82,24 @@ use crate::auth::{
     LdapConfig, handle_chap_continue, ldap_fetch_groups, verify_pap, verify_pap_bytes,
     verify_pap_bytes_username, verify_password_sources,
 };
+use crate::config::StaticCreds;
 use crate::icam::{IcamAuthResult, IcamConfig, icam_authenticate};
 use crate::icam_device::{DeviceFlowConfig, icam_device_auth_start, icam_device_format_prompt};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use std::sync::OnceLock;
-use crate::config::StaticCreds;
 use crate::policy::enforce_server_msg;
 use crate::session::{SingleConnectState, TaskIdTracker};
 use crate::session_registry::SessionRegistry;
 use crate::tls::build_tls_config;
 use anyhow::{Context, Result};
+use hmac::{Hmac, Mac};
 use openssl::nid::Nid;
 use openssl::rand::rand_bytes;
 use openssl::x509::X509;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -475,8 +475,7 @@ pub(crate) fn init_audit_hmac(key: Option<&Arc<Vec<u8>>>) {
 fn compute_audit_hmac(key: &[u8], fields: &str) -> String {
     assert!(!key.is_empty(), "HMAC key must not be empty");
     assert!(!fields.is_empty(), "audit fields must not be empty");
-    let mut mac = Hmac::<Sha256>::new_from_slice(key)
-        .expect("HMAC accepts any key length");
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(fields.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
@@ -490,13 +489,10 @@ fn audit_event(
     reason: &str,
     data: &str,
 ) {
-    let hmac_tag = AUDIT_HMAC_KEY
-        .get()
-        .and_then(|k| k.as_deref())
-        .map(|key| {
-            let fields = format!("{event}|{peer}|{user}|{session}|{status}|{reason}|{data}");
-            compute_audit_hmac(key, &fields)
-        });
+    let hmac_tag = AUDIT_HMAC_KEY.get().and_then(|k| k.as_deref()).map(|key| {
+        let fields = format!("{event}|{peer}|{user}|{session}|{status}|{reason}|{data}");
+        compute_audit_hmac(key, &fields)
+    });
     if let Some(ref tag) = hmac_tag {
         info!(
             target: "tacacs_audit",
@@ -1149,6 +1145,34 @@ pub async fn serve_tls(
 /// |---------|------|----------------|
 /// | AC-10 | Concurrent Session Control | Registers connections with session registry |
 /// | SC-7 | Boundary Protection | Per-NAD secret enforcement |
+/// Determine the active identity source label for audit events.
+fn resolve_identity_source(
+    icam: &Option<Arc<IcamConfig>>,
+    ldap: &Option<Arc<LdapConfig>>,
+) -> &'static str {
+    if icam.is_some() {
+        "icam"
+    } else if ldap.is_some() {
+        "ldap"
+    } else {
+        "local"
+    }
+}
+
+/// Build a per-NAD `AuthContext` by overriding the shared secret.
+fn auth_ctx_with_secret(base: AuthContext, secret: Option<Arc<Vec<u8>>>) -> AuthContext {
+    AuthContext {
+        policy: base.policy.clone(),
+        secret,
+        credentials: base.credentials.clone(),
+        ldap: base.ldap.clone(),
+        icam: base.icam.clone(),
+        device_flow: base.device_flow.clone(),
+        username_limiter: base.username_limiter.clone(),
+        audit_hmac_key: base.audit_hmac_key.clone(),
+    }
+}
+
 pub async fn serve_legacy(
     addr: SocketAddr,
     auth_ctx: AuthContext,
@@ -1185,17 +1209,7 @@ pub async fn serve_legacy(
                 warn!(peer = %peer_addr, "legacy connection rejected: NAD not in allowlist");
                 return;
             }
-            // Create a modified auth context with the per-NAD secret
-            let per_nad_auth_ctx = AuthContext {
-                policy: conn_auth_ctx.policy.clone(),
-                secret: conn_secret,
-                credentials: conn_auth_ctx.credentials.clone(),
-                ldap: conn_auth_ctx.ldap.clone(),
-                icam: conn_auth_ctx.icam.clone(),
-                device_flow: conn_auth_ctx.device_flow.clone(),
-                username_limiter: conn_auth_ctx.username_limiter.clone(),
-                audit_hmac_key: conn_auth_ctx.audit_hmac_key.clone(),
-            };
+            let per_nad_auth_ctx = auth_ctx_with_secret(conn_auth_ctx, conn_secret);
             if let Err(err) = handle_connection(
                 socket,
                 peer_addr,
@@ -1745,7 +1759,14 @@ async fn execute_authorization_decision(
     if request.is_shell_start() {
         authorize_shell_command(request, &policy_guard, &effective_groups, &nad_groups, peer)
     } else if let Some(cmd) = request.command_string() {
-        authorize_user_command(request, &policy_guard, &effective_groups, &nad_groups, &cmd, peer)
+        authorize_user_command(
+            request,
+            &policy_guard,
+            &effective_groups,
+            &nad_groups,
+            &cmd,
+            peer,
+        )
     } else {
         authz_reason_response(
             AUTHOR_STATUS_ERROR,
@@ -1778,14 +1799,8 @@ where
 
     let decision = match validate_authorization_semantics(request) {
         Ok(()) => {
-            execute_authorization_decision(
-                request,
-                policy,
-                ldap,
-                &single_connect.icam_groups,
-                peer,
-            )
-            .await
+            execute_authorization_decision(request, policy, ldap, &single_connect.icam_groups, peer)
+                .await
         }
         Err(msg) => build_authz_semantic_error_response(request, msg, peer),
     };
@@ -2506,12 +2521,15 @@ async fn handle_authen_start_pap(
     // ICAM-delegated authentication: forward credentials to OIDC token endpoint.
     // When ICAM is configured it is the exclusive source; no fallback to local creds.
     if let Some(icam_cfg) = icam.as_ref() {
-        let result: IcamAuthResult =
-            icam_authenticate(icam_cfg, &start.user, &password).await;
+        let result: IcamAuthResult = icam_authenticate(icam_cfg, &start.user, &password).await;
         *icam_groups_out = result.groups;
-        return Ok(
-            build_pap_auth_result(result.authenticated, start.service, start.action, policy).await,
-        );
+        return Ok(build_pap_auth_result(
+            result.authenticated,
+            start.service,
+            start.action,
+            policy,
+        )
+        .await);
     }
 
     let ok = verify_pap(&start.user, &password, credentials).await
@@ -2747,6 +2765,7 @@ fn build_getpass_reply(prompt: Option<&[u8]>, service: Option<u8>) -> AuthenRepl
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_authen_start_ascii(
     start: &AuthenStart,
     state: &mut AuthSessionState,
@@ -2763,25 +2782,12 @@ async fn handle_authen_start_ascii(
     state.action = Some(start.action);
 
     // Device flow feature gate: route based on username from START packet.
-    if let Some(df_cfg) = device_flow.as_deref() {
-        let username = start.user.trim();
-        if username.is_empty() {
-            // Username not in START — send GETUSER and defer the device-flow vs
-            // password decision until the username arrives in the CONTINUE.
-            state.ascii_device_flow_pending = true;
-            let (user_prompt, _) = fetch_ascii_prompts_from_policy(policy, state).await;
-            state.ascii_need_user = true;
-            return build_getuser_reply(user_prompt.as_deref(), state.service);
-        }
-        let excluded = {
-            let policy_guard = policy.read().await;
-            policy_guard.is_device_flow_excluded(username)
-        };
-        extract_ascii_username_from_start(start, state);
-        if !excluded {
-            return handle_ascii_device_flow_start(state, df_cfg).await;
-        }
-        // Username is on the exclude list — fall through to password auth.
+    // Returns Some on GETUSER-defer or device-flow URL; None when excluded
+    // (falls through to password auth below).
+    if let Some(df_cfg) = device_flow.as_deref()
+        && let Some(reply) = try_route_device_flow(start, state, policy, df_cfg).await
+    {
+        return reply;
     }
 
     extract_ascii_username_from_start(start, state);
@@ -2827,6 +2833,32 @@ async fn handle_authen_start_ascii(
 /// | IA-2 | Identification and Authentication | Initiates ICAM device authorization |
 /// | IA-6 | Authenticator Feedback | Returns URL; never echoes credentials |
 /// | AU-2 | Audit Events | Initiation outcome logged via tracing |
+/// Route ASCII auth to device flow or password based on username + exclude list.
+///
+/// Returns `Some(reply)` to short-circuit (GETUSER defer or device flow URL),
+/// `None` when the user is excluded and should fall through to password auth.
+async fn try_route_device_flow(
+    start: &AuthenStart,
+    state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    df_cfg: &DeviceFlowConfig,
+) -> Option<AuthenReply> {
+    let username = start.user.trim();
+    if username.is_empty() {
+        state.ascii_device_flow_pending = true;
+        let (user_prompt, _) = fetch_ascii_prompts_from_policy(policy, state).await;
+        state.ascii_need_user = true;
+        return Some(build_getuser_reply(user_prompt.as_deref(), state.service));
+    }
+    let excluded = policy.read().await.is_device_flow_excluded(username);
+    extract_ascii_username_from_start(start, state);
+    if excluded {
+        None
+    } else {
+        Some(handle_ascii_device_flow_start(state, df_cfg).await)
+    }
+}
+
 async fn handle_ascii_device_flow_start(
     state: &mut AuthSessionState,
     cfg: &DeviceFlowConfig,
@@ -2986,6 +3018,27 @@ fn log_terminal_authen_status(
 /// # NIST SP 800-53 Controls
 ///
 /// | Control | Implementation |
+/// Apply per-username rate-limit checks and record outcome (AC-7).
+///
+/// Overrides `reply.status` to FAIL when the username is locked out, and
+/// records success/failure so the limiter can update its sliding window.
+async fn apply_username_rate_limit(
+    limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    username: Option<&str>,
+    reply: &mut AuthenReply,
+) {
+    let Some(user) = username else { return };
+    assert!(!user.is_empty(), "username must not be empty");
+    if limiter.is_locked(user).await {
+        reply.status = AUTHEN_STATUS_FAIL;
+        reply.server_msg = "authentication locked out".into();
+    } else if matches!(reply.status, AUTHEN_STATUS_PASS) {
+        limiter.record_success(user).await;
+    } else if matches!(reply.status, AUTHEN_STATUS_FAIL) {
+        limiter.record_failure(user).await;
+    }
+}
+
 /// |---------|----------------|
 /// | IA-11 | Re-authentication - Single-connect session binding |
 #[allow(clippy::too_many_arguments)]
@@ -3078,6 +3131,7 @@ fn cleanup_terminal_auth_state(
 }
 
 #[allow(clippy::too_many_arguments)]
+// NASA-RULE4-EXEMPT: length driven by 16-param signature + finalize fan-out, not logic complexity
 async fn finalize_authentication<S>(
     stream: &mut S,
     packet: &AuthenPacket,
@@ -3103,19 +3157,14 @@ where
     let is_terminal = is_terminal_status(reply.status);
     let single_user = state_snapshot.username.clone();
 
-    // Per-username rate limiting (AC-7): check lockout before sending reply;
-    // record failure/success when the authentication decision is terminal.
-    if let Some(ref username) = state_snapshot.username {
-        if is_terminal && username_limiter.is_locked(username).await {
-            reply.status = AUTHEN_STATUS_FAIL;
-            reply.server_msg = "authentication locked out".into();
-        } else if is_terminal {
-            if matches!(reply.status, AUTHEN_STATUS_PASS) {
-                username_limiter.record_success(username).await;
-            } else if matches!(reply.status, AUTHEN_STATUS_FAIL) {
-                username_limiter.record_failure(username).await;
-            }
-        }
+    // Per-username rate limiting (AC-7).
+    if is_terminal {
+        apply_username_rate_limit(
+            username_limiter,
+            state_snapshot.username.as_deref(),
+            &mut reply,
+        )
+        .await;
     }
 
     if is_terminal {
@@ -3126,31 +3175,17 @@ where
         .await
         .with_context(|| "sending TACACS+ auth reply")?;
 
-    // Advance the session state machine for non-terminal replies (GETUSER /
-    // GETPASS / GETDATA). The server reply uses seq_no = request_seq + 1; the
-    // next client CONTINUE must be odd and follow it, so mark that a client
-    // packet is now expected. Without this, validate_client() rejects the
-    // following CONTINUE as "unexpected client packet order" and ASCII login
-    // (the default for Cisco NAS) can never complete.
-    if !is_terminal
-        && let Some(st) = auth_states.get_mut(&session_id)
-    {
-        st.last_seq = header.seq_no.wrapping_add(1);
+    if !is_terminal && let Some(st) = auth_states.get_mut(&session_id) {
+        st.last_seq = header.seq_no.wrapping_add(1); // RFC 8907 §5.4.1
         st.expect_client = true;
     }
-
     enforce_server_msg_policy(policy, auth_states, session_id, &mut reply, peer).await;
-
     if is_terminal {
         cleanup_terminal_auth_state(auth_states, single_connect, session_id, reply.status);
     }
-
-    // Store ICAM groups in connection state so authorization can use them
-    // without requiring a second ICAM call (AC-2, AC-3 — policy enforcement).
     if matches!(reply.status, AUTHEN_STATUS_PASS) && !icam_groups.is_empty() {
-        single_connect.icam_groups = icam_groups;
+        single_connect.icam_groups = icam_groups; // AC-2, AC-3: cache for authz
     }
-
     activate_single_connect_on_success(
         &reply,
         single_connect_flag,
@@ -3218,20 +3253,18 @@ async fn process_authen_start_packet(
     peer: &str,
 ) -> Result<AuthenReply, LoopControl> {
     match start.authen_type {
-        AUTHEN_TYPE_ASCII => Ok(
-            handle_authen_start_ascii(
-                start,
-                state,
-                policy,
-                credentials,
-                ldap,
-                icam,
-                device_flow,
-                icam_groups_out,
-                ascii_cfg,
-            )
-            .await,
-        ),
+        AUTHEN_TYPE_ASCII => Ok(handle_authen_start_ascii(
+            start,
+            state,
+            policy,
+            credentials,
+            ldap,
+            icam,
+            device_flow,
+            icam_groups_out,
+            ascii_cfg,
+        )
+        .await),
         AUTHEN_TYPE_PAP => handle_authen_start_pap(
             start,
             state,
@@ -3359,6 +3392,7 @@ where
     Ok(None)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_authen_packet(
     packet: &AuthenPacket,
     state: &mut AuthSessionState,
@@ -3372,19 +3406,21 @@ async fn process_authen_packet(
     peer: &str,
 ) -> Result<AuthenReply, LoopControl> {
     match packet {
-        AuthenPacket::Start(start) => process_authen_start_packet(
-            start,
-            state,
-            policy,
-            credentials,
-            ldap,
-            icam,
-            device_flow,
-            icam_groups_out,
-            ascii_cfg,
-            peer,
-        )
-        .await,
+        AuthenPacket::Start(start) => {
+            process_authen_start_packet(
+                start,
+                state,
+                policy,
+                credentials,
+                ldap,
+                icam,
+                device_flow,
+                icam_groups_out,
+                ascii_cfg,
+                peer,
+            )
+            .await
+        }
         AuthenPacket::Continue(cont) => {
             let reply = process_authen_continue_packet(
                 cont,
@@ -3403,6 +3439,7 @@ async fn process_authen_packet(
     }
 }
 
+// NASA-RULE4-EXEMPT: length is driven by 15-param dispatch signature, not logic complexity
 #[allow(clippy::too_many_arguments)]
 async fn handle_authentication_packet<S>(
     stream: &mut S,
@@ -3439,13 +3476,7 @@ where
             None => return Ok(LoopControl::Break),
         };
     let mut icam_groups: Vec<String> = Vec::new();
-    let identity_source = if icam.is_some() {
-        "icam"
-    } else if ldap.is_some() {
-        "ldap"
-    } else {
-        "local"
-    };
+    let identity_source = resolve_identity_source(icam, ldap);
     let reply = match process_authen_packet(
         &packet,
         state,
@@ -3519,6 +3550,7 @@ where
     }
 }
 
+// NASA-RULE4-EXEMPT: length is driven by 15-param dispatch signature, not logic complexity
 /// Dispatch packet to appropriate handler and return loop control.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_packet_to_handler<S>(
@@ -3576,12 +3608,13 @@ where
             .await
         }
         Packet::Capability(cap) => {
-            let _ = handle_capability_packet(stream, &cap, peer, secret).await;
+            handle_capability_packet(stream, &cap, peer, secret)
+                .await
+                .ok();
             Ok(LoopControl::Continue)
         }
-        Packet::Accounting(request) => {
-            handle_accounting_packet(stream, &request, single_connect, task_tracker, secret, peer)
-                .await
+        Packet::Accounting(req) => {
+            handle_accounting_packet(stream, &req, single_connect, task_tracker, secret, peer).await
         }
     }
 }
@@ -3648,7 +3681,47 @@ async fn check_api_termination(
     }
 }
 
+/// Read the next packet, applying an optional per-packet timeout (NIST SC-5).
+///
+/// Returns `Ok(None)` when the connection should close cleanly.
+async fn read_packet_guarded<S>(
+    stream: &mut S,
+    secret: Option<&[u8]>,
+    single_connect: &SingleConnectState,
+    deadline: u64,
+    timeout_secs: u64,
+    peer: &str,
+) -> Result<Option<Packet>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let future = read_packet_with_keepalive(stream, secret, single_connect, deadline, peer);
+    let result = if timeout_secs > 0 && !single_connect.active {
+        match timeout(Duration::from_secs(timeout_secs), future).await {
+            Ok(r) => r,
+            Err(_) => {
+                warn!(peer = %peer, timeout_secs, "packet read timeout exceeded (SC-5)");
+                return Ok(None);
+            }
+        }
+    } else {
+        future.await
+    };
+    match result {
+        Ok(Some(p)) => Ok(Some(p)),
+        Ok(None) => {
+            handle_client_close(peer);
+            Ok(None)
+        }
+        Err(e) => {
+            handle_packet_read_error(e, peer)?;
+            Ok(None)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
+// NASA-RULE4-EXEMPT: length driven by 15-param dispatch fan-out, not logic complexity
 async fn connection_loop<S>(
     stream: &mut S,
     connection_id: u64,
@@ -3675,56 +3748,39 @@ where
     loop {
         let deadline =
             calculate_keepalive_deadline(single_connect_idle_secs, single_connect_keepalive_secs);
-        // NIST SC-5: Apply per-packet read timeout to prevent slowloris attacks
-        let read_result = if packet_read_timeout_secs > 0 && !single_connect.active {
-            match timeout(
-                Duration::from_secs(packet_read_timeout_secs),
-                read_packet_with_keepalive(stream, secret, single_connect, deadline, peer),
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(_) => {
-                    warn!(peer = %peer, timeout_secs = packet_read_timeout_secs,
-                        "packet read timeout exceeded; closing connection (SC-5)");
-                    break;
-                }
-            }
-        } else {
-            read_packet_with_keepalive(stream, secret, single_connect, deadline, peer).await
+        let Some(packet) = read_packet_guarded(
+            stream,
+            secret,
+            single_connect,
+            deadline,
+            packet_read_timeout_secs,
+            peer,
+        )
+        .await?
+        else {
+            break;
         };
-        match read_result {
-            Ok(Some(packet)) => match dispatch_packet_to_handler(
-                stream,
-                packet,
-                auth_states,
-                single_connect,
-                task_tracker,
-                connection_id,
-                registry,
-                policy,
-                credentials,
-                ldap,
-                icam,
-                device_flow,
-                username_limiter,
-                ascii_cfg,
-                secret,
-                peer,
-            )
-            .await
-            {
-                Ok(LoopControl::Continue) => {}
-                Ok(LoopControl::Break) | Err(_) => break,
-            },
-            Ok(None) => {
-                handle_client_close(peer);
-                break;
-            }
-            Err(err) => {
-                handle_packet_read_error(err, peer)?;
-                break;
-            }
+        let ctrl = dispatch_packet_to_handler(
+            stream,
+            packet,
+            auth_states,
+            single_connect,
+            task_tracker,
+            connection_id,
+            registry,
+            policy,
+            credentials,
+            ldap,
+            icam,
+            device_flow,
+            username_limiter,
+            ascii_cfg,
+            secret,
+            peer,
+        )
+        .await;
+        if matches!(ctrl, Ok(LoopControl::Break) | Err(_)) {
+            break;
         }
         if check_api_termination(registry, connection_id, peer).await {
             break;

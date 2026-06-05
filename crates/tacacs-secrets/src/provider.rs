@@ -1,4 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 //! SecretsProvider trait and implementations.
+//!
+//! # NIST SP 800-53 Rev. 5 Security Controls
+//!
+//! | Control | Family | Status | Validated | Primary Functions |
+//! |---------|--------|--------|-----------|-------------------|
+//! | SC-12 | System and Communications Protection | Implemented | 2026-06-05 | [`SecretValue`] |
 
 use anyhow::Result;
 use async_trait::async_trait;
