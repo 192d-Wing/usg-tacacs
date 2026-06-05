@@ -48,7 +48,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: tacacs
-          image: ghcr.io/192d-wing/usg-tacacs:0.79.1-arm64
+          image: ghcr.io/192d-wing/usg-tacacs:0.80.0-arm64
           imagePullPolicy: Always
           args:
             # Bind [::] for dual-stack: on Linux (bindv6only=0) this accepts both

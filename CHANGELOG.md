@@ -5,6 +5,53 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.80.0] - 2026-06-05
+
+### Added
+
+- **Time-based authorization rules** (`schedule` on policy rules): rules can now be
+  restricted to specific UTC weekdays and/or hour ranges.  Accepts 3-letter day names,
+  full day names, and `weekdays`/`weekends` shorthands.  Hour ranges use `HH:MM-HH:MM`
+  with midnight-wrapping support (e.g. `"22:00-06:00"`).  Schedule is compiled at
+  policy-load time with no hot-path allocations.
+
+- **NAD-group policy** (`nad_groups` in policy): network devices are tagged by source IP
+  CIDR into named groups (core, access, firewall, …).  Rules can include a `nad_groups`
+  list to fire only when the requesting NAD belongs to that group.  Enables
+  `deny configure` for access-layer devices while allowing it on core routers — all in
+  one policy file, no NAD config changes.  CIDR matching is pure `std::net` arithmetic
+  (no new dependencies).
+
+- **Per-username rate limiting** (`--username-lockout-*` flags): tracks authentication
+  failure counts per username across all source IPs in a sliding window.  Locks the
+  username when the failure limit is exceeded.  Complements the per-IP `ConnLimiter` to
+  block username-spray attacks where the attacker rotates source addresses.
+
+- **Audit log HMAC signing** (`--audit-hmac-key` / `--audit-hmac-key-file`): every
+  structured audit event gains an `hmac` field containing HMAC-SHA256 over the canonical
+  event fields.  Enables tamper detection in Loki-exported logs.  Minimum 32-byte
+  hex-encoded key; stored via existing secrets infrastructure.
+
+- **Command frequency alerting**: BFF alert rule fires a warning when any single user
+  executes more than 100 commands in a 15-minute window — detects scripted compromise or
+  runaway automation.
+
+- **Policy dry-run** (`POST /api/policy/dry-run`): accepts a candidate policy JSON,
+  fetches recent authz events from Loki, re-evaluates each command decision against the
+  new rules (compiled regex), and returns a list of changed decisions with counts.  Lets
+  operators validate policy changes before deploying.
+
+- **Live session dashboard** (`GET /api/sessions`): TACACS+ health port exposes a
+  `/sessions` JSON snapshot of all active connections.  BFF proxies it via
+  `TACACS_HTTP_URL` env var.  New Sessions page in the UI auto-refreshes every 5 s with
+  idle-time colour coding.
+
+### Fixed
+
+- Schema `groups` field now validated on policy rules (was accepted but not schema-checked).
+
+---
+
 ## [0.79.1] - 2026-06-05
 
 ### Added
