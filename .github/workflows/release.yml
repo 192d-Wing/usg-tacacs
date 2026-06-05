@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry:  ghcr.io
           username:  ${{ github.actor }}
@@ -85,7 +85,7 @@ jobs:
 
       # Iron Bank pull access: the server Dockerfiles FROM registry1.dso.mil.
       # REPO1 is an org-level secret holding the registry1 CLI/pull token.
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry:  registry1.dso.mil
           username:  a1456055067
@@ -131,7 +131,7 @@ jobs:
             image:     ghcr.io/192d-wing/usg-tacacs-ui
 
     steps:
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry:  ghcr.io
           username:  ${{ github.actor }}
