@@ -1,0 +1,147 @@
+# SPDX-License-Identifier: Apache-2.0
+# Release workflow: builds arm64 and amd64 container images on version tags,
+# then merges them into a single multi-arch manifest.
+#
+# Trigger:
+#   git tag v0.80.0 && git push --tags
+#
+# Produces:
+#   ghcr.io/192d-wing/usg-tacacs:0.80.0          (multi-arch manifest)
+#   ghcr.io/192d-wing/usg-tacacs:0.80.0-amd64
+#   ghcr.io/192d-wing/usg-tacacs:0.80.0-arm64
+#   ghcr.io/192d-wing/usg-tacacs:latest           (multi-arch manifest)
+#   (same pattern for tacacs-ui)
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write   # required for GHCR push
+
+env:
+  SERVER_IMAGE: ghcr.io/192d-wing/usg-tacacs
+  UI_IMAGE:     ghcr.io/192d-wing/tacacs-ui
+
+# ---------------------------------------------------------------------------
+# Job 1 — Build per-arch images (matrix: component × arch)
+# ---------------------------------------------------------------------------
+jobs:
+  build:
+    name: Build ${{ matrix.component }}/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---------- server (usg-tacacs) ----------
+          - component: server
+            arch:       amd64
+            runner:     ubuntu-latest
+            image:      ghcr.io/192d-wing/usg-tacacs
+            dockerfile: container/Dockerfile.arm64   # native build; no cross-compile
+            context:    .
+
+          - component: server
+            arch:       arm64
+            runner:     ubuntu-24.04-arm             # GitHub native ARM runner
+            image:      ghcr.io/192d-wing/usg-tacacs
+            dockerfile: container/Dockerfile.arm64
+            context:    .
+
+          # ---------- ui (tacacs-ui BFF + SPA) ----------
+          - component: ui
+            arch:       amd64
+            runner:     ubuntu-latest
+            image:      ghcr.io/192d-wing/tacacs-ui
+            dockerfile: ui/Dockerfile
+            context:    ui
+
+          - component: ui
+            arch:       arm64
+            runner:     ubuntu-24.04-arm
+            image:      ghcr.io/192d-wing/tacacs-ui
+            dockerfile: ui/Dockerfile
+            context:    ui
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry:  ghcr.io
+          username:  ${{ github.actor }}
+          password:  ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Extract version from tag
+        id: meta
+        run: |
+          # v0.80.0 → 0.80.0
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ matrix.image }}:${VERSION}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+          echo "cache=${{ matrix.image }}:buildcache-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.component }}-${{ matrix.arch }}
+        uses: docker/build-push-action@v6
+        with:
+          context:    ${{ matrix.context }}
+          file:       ${{ matrix.dockerfile }}
+          push:       true
+          provenance: false   # omit attestation blobs (simplifies manifest merge)
+          tags:       ${{ steps.meta.outputs.tag }}
+          cache-from: type=registry,ref=${{ steps.meta.outputs.cache }}
+          cache-to:   type=registry,ref=${{ steps.meta.outputs.cache }},mode=max
+
+# ---------------------------------------------------------------------------
+# Job 2 — Merge per-arch digests into a single multi-arch manifest
+# ---------------------------------------------------------------------------
+  manifest:
+    name: Manifest ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    needs: build
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: server
+            image:     ghcr.io/192d-wing/usg-tacacs
+          - component: ui
+            image:     ghcr.io/192d-wing/tacacs-ui
+
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry:  ghcr.io
+          username:  ${{ github.actor }}
+          password:  ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Extract version from tag
+        id: meta
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push multi-arch manifest
+        env:
+          IMAGE:   ${{ matrix.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${VERSION}" \
+            --tag "${IMAGE}:latest"     \
+            "${IMAGE}:${VERSION}-amd64" \
+            "${IMAGE}:${VERSION}-arm64"
+
+      - name: Inspect resulting manifest
+        env:
+          IMAGE:   ${{ matrix.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
