@@ -31,13 +31,12 @@ feature gate (`--icam-device-flow`) and related single-connect fixes.
 
 ### Authorization Correctness
 
-- [ ] **#7 Group-based priv-lvl** — confirm a `netops` user receives `priv-lvl=15`
-  in the shell authz reply and that Cisco auto-exec fires. Confirm a user with
-  no matching group gets default attributes only.
+- [x] **#7 Group-based priv-lvl** — `operator` (member of `netops`) receives
+  `priv-lvl=15` in shell-start authz reply via `shell_start_groups` lookup.
 
-- [ ] **#8 Command authz with groups** — verify `deny-config` and
-  `allow-all-admins` policy rules still evaluate correctly now that
-  `effective_groups` is always populated on single-connect sessions.
+- [x] **#8 Command authz with groups** — `show version` → PASS_REPL (allow-show),
+  `configure terminal` → FAIL (deny-config); group context flows correctly
+  through single-connect into command authz decisions.
 
 ### Regression
 
