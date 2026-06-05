@@ -39,16 +39,6 @@
   Loki for `authz_policy_allow` events, groups by user, and fires a warning when any
   user exceeds 100 commands in 15 minutes.
 
-## Protocol / Infrastructure
-
-- [ ] **TACACS+ proxy mode** — Forward auth/authz/accounting for specific NAD IP ranges
-  to a legacy TACACS+ server (Cisco ACS/ISE).  Enables side-by-side migration: new
-  devices use this server; legacy devices proxy through to the old one.
-
-- [ ] **RADIUS bridge** — Thin RADIUS→TACACS+ shim for devices that only speak RADIUS
-  (wireless controllers, older access gear).  Allows ICAM/device-flow auth across the
-  full estate.  Larger scope; depends on a RADIUS library.
-
 ## Security Hardening
 
 - [x] **Per-username rate limiting** — `UsernameRateLimiter` tracks failure counts per
