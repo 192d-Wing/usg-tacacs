@@ -54,6 +54,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Maximum compiled regex size in bytes to prevent ReDoS attacks (CWE-1333).
 ///
@@ -75,6 +76,145 @@ pub enum Effect {
     Deny,
 }
 
+/// Schedule configuration for a policy rule.
+///
+/// A rule with a schedule only fires when the current UTC time falls within
+/// the specified day(s) and/or hour range.  Both fields are optional;
+/// omitting one means "all values match" for that dimension.
+///
+/// # Examples
+///
+/// ```json
+/// { "days": ["sat", "sun"] }                     // weekends only
+/// { "days": ["mon","tue","wed","thu","fri"],
+///   "hours": "08:00-18:00" }                      // business hours
+/// { "hours": "22:00-06:00" }                      // overnight window
+/// ```
+///
+/// Accepted day names (case-insensitive): `mon tue wed thu fri sat sun
+/// weekdays weekends`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleConfig {
+    /// Subset of days the rule is active.  Empty list = all days.
+    #[serde(default)]
+    pub days: Vec<String>,
+    /// UTC time range `"HH:MM-HH:MM"`.  `None` = all hours.
+    /// Ranges wrapping midnight (e.g. `"22:00-06:00"`) are supported.
+    pub hours: Option<String>,
+}
+
+/// Compiled schedule extracted from `ScheduleConfig` for fast evaluation.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Time-window enforcement on authz rules |
+#[derive(Debug, Clone)]
+pub struct CompiledSchedule {
+    /// Bitmask of active weekdays: bit 0 = Sunday … bit 6 = Saturday.
+    /// All bits set (0x7F) means "every day".
+    day_mask: u8,
+    /// Start of active hour range in minutes since midnight (UTC).
+    hour_start_min: u16,
+    /// End of active hour range in minutes since midnight (UTC).
+    hour_end_min: u16,
+    /// True when the range wraps midnight (start > end).
+    wraps_midnight: bool,
+}
+
+impl CompiledSchedule {
+    /// Return true if the current UTC wall-clock time falls within this schedule.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Enforces time-window restriction on rule |
+    pub fn active_now(&self) -> bool {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        assert!(secs > 0, "system clock must be set");
+        let day_of_week = ((secs / 86400 + 4) % 7) as u8; // 0=Sun … 6=Sat
+        if self.day_mask != 0x7F && (self.day_mask >> day_of_week) & 1 == 0 {
+            return false;
+        }
+        let minutes = ((secs % 86400) / 60) as u16;
+        if self.wraps_midnight {
+            minutes >= self.hour_start_min || minutes < self.hour_end_min
+        } else {
+            minutes >= self.hour_start_min && minutes < self.hour_end_min
+        }
+    }
+}
+
+/// Parse a day-name string to a weekday index (0=Sun … 6=Sat).
+///
+/// Returns `None` for unrecognised strings.
+fn parse_day_name(s: &str) -> Option<u8> {
+    assert!(!s.is_empty(), "day name must not be empty");
+    match s.to_lowercase().as_str() {
+        "sun" | "sunday"    => Some(0),
+        "mon" | "monday"    => Some(1),
+        "tue" | "tuesday"   => Some(2),
+        "wed" | "wednesday" => Some(3),
+        "thu" | "thursday"  => Some(4),
+        "fri" | "friday"    => Some(5),
+        "sat" | "saturday"  => Some(6),
+        _ => None,
+    }
+}
+
+/// Parse `"HH:MM"` into minutes since midnight.  Returns `None` on error.
+fn parse_hhmm(s: &str) -> Option<u16> {
+    assert!(!s.is_empty(), "time string must not be empty");
+    let (h, m) = s.split_once(':')?;
+    let h: u16 = h.parse().ok()?;
+    let m: u16 = m.parse().ok()?;
+    if h > 23 || m > 59 { return None; }
+    Some(h * 60 + m)
+}
+
+/// Compile a `ScheduleConfig` into a `CompiledSchedule`.
+///
+/// Returns an error string describing the first invalid field.
+fn compile_schedule(cfg: &ScheduleConfig) -> Result<CompiledSchedule, String> {
+    assert!(
+        cfg.days.len() <= 7,
+        "schedule cannot have more than 7 day entries"
+    );
+    let mut day_mask: u8 = 0x7F; // all days
+    if !cfg.days.is_empty() {
+        day_mask = 0;
+        for name in &cfg.days {
+            match name.to_lowercase().as_str() {
+                "weekdays" => day_mask |= 0b0111_1110, // Mon-Fri
+                "weekends" => day_mask |= 0b0100_0001, // Sat, Sun
+                other => {
+                    let idx = parse_day_name(other)
+                        .ok_or_else(|| format!("unknown day name: {other:?}"))?;
+                    day_mask |= 1 << idx;
+                }
+            }
+        }
+    }
+    let (hour_start_min, hour_end_min, wraps_midnight) = if let Some(ref h) = cfg.hours {
+        let (start_s, end_s) = h
+            .split_once('-')
+            .ok_or_else(|| format!("hours must be HH:MM-HH:MM, got: {h:?}"))?;
+        let start = parse_hhmm(start_s.trim())
+            .ok_or_else(|| format!("invalid start time: {start_s:?}"))?;
+        let end = parse_hhmm(end_s.trim())
+            .ok_or_else(|| format!("invalid end time: {end_s:?}"))?;
+        (start, end, start > end)
+    } else {
+        (0, 1440, false) // 00:00–24:00 = all hours
+    };
+    Ok(CompiledSchedule { day_mask, hour_start_min, hour_end_min, wraps_midnight })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {
     pub id: String,
@@ -85,6 +225,8 @@ pub struct RuleConfig {
     pub users: Vec<String>,
     #[serde(default)]
     pub groups: Vec<String>,
+    /// Optional time-based restriction; `None` = always active.
+    pub schedule: Option<ScheduleConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +302,8 @@ pub struct Rule {
     pub groups: Vec<String>,
     pub regex: Regex,
     pub order: usize,
+    /// Pre-compiled schedule; `None` = rule is always active.
+    pub schedule: Option<CompiledSchedule>,
 }
 
 #[derive(Debug, Clone)]
@@ -247,6 +391,15 @@ impl PolicyEngine {
         for (order, rule) in document.rules.into_iter().enumerate() {
             let regex = compile_pattern(&rule.pattern)
                 .with_context(|| format!("compiling rule {} pattern {}", rule.id, rule.pattern))?;
+            let schedule = rule
+                .schedule
+                .as_ref()
+                .map(|s| {
+                    compile_schedule(s).map_err(|e| {
+                        anyhow::anyhow!("rule {}: invalid schedule: {}", rule.id, e)
+                    })
+                })
+                .transpose()?;
             rules.push(Rule {
                 id: rule.id,
                 priority: rule.priority,
@@ -255,6 +408,7 @@ impl PolicyEngine {
                 groups: rule.groups.into_iter().map(|g| g.to_lowercase()).collect(),
                 regex,
                 order,
+                schedule,
             });
         }
 
@@ -322,6 +476,12 @@ impl PolicyEngine {
 
         let mut selected: Option<&Rule> = None;
         for rule in &self.rules {
+            // Skip rules whose time-based schedule is not currently active (AC-3).
+            if let Some(ref sched) = rule.schedule {
+                if !sched.active_now() {
+                    continue;
+                }
+            }
             if !rule.users.is_empty() && !rule.users.iter().any(|u| u == &normalized_user) {
                 continue;
             }
@@ -677,6 +837,7 @@ mod tests {
             pattern: pattern.into(),
             users: vec![],
             groups: vec![],
+            schedule: None,
         }
     }
 
@@ -1671,6 +1832,121 @@ mod tests {
             let result = compile_pattern(pattern);
             assert!(result.is_ok(), "Pattern '{}' should compile", pattern);
         }
+    }
+
+    // ==================== Schedule Tests ====================
+
+    fn make_schedule(days: &[&str], hours: Option<&str>) -> CompiledSchedule {
+        let cfg = ScheduleConfig {
+            days: days.iter().map(|s| s.to_string()).collect(),
+            hours: hours.map(|s| s.to_string()),
+        };
+        compile_schedule(&cfg).expect("valid schedule config")
+    }
+
+    #[test]
+    fn compile_schedule_all_days_no_hours() {
+        let s = make_schedule(&[], None);
+        assert_eq!(s.day_mask, 0x7F);
+        assert_eq!(s.hour_start_min, 0);
+        assert_eq!(s.hour_end_min, 1440);
+    }
+
+    #[test]
+    fn compile_schedule_weekdays_shorthand() {
+        let s = make_schedule(&["weekdays"], None);
+        // Mon(1)..Fri(5) → bits 1-5 set
+        assert_eq!(s.day_mask & 0b0111_1110, 0b0111_1110);
+        assert_eq!(s.day_mask & 0b1000_0001, 0); // Sat/Sun not set
+    }
+
+    #[test]
+    fn compile_schedule_weekends_shorthand() {
+        let s = make_schedule(&["weekends"], None);
+        assert_eq!(s.day_mask & 0b0100_0001, 0b0100_0001); // Sat(6)+Sun(0)
+    }
+
+    #[test]
+    fn compile_schedule_explicit_days() {
+        let s = make_schedule(&["mon", "wed", "fri"], None);
+        assert!((s.day_mask >> 1) & 1 == 1, "Monday");
+        assert!((s.day_mask >> 3) & 1 == 1, "Wednesday");
+        assert!((s.day_mask >> 5) & 1 == 1, "Friday");
+        assert!((s.day_mask >> 0) & 1 == 0, "Sunday not set");
+    }
+
+    #[test]
+    fn compile_schedule_business_hours() {
+        let s = make_schedule(&[], Some("08:00-18:00"));
+        assert_eq!(s.hour_start_min, 480);
+        assert_eq!(s.hour_end_min, 1080);
+        assert!(!s.wraps_midnight);
+    }
+
+    #[test]
+    fn compile_schedule_overnight_window() {
+        let s = make_schedule(&[], Some("22:00-06:00"));
+        assert_eq!(s.hour_start_min, 1320);
+        assert_eq!(s.hour_end_min, 360);
+        assert!(s.wraps_midnight);
+    }
+
+    #[test]
+    fn compile_schedule_invalid_day_errors() {
+        let cfg = ScheduleConfig {
+            days: vec!["not-a-day".into()],
+            hours: None,
+        };
+        assert!(compile_schedule(&cfg).is_err());
+    }
+
+    #[test]
+    fn compile_schedule_invalid_hours_errors() {
+        let cfg = ScheduleConfig {
+            days: vec![],
+            hours: Some("25:00-26:00".into()),
+        };
+        assert!(compile_schedule(&cfg).is_err());
+    }
+
+    #[test]
+    fn parse_hhmm_valid() {
+        assert_eq!(parse_hhmm("08:30"), Some(510));
+        assert_eq!(parse_hhmm("00:00"), Some(0));
+        assert_eq!(parse_hhmm("23:59"), Some(1439));
+    }
+
+    #[test]
+    fn parse_hhmm_invalid() {
+        assert!(parse_hhmm("24:00").is_none());
+        assert!(parse_hhmm("08:60").is_none());
+        assert!(parse_hhmm("bad").is_none());
+    }
+
+    #[test]
+    fn rule_with_always_active_schedule_fires() {
+        let mut rule = make_rule("r", 10, Effect::Allow, "show.*");
+        rule.schedule = Some(ScheduleConfig { days: vec![], hours: None });
+        let doc = PolicyDocument {
+            default_allow: false,
+            shell_start: HashMap::new(),
+            shell_start_groups: HashMap::new(),
+            device_flow_exclude_users: vec![],
+            ascii_prompts: None,
+            ascii_user_prompts: HashMap::new(),
+            ascii_password_prompts: HashMap::new(),
+            ascii_port_prompts: HashMap::new(),
+            ascii_remaddr_prompts: HashMap::new(),
+            allow_raw_server_msg: true,
+            raw_server_msg_allow_prefixes: vec![],
+            raw_server_msg_deny_prefixes: vec![],
+            raw_server_msg_user_overrides: HashMap::new(),
+            ascii_messages: None,
+            rules: vec![rule],
+        };
+        let engine = PolicyEngine::from_document(doc).unwrap();
+        let d = engine.authorize_with_groups("alice", &[], "show version");
+        assert!(d.allowed, "rule with all-day schedule should fire now");
     }
 
     // ==================== device_flow_exclude_users Tests ====================

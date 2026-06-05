@@ -190,6 +190,27 @@
               "type": "string"
             },
             "description": "Group names (case-insensitive) this rule applies to. If absent, rule applies to all groups."
+          },
+          "schedule": {
+            "type": "object",
+            "properties": {
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["mon","tue","wed","thu","fri","sat","sun","weekdays","weekends",
+                           "monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+                },
+                "description": "Days of the week this rule is active (UTC). Empty = all days. Accepts 3-letter names, full names, or 'weekdays'/'weekends'."
+              },
+              "hours": {
+                "type": "string",
+                "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]-([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+                "description": "UTC time range HH:MM-HH:MM during which this rule is active. Ranges wrapping midnight (e.g. '22:00-06:00') are supported."
+              }
+            },
+            "additionalProperties": false,
+            "description": "Optional time-based restriction. When present, the rule only fires within the specified UTC day(s) and/or hour range."
           }
         }
       }

@@ -2,10 +2,12 @@
 
 ## Authorization Depth
 
-- [ ] **Time-based rules** — Add a `schedule` field to policy rules (e.g. `days`, `hours`)
-  so change-control windows can be enforced at the policy layer.  Example: `deny reload`
-  on weekends, `allow configure` only 08:00–18:00 Monday–Friday.  The rule schema and
-  evaluator need a `schedule` block; the server clock is the only dependency.
+- [x] **Time-based rules** — `schedule` field on policy rules with `days` and `hours`
+  sub-fields.  Days accept 3-letter names, full names, and `weekdays`/`weekends`
+  shorthands.  Hours use `HH:MM-HH:MM` UTC; midnight-wrapping ranges (e.g.
+  `"22:00-06:00"`) are supported.  Schedule is compiled at policy-load time
+  (bitmask + minute offsets) and checked in the authz hot path with no allocations.
+  9 unit tests; schema updated (all 3 copies).
 
 - [ ] **NAD-group policy** — Tag network devices by role (core, access, firewall) via peer
   IP range or mTLS cert CN, then match policy rules against the tag.  Lets you write
