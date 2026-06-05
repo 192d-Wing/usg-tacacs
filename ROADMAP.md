@@ -26,8 +26,9 @@ feature gate (`--icam-device-flow`) and related single-connect fixes.
   not valid" for invalid/expired codes; `interpret_poll_response` maps this to
   `Denied → FAIL` with a clean message.
 
-- [ ] **#6 Concurrent sessions** — two simultaneous ASCII logins from the same
-  NAD must each receive an independent device_code and verification URL.
+- [x] **#6 Concurrent sessions** — two simultaneous ASCII logins from the same
+  NAD each received independent device_codes (PFBM-ZATF ≠ GUPZ-DPOV); sessions
+  are completely isolated at both the server and ICAM level.
 
 ### Authorization Correctness
 
