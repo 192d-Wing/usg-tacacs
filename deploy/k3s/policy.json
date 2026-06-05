@@ -23,6 +23,11 @@
     "svc-tenable",
     "svc-*"
   ],
+  "enable_groups": {
+    "15": [
+      "netops"
+    ]
+  },
   "ascii_prompts": {
     "username": "Username:",
     "password": "Secret:"
