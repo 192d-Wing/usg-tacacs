@@ -9,6 +9,21 @@
     "default_allow": {
       "type": "boolean"
     },
+    "nad_groups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "cidrs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "CIDR ranges (IPv4 or IPv6) whose source IPs belong to this NAD group."
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Named NAD groups mapping a label to CIDR membership criteria. Referenced from rule nad_groups fields."
+    },
     "shell_start": {
       "type": "object",
       "additionalProperties": {
@@ -190,6 +205,13 @@
               "type": "string"
             },
             "description": "Group names (case-insensitive) this rule applies to. If absent, rule applies to all groups."
+          },
+          "nad_groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "NAD group names this rule applies to. If absent, rule applies to all NADs. Groups must be defined in the top-level nad_groups map."
           },
           "schedule": {
             "type": "object",

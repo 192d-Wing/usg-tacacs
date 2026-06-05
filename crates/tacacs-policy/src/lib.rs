@@ -53,6 +53,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::net::IpAddr;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -215,6 +216,89 @@ fn compile_schedule(cfg: &ScheduleConfig) -> Result<CompiledSchedule, String> {
     Ok(CompiledSchedule { day_mask, hour_start_min, hour_end_min, wraps_midnight })
 }
 
+// ---------------------------------------------------------------------------
+// NAD group types and CIDR helpers
+// ---------------------------------------------------------------------------
+
+/// Configuration for one NAD group — defines which devices belong to it.
+///
+/// Devices are matched by their TCP source IP against the listed CIDR ranges.
+///
+/// # Example
+///
+/// ```json
+/// "nad_groups": {
+///   "core":   { "cidrs": ["10.0.0.0/8"] },
+///   "access": { "cidrs": ["192.168.0.0/16", "172.16.0.0/12"] }
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NadGroupConfig {
+    /// CIDR ranges whose source IPs belong to this group.
+    #[serde(default)]
+    pub cidrs: Vec<String>,
+}
+
+/// A compiled CIDR entry: network address + prefix length.
+#[derive(Debug, Clone)]
+struct ParsedCidr {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl ParsedCidr {
+    /// Return true when `ip` falls within this CIDR range.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Routes NADs to policy group by source IP |
+    fn contains(&self, ip: IpAddr) -> bool {
+        assert!(self.prefix <= 128, "prefix must be at most 128");
+        match (self.addr, ip) {
+            (IpAddr::V4(net), IpAddr::V4(host)) => {
+                if self.prefix == 0 {
+                    return true;
+                }
+                let shift = 32u32.saturating_sub(u32::from(self.prefix));
+                let mask = u32::MAX.checked_shl(shift).unwrap_or(0);
+                (u32::from(net) & mask) == (u32::from(host) & mask)
+            }
+            (IpAddr::V6(net), IpAddr::V6(host)) => {
+                if self.prefix == 0 {
+                    return true;
+                }
+                let shift = 128u32.saturating_sub(u32::from(self.prefix));
+                let mask = u128::MAX.checked_shl(shift).unwrap_or(0);
+                (u128::from(net) & mask) == (u128::from(host) & mask)
+            }
+            _ => false, // IPv4/IPv6 family mismatch
+        }
+    }
+}
+
+/// Parse a CIDR string (e.g. `"10.0.0.0/8"`) into a `ParsedCidr`.
+///
+/// Returns an error string for invalid input.
+fn parse_cidr(s: &str) -> Result<ParsedCidr, String> {
+    assert!(!s.is_empty(), "CIDR string must not be empty");
+    let (addr_s, prefix_s) = s
+        .split_once('/')
+        .ok_or_else(|| format!("CIDR missing '/': {s:?}"))?;
+    let addr: IpAddr = addr_s
+        .parse()
+        .map_err(|e| format!("invalid CIDR address {addr_s:?}: {e}"))?;
+    let prefix: u8 = prefix_s
+        .parse()
+        .map_err(|e| format!("invalid prefix length {prefix_s:?}: {e}"))?;
+    let max = if addr.is_ipv4() { 32 } else { 128 };
+    if prefix > max {
+        return Err(format!("prefix {prefix} exceeds max {max} for {addr}"));
+    }
+    Ok(ParsedCidr { addr, prefix })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {
     pub id: String,
@@ -225,6 +309,9 @@ pub struct RuleConfig {
     pub users: Vec<String>,
     #[serde(default)]
     pub groups: Vec<String>,
+    /// NAD group names this rule applies to.  Empty = all NADs.
+    #[serde(default)]
+    pub nad_groups: Vec<String>,
     /// Optional time-based restriction; `None` = always active.
     pub schedule: Option<ScheduleConfig>,
 }
@@ -243,6 +330,10 @@ pub struct PolicyDocument {
     /// that cannot complete browser authentication.
     #[serde(default)]
     pub device_flow_exclude_users: Vec<String>,
+    /// NAD group definitions: maps a group name to its membership criteria.
+    /// Groups are referenced from rule `nad_groups` fields.
+    #[serde(default)]
+    pub nad_groups: HashMap<String, NadGroupConfig>,
     #[serde(default)]
     pub ascii_prompts: Option<AsciiPrompts>,
     #[serde(default)]
@@ -300,6 +391,8 @@ pub struct Rule {
     pub effect: Effect,
     pub users: Vec<String>,
     pub groups: Vec<String>,
+    /// NAD group names this rule applies to (lowercased). Empty = all NADs.
+    pub nad_groups: Vec<String>,
     pub regex: Regex,
     pub order: usize,
     /// Pre-compiled schedule; `None` = rule is always active.
@@ -312,6 +405,8 @@ pub struct PolicyEngine {
     shell_start: HashMap<String, Vec<String>>,
     shell_start_groups: HashMap<String, Vec<String>>,
     device_flow_exclude_users: Vec<String>,
+    /// Compiled NAD groups: name → list of CIDR ranges.
+    nad_groups: HashMap<String, Vec<ParsedCidr>>,
     ascii_prompts: Option<AsciiPrompts>,
     ascii_user_prompts: HashMap<String, String>,
     ascii_password_prompts: HashMap<String, String>,
@@ -406,6 +501,7 @@ impl PolicyEngine {
                 effect: rule.effect,
                 users: rule.users.into_iter().map(|u| u.to_lowercase()).collect(),
                 groups: rule.groups.into_iter().map(|g| g.to_lowercase()).collect(),
+                nad_groups: rule.nad_groups.into_iter().map(|g| g.to_lowercase()).collect(),
                 regex,
                 order,
                 schedule,
@@ -429,6 +525,20 @@ impl PolicyEngine {
                 .into_iter()
                 .map(|u| u.to_lowercase())
                 .collect(),
+            nad_groups: {
+                let mut map = HashMap::new();
+                for (name, cfg) in document.nad_groups {
+                    let mut cidrs = Vec::new();
+                    for cidr_s in &cfg.cidrs {
+                        let parsed = parse_cidr(cidr_s).map_err(|e| {
+                            anyhow::anyhow!("nad_group {name:?}: {e}")
+                        })?;
+                        cidrs.push(parsed);
+                    }
+                    map.insert(name.to_lowercase(), cidrs);
+                }
+                map
+            },
             ascii_prompts: document.ascii_prompts,
             ascii_user_prompts: document
                 .ascii_user_prompts
@@ -465,13 +575,34 @@ impl PolicyEngine {
 
     #[tracing::instrument(skip(self))]
     pub fn authorize(&self, user: &str, command: &str) -> Decision {
-        self.authorize_with_groups(user, &[], command)
+        self.authorize_with_nad(user, &[], &[], command)
     }
 
-    #[tracing::instrument(skip(self), fields(rule_count = self.rules.len()))]
     pub fn authorize_with_groups(&self, user: &str, groups: &[String], command: &str) -> Decision {
+        self.authorize_with_nad(user, groups, &[], command)
+    }
+
+    /// Evaluate command authorization with user groups and NAD groups.
+    ///
+    /// `nad_groups` is the result of `resolve_nad_groups(peer)` and restricts
+    /// which rules fire based on which device is making the request.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Rules filtered by NAD group membership |
+    #[tracing::instrument(skip(self), fields(rule_count = self.rules.len()))]
+    pub fn authorize_with_nad(
+        &self,
+        user: &str,
+        groups: &[String],
+        nad_groups: &[String],
+        command: &str,
+    ) -> Decision {
         let normalized_user = user.to_lowercase();
         let normalized_groups: Vec<String> = groups.iter().map(|g| g.to_lowercase()).collect();
+        let normalized_nad: Vec<String> = nad_groups.iter().map(|g| g.to_lowercase()).collect();
         let normalized_cmd = normalize_command(command);
 
         let mut selected: Option<&Rule> = None;
@@ -490,6 +621,15 @@ impl PolicyEngine {
                     .groups
                     .iter()
                     .any(|g| normalized_groups.iter().any(|ug| ug == g))
+            {
+                continue;
+            }
+            // Skip if rule targets specific NAD groups and this NAD is not in any of them.
+            if !rule.nad_groups.is_empty()
+                && !rule
+                    .nad_groups
+                    .iter()
+                    .any(|g| normalized_nad.iter().any(|ng| ng == g))
             {
                 continue;
             }
@@ -540,6 +680,35 @@ impl PolicyEngine {
     /// | Control | Name | Implementation |
     /// |---------|------|----------------|
     /// | AC-3 | Access Enforcement | Group-based privilege attribute lookup |
+    /// Resolve the NAD group names for a given peer address string.
+    ///
+    /// `peer` is in the format `"10.0.1.1:49"` or `"[2001:db8::1]:49"`.
+    /// The IP is extracted, then checked against every group's CIDR list.
+    /// Returns the names of all groups whose CIDRs contain the peer IP.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Maps NAD source IP to policy group |
+    pub fn resolve_nad_groups(&self, peer: &str) -> Vec<String> {
+        assert!(!peer.is_empty(), "peer address must not be empty");
+        let ip_str = peer
+            .rsplit_once(':')
+            .map(|(host, _port)| host.trim_matches(['[', ']']))
+            .unwrap_or(peer);
+        let Ok(ip) = ip_str.parse::<IpAddr>() else {
+            return Vec::new();
+        };
+        let mut result = Vec::new();
+        for (name, cidrs) in &self.nad_groups {
+            if cidrs.iter().any(|c| c.contains(ip)) {
+                result.push(name.clone());
+            }
+        }
+        result
+    }
+
     /// Return true if the username matches an entry in `device_flow_exclude_users`.
     ///
     /// Matching is case-insensitive. Entries may contain a single `*` wildcard
@@ -815,6 +984,7 @@ mod tests {
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
             device_flow_exclude_users: Vec::new(),
+            nad_groups: HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),
@@ -837,6 +1007,7 @@ mod tests {
             pattern: pattern.into(),
             users: vec![],
             groups: vec![],
+            nad_groups: vec![],
             schedule: None,
         }
     }
@@ -1932,6 +2103,7 @@ mod tests {
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
             device_flow_exclude_users: vec![],
+            nad_groups: HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),
@@ -1949,6 +2121,102 @@ mod tests {
         assert!(d.allowed, "rule with all-day schedule should fire now");
     }
 
+    // ==================== NAD Group Tests ====================
+
+    fn make_engine_with_nad(nad_groups: HashMap<String, NadGroupConfig>, rules: Vec<RuleConfig>) -> PolicyEngine {
+        let doc = PolicyDocument {
+            default_allow: false,
+            shell_start: HashMap::new(),
+            shell_start_groups: HashMap::new(),
+            device_flow_exclude_users: vec![],
+            nad_groups,
+            ascii_prompts: None,
+            ascii_user_prompts: HashMap::new(),
+            ascii_password_prompts: HashMap::new(),
+            ascii_port_prompts: HashMap::new(),
+            ascii_remaddr_prompts: HashMap::new(),
+            allow_raw_server_msg: true,
+            raw_server_msg_allow_prefixes: vec![],
+            raw_server_msg_deny_prefixes: vec![],
+            raw_server_msg_user_overrides: HashMap::new(),
+            ascii_messages: None,
+            rules,
+        };
+        PolicyEngine::from_document(doc).unwrap()
+    }
+
+    #[test]
+    fn cidr_ipv4_contains_host() {
+        let c = parse_cidr("10.0.0.0/8").unwrap();
+        assert!(c.contains("10.1.2.3".parse().unwrap()));
+        assert!(!c.contains("192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_ipv4_slash32_exact() {
+        let c = parse_cidr("10.0.0.1/32").unwrap();
+        assert!(c.contains("10.0.0.1".parse().unwrap()));
+        assert!(!c.contains("10.0.0.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_ipv4_slash0_matches_all() {
+        let c = parse_cidr("0.0.0.0/0").unwrap();
+        assert!(c.contains("1.2.3.4".parse().unwrap()));
+        assert!(c.contains("255.255.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_invalid_prefix_errors() {
+        assert!(parse_cidr("10.0.0.0/33").is_err());
+        assert!(parse_cidr("not-an-ip/8").is_err());
+        assert!(parse_cidr("10.0.0.0").is_err());
+    }
+
+    #[test]
+    fn resolve_nad_groups_matches_cidr() {
+        let mut nads = HashMap::new();
+        nads.insert("core".into(), NadGroupConfig { cidrs: vec!["10.0.0.0/8".into()] });
+        nads.insert("access".into(), NadGroupConfig { cidrs: vec!["192.168.0.0/16".into()] });
+        let engine = make_engine_with_nad(nads, vec![]);
+        let groups = engine.resolve_nad_groups("10.0.1.1:49");
+        assert_eq!(groups, vec!["core"]);
+        let groups = engine.resolve_nad_groups("192.168.5.10:49");
+        assert_eq!(groups, vec!["access"]);
+        let groups = engine.resolve_nad_groups("172.16.0.1:49");
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn nad_group_rule_fires_for_matching_nad() {
+        let mut nads = HashMap::new();
+        nads.insert("core".into(), NadGroupConfig { cidrs: vec!["10.0.0.0/8".into()] });
+        let mut rule = make_rule("deny-config-access", 50, Effect::Deny, "(configure|conf).*");
+        rule.nad_groups = vec!["core".into()];
+        let engine = make_engine_with_nad(nads, vec![rule]);
+
+        // Core NAD → rule fires → configure is denied
+        let core_nads = engine.resolve_nad_groups("10.0.1.1:49");
+        let d = engine.authorize_with_nad("alice", &[], &core_nads, "configure terminal");
+        assert!(!d.allowed, "configure should be denied for core NAD");
+    }
+
+    #[test]
+    fn nad_group_rule_skipped_for_nonmatching_nad() {
+        let mut nads = HashMap::new();
+        nads.insert("core".into(), NadGroupConfig { cidrs: vec!["10.0.0.0/8".into()] });
+        let mut rule = make_rule("deny-config-core-only", 50, Effect::Deny, "(configure|conf).*");
+        rule.nad_groups = vec!["core".into()];
+        let mut allow_all = make_rule("allow-all", 10, Effect::Allow, ".*");
+        allow_all.nad_groups = vec![];
+        let engine = make_engine_with_nad(nads, vec![rule, allow_all]);
+
+        // Access NAD (not core) → rule skipped → allow-all fires
+        let access_nads = engine.resolve_nad_groups("192.168.1.1:49");
+        let d = engine.authorize_with_nad("alice", &[], &access_nads, "configure terminal");
+        assert!(d.allowed, "configure should be allowed for non-core NAD");
+    }
+
     // ==================== device_flow_exclude_users Tests ====================
 
     fn make_engine_with_excludes(patterns: Vec<&str>) -> PolicyEngine {
@@ -1957,6 +2225,7 @@ mod tests {
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
             device_flow_exclude_users: patterns.iter().map(|s| s.to_string()).collect(),
+            nad_groups: HashMap::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),

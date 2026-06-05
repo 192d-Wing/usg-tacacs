@@ -9,10 +9,12 @@
   (bitmask + minute offsets) and checked in the authz hot path with no allocations.
   9 unit tests; schema updated (all 3 copies).
 
-- [ ] **NAD-group policy** — Tag network devices by role (core, access, firewall) via peer
-  IP range or mTLS cert CN, then match policy rules against the tag.  Lets you write
-  `deny configure` for access-layer devices while allowing it for core routers, all in
-  one policy file.
+- [x] **NAD-group policy** — `nad_groups` top-level policy map and `nad_groups` field on
+  rules.  Groups are defined by CIDR ranges (IPv4/IPv6, including /0 and /32); the server
+  resolves the requesting NAD's source IP against all groups at authz time and passes the
+  result to `authorize_with_nad()`.  Rules with `nad_groups` only fire when the NAD is in
+  a matching group.  No new crate dependencies; CIDR matching is pure `std::net` bit
+  arithmetic.  7 unit tests; schema updated (all 3 copies).
 
 - [ ] **Dynamic `enable` via device flow** — When a user requests privilege escalation
   (`ACTION_ENABLE`), trigger a second device flow / ICAM just-in-time approval instead of

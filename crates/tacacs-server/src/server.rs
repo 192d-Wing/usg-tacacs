@@ -1487,8 +1487,10 @@ fn authorize_shell_command(
     request: &AuthorizationRequest,
     policy: &PolicyEngine,
     groups: &[String],
+    nad_groups: &[String],
     peer: &str,
 ) -> AuthorizationResponse {
+    let _ = nad_groups; // shell-start priv-lvl uses user groups; NAD groups reserved for future use
     let ctx = authz_context(request);
     let attrs = policy
         .shell_attributes_for_with_groups(&request.user, groups)
@@ -1594,11 +1596,12 @@ fn authorize_user_command(
     request: &AuthorizationRequest,
     policy: &PolicyEngine,
     ldap_groups: &[String],
+    nad_groups: &[String],
     cmd: &str,
     peer: &str,
 ) -> AuthorizationResponse {
     let ctx = authz_context(request);
-    let decision = policy.authorize_with_groups(&request.user, ldap_groups, cmd);
+    let decision = policy.authorize_with_nad(&request.user, ldap_groups, nad_groups, cmd);
 
     if decision.allowed {
         build_authz_allow_response(request, decision.matched_rule, ldap_groups, &ctx, peer)
@@ -1736,10 +1739,13 @@ async fn execute_authorization_decision(
 
     let policy_guard = policy.read().await;
 
+    // Resolve the NAD's policy group based on its source IP (AC-3).
+    let nad_groups = policy_guard.resolve_nad_groups(peer);
+
     if request.is_shell_start() {
-        authorize_shell_command(request, &policy_guard, &effective_groups, peer)
+        authorize_shell_command(request, &policy_guard, &effective_groups, &nad_groups, peer)
     } else if let Some(cmd) = request.command_string() {
-        authorize_user_command(request, &policy_guard, &effective_groups, &cmd, peer)
+        authorize_user_command(request, &policy_guard, &effective_groups, &nad_groups, &cmd, peer)
     } else {
         authz_reason_response(
             AUTHOR_STATUS_ERROR,
