@@ -6,6 +6,7 @@
 */.DS_Store
 .idea
 .vscode
+.claude/
 
 # Security audit documents (sensitive - do not commit to public repos)
 SECURITY_AUDIT.md
