@@ -27,8 +27,7 @@ spec:
         app.kubernetes.io/name: tacacs
     spec:
       automountServiceAccountToken: false
-      imagePullSecrets:
-        - name: ghcr-pull
+      # No imagePullSecrets: the ghcr.io/192d-wing packages are public.
       # Spread replicas across nodes for HA (best-effort).
       affinity:
         podAntiAffinity:

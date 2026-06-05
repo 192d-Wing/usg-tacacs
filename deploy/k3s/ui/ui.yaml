@@ -1,6 +1,6 @@
 # tacacs-ui: Cloudscape SPA + BFF. Talks to Loki/Prometheus in the monitoring
-# namespace. Deployed in `tacacs` to reuse the ghcr-pull secret. Internal
-# ClusterIP only; public exposure is via Traefik + oauth2-proxy (ingress.yaml).
+# namespace. Deployed in the `tacacs` namespace. Internal ClusterIP only;
+# public exposure is via Traefik + oauth2-proxy (ingress.yaml).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,8 +16,7 @@ spec:
       labels: { app: tacacs-ui }
     spec:
       automountServiceAccountToken: false
-      imagePullSecrets:
-        - name: ghcr-pull
+      # No imagePullSecrets: the ghcr.io/192d-wing packages are public.
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
