@@ -143,15 +143,9 @@ jobs:
       - name: Validate all functions <= 60 lines
         run: |
           chmod +x scripts/ci/validate-function-length.sh
-          ./scripts/ci/validate-function-length.sh --all 60 crates > /tmp/function-length.txt 2>&1 || true
-          cat /tmp/function-length.txt
-          VIOLATIONS=$(grep -c "exceeding 60" /tmp/function-length.txt || echo "0")
-          if [ "$VIOLATIONS" -eq 0 ]; then
-            echo "PASS: NASA Power of 10 Rule #4 - 100% COMPLIANT"
-          else
-            echo "FAIL: $VIOLATIONS violations found (must be 0)"
-            exit 1
-          fi
+          # The script exits non-zero on any violation and zero when clean,
+          # so rely on its exit code directly (no fragile grep wrapper).
+          ./scripts/ci/validate-function-length.sh --all 60 crates
 
   runtime-unwrap-check:
     name: Runtime Unwrap Check
