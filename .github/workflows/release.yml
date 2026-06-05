@@ -20,11 +20,12 @@ on:
 
 permissions:
   contents: read
-  packages: write   # required for GHCR push
+  packages: write   # required for GHCR push via GITHUB_TOKEN
 
 env:
   SERVER_IMAGE: ghcr.io/192d-wing/usg-tacacs
   UI_IMAGE:     ghcr.io/192d-wing/tacacs-ui
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 now
 
 # ---------------------------------------------------------------------------
 # Job 1 — Build per-arch images (matrix: component × arch)
@@ -75,7 +76,12 @@ jobs:
         with:
           registry:  ghcr.io
           username:  ${{ github.actor }}
-          password:  ${{ secrets.GITHUB_TOKEN }}
+          # GHCR_TOKEN must be a PAT with write:packages scope, added as a
+          # repo secret.  Required because GITHUB_TOKEN can only push to
+          # packages that are already linked to this repository; packages
+          # first pushed locally need an explicit PAT until manually linked
+          # via Package Settings → Manage Actions Access.
+          password:  ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -121,7 +127,7 @@ jobs:
         with:
           registry:  ghcr.io
           username:  ${{ github.actor }}
-          password:  ${{ secrets.GITHUB_TOKEN }}
+          password:  ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@v3
 
