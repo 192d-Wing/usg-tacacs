@@ -21,42 +21,42 @@
 ### valid_auth
 
 - **usg-tacacs**: status=1 (PASS)
-- **tac_plus**: status=98 (UNKNOWN: 98)
+- **tac_plus**: status=65 (UNKNOWN: 65)
 
 ### invalid_password
 
 - **usg-tacacs**: status=2 (FAIL)
-- **tac_plus**: status=163 (UNKNOWN: 163)
+- **tac_plus**: status=38 (UNKNOWN: 38)
 
 ### unknown_user
 
 - **usg-tacacs**: status=2 (FAIL)
-- **tac_plus**: status=173 (UNKNOWN: 173)
+- **tac_plus**: status=253 (UNKNOWN: 253)
 
 ### empty_credentials
 
 - **usg-tacacs**: status=7 (ERROR)
-- **tac_plus**: status=248 (UNKNOWN: 248)
+- **tac_plus**: status=244 (UNKNOWN: 244)
 
 ### long_credentials
 
 - **usg-tacacs**: status=2 (FAIL)
-- **tac_plus**: status=102 (UNKNOWN: 102)
+- **tac_plus**: status=161 (UNKNOWN: 161)
 
 ### author_permit
 
-- **usg-tacacs**: status=17 (ERROR)
-- **tac_plus**: EXCEPTION: error: unpack requires a buffer of 127 bytes
+- **usg-tacacs**: status=2 (REPL)
+- **tac_plus**: EXCEPTION: error: unpack requires a buffer of 88 bytes
 
 ### author_deny
 
-- **usg-tacacs**: status=17 (ERROR)
-- **tac_plus**: EXCEPTION: error: unpack requires a buffer of 93 bytes
+- **usg-tacacs**: status=16 (FAIL)
+- **tac_plus**: EXCEPTION: error: unpack requires a buffer of 224 bytes
 
 ### acct_start_stop
 
 - **usg-tacacs**: start=2 stop=2
-- **tac_plus**: start=198 stop=251
+- **tac_plus**: start=50 stop=227
 
 ### concurrent_burst
 

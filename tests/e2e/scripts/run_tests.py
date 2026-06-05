@@ -8,6 +8,7 @@ pass/fail interoperability matrix.
 """
 
 import concurrent.futures
+import hashlib
 import json
 import os
 import socket
@@ -32,6 +33,8 @@ USG_HOST = os.environ.get("USG_HOST", "172.30.0.10")
 USG_PORT = int(os.environ.get("USG_PORT", "49"))
 TAC_HOST = os.environ.get("TAC_HOST", "172.30.0.11")
 TAC_PORT = int(os.environ.get("TAC_PORT", "49"))
+DEVICE_HOST = os.environ.get("DEVICE_HOST", "172.30.0.21")
+DEVICE_PORT = int(os.environ.get("DEVICE_PORT", "49"))
 SECRET = os.environ.get("SHARED_SECRET", "e2e-shared-secret-k8s")
 WRONG_SECRET = os.environ.get("WRONG_SECRET", "wrong-secret-value")
 
@@ -403,6 +406,165 @@ def run_all():
     print(f"\nArtifacts written to {ARTIFACTS}/")
 
     if any_failure:
+        print("\nRESULT: FAIL (usg-tacacs had test failures)")
+        return 1
+    print("\nRESULT: PASS (all usg-tacacs tests passed)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# ASCII TACACS+ raw packet helpers (for device flow / router scenarios).
+#
+# The tacacs_plus library only supports single-packet PAP/CHAP.  ASCII auth
+# is a multi-packet exchange (START → GETUSER/GETDATA/GETPASS → CONTINUE …)
+# so we drive it with raw sockets + MD5 body obfuscation.
+#
+# Proto constants from tacacs-proto/src/lib.rs:
+#   TYPE_AUTHEN=0x01  VER=0xC1
+#   PASS=0x01  FAIL=0x02  GETDATA=0x03  GETUSER=0x04  GETPASS=0x05
+# ---------------------------------------------------------------------------
+
+_VER      = 0xC1
+_T_AUTH   = 0x01
+_NOECHO   = 0x01
+_ST_PASS    = 0x01
+_ST_FAIL    = 0x02
+_ST_GETDATA = 0x03
+_ST_GETUSER = 0x04
+_ST_GETPASS = 0x05
+_HDR_FMT  = "!BBBBII"  # ver type seq flags session_id length
+
+
+def _ascii_obfusc(secret_bytes, sid, seq, body):
+    """Apply TACACS+ MD5 body obfuscation (symmetric)."""
+    prev, rem = b"", bytearray(body)
+    i = 0
+    while i < len(rem):
+        seed = struct.pack("!I", sid) + secret_bytes + bytes([_VER, seq]) + prev
+        pad  = hashlib.md5(seed).digest()
+        for j in range(min(16, len(rem) - i)):
+            rem[i + j] ^= pad[j]
+        prev = pad
+        i += 16
+    return bytes(rem)
+
+
+def _ascii_send(sock, sid, seq, body, secret_bytes):
+    enc = _ascii_obfusc(secret_bytes, sid, seq, body)
+    sock.sendall(struct.pack(_HDR_FMT, _VER, _T_AUTH, seq, 0, sid, len(enc)) + enc)
+
+
+def _ascii_recv(sock, sid, secret_bytes):
+    hdr = b""
+    while len(hdr) < 12:
+        chunk = sock.recv(12 - len(hdr))
+        if not chunk:
+            raise ConnectionError("connection closed")
+        hdr += chunk
+    _v, _t, rseq, _f, _s, length = struct.unpack(_HDR_FMT, hdr)
+    body = b""
+    while len(body) < length:
+        chunk = sock.recv(length - len(body))
+        if not chunk:
+            raise ConnectionError("connection closed")
+        body += chunk
+    dec = _ascii_obfusc(secret_bytes, sid, rseq, body)
+    msg_len = struct.unpack("!H", dec[2:4])[0]
+    return dec[0], dec[1], dec[6:6 + msg_len].decode(errors="replace")
+
+
+def _ascii_start(user=b"", port=b"tty0", rem=b"127.0.0.1"):
+    return struct.pack("!BBBBBBBB",
+        0x01, 0x01, 0x01, 0x01,
+        len(user), len(port), len(rem), 0,
+    ) + user + port + rem
+
+
+def _ascii_cont(user_msg=b""):
+    return struct.pack("!HHB", len(user_msg), 0, 0) + user_msg
+
+
+# ---------------------------------------------------------------------------
+# Router test scenarios (device flow server only)
+# ---------------------------------------------------------------------------
+
+def test_router_excluded_gets_password(host, port, _label):
+    """Excluded user (alice) must receive GETPASS and authenticate via static creds."""
+    sid = 0xE1000001
+    sec = SECRET.encode()
+    with socket.create_connection((host, port), timeout=10) as s:
+        _ascii_send(s, sid, 1, _ascii_start(b"alice"), sec)
+        st, fl, _msg = _ascii_recv(s, sid, sec)
+        if st != _ST_GETPASS:
+            return False, f"expected GETPASS(0x{_ST_GETPASS:02x}), got 0x{st:02x}"
+        if not (fl & _NOECHO):
+            return False, "GETPASS reply missing NOECHO flag"
+        _ascii_send(s, sid, 3, _ascii_cont(b"alice-secret"), sec)
+        st, _fl, _msg = _ascii_recv(s, sid, sec)
+        return st == _ST_PASS, f"auth_status=0x{st:02x}"
+
+
+def test_router_nonexcluded_gets_device_url(host, port, _label):
+    """Non-excluded user (bob) must receive GETDATA with the mock ICAM URL."""
+    sid = 0xE2000001
+    sec = SECRET.encode()
+    with socket.create_connection((host, port), timeout=10) as s:
+        _ascii_send(s, sid, 1, _ascii_start(b"bob"), sec)
+        st, _fl, msg = _ascii_recv(s, sid, sec)
+        if st != _ST_GETDATA:
+            return False, f"expected GETDATA(0x{_ST_GETDATA:02x}), got 0x{st:02x}"
+        has_url = "mock-icam" in msg or "TEST-CODE" in msg
+        return has_url, f"status=GETDATA url={'yes' if has_url else 'no'} msg={msg[:60]!r}"
+
+
+ROUTER_SCENARIOS = [
+    ("router_excluded_gets_password",     test_router_excluded_gets_password),
+    ("router_nonexcluded_gets_device_url", test_router_nonexcluded_gets_device_url),
+]
+
+
+def run_router_scenarios():
+    """Run router scenarios against the device-flow server; return failure flag."""
+    print("\n--- Router Scenarios (usg-tacacs-device) ---\n")
+    if not wait_for_server(DEVICE_HOST, DEVICE_PORT, "usg-tacacs-device"):
+        print("  SKIP: usg-tacacs-device not reachable", file=sys.stderr)
+        return False
+    any_fail = False
+    for name, fn in ROUTER_SCENARIOS:
+        label = f"usg-tacacs-device  {name}"
+        try:
+            ok, detail = fn(DEVICE_HOST, DEVICE_PORT, label)
+        except Exception:
+            ok, detail = False, traceback.format_exc().splitlines()[-1]
+        tag = "PASS" if ok else "FAIL"
+        print(f"  [{tag}] {name:<40s}  {detail}")
+        if not ok:
+            any_fail = True
+    return any_fail
+
+
+def run_all():
+    """Execute every scenario against every server and report."""
+    print("=" * 70)
+    print("TACACS+ E2E Interoperability Test Suite")
+    print("=" * 70)
+
+    print("\n--- Connectivity ---")
+    for name, host, port in SERVERS:
+        if not wait_for_server(host, port, name):
+            print(f"FATAL: cannot reach {name}", file=sys.stderr)
+            return 1
+
+    print("\n--- Running Scenarios ---\n")
+    results = {}
+    any_failure = execute_scenarios(results)
+    router_failure = run_router_scenarios()
+    mismatches = print_matrix(results)
+    usg_failures = print_details(results, mismatches)
+    write_artifacts(results, mismatches, usg_failures)
+    print(f"\nArtifacts written to {ARTIFACTS}/")
+
+    if any_failure or router_failure:
         print("\nRESULT: FAIL (usg-tacacs had test failures)")
         return 1
     print("\nRESULT: PASS (all usg-tacacs tests passed)")

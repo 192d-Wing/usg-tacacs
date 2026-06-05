@@ -70,6 +70,76 @@ services:
       retries: 15
       start_period: 5s
 
+  # ---------- Mock ICAM for device flow router tests ----------
+  mock-icam:
+    image: python:3.11-slim
+    command: ["python3", "/opt/e2e/mock_icam.py"]
+    volumes:
+      - ./mock_icam.py:/opt/e2e/mock_icam.py:ro
+    networks:
+      tacacs-e2e:
+        ipv4_address: 172.30.0.20
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8090)); s.close()\""]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  # ---------- USG TACACS+ with device flow + username router ----------
+  usg-tacacs-device:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.usg-tacacs
+    command:
+      - "--listen-legacy"
+      - "0.0.0.0:49"
+      - "--secret"
+      - "e2e-shared-secret-k8s"
+      - "--policy"
+      - "/etc/usg-tacacs/policy-device.json"
+      - "--schema"
+      - "/etc/usg-tacacs/policy.schema.json"
+      - "--allow-static-credentials"
+      - "--user-password"
+      - "alice:alice-secret"
+      - "--user-password"
+      - "bob:bob-secret"
+      - "--icam-token-endpoint"
+      - "http://mock-icam:8090/token"
+      - "--icam-client-id"
+      - "e2e-test"
+      - "--icam-client-secret"
+      - "e2e-secret"
+      - "--icam-device-flow"
+      - "--icam-device-auth-endpoint"
+      - "http://mock-icam:8090/auth/device"
+      - "--icam-timeout-ms"
+      - "2000"
+      - "--ascii-backoff-ms"
+      - "0"
+      - "--log-format"
+      - "json"
+      - "--max-connections-per-ip"
+      - "200"
+      - "--packet-read-timeout-secs"
+      - "10"
+    volumes:
+      - ./config/usg-tacacs/policy-device.json:/etc/usg-tacacs/policy-device.json:ro
+      - ./config/usg-tacacs/policy.schema.json:/etc/usg-tacacs/policy.schema.json:ro
+    networks:
+      tacacs-e2e:
+        ipv4_address: 172.30.0.21
+    depends_on:
+      mock-icam:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 49 || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
   # ---------- Test runner ----------
   test-runner:
     build:
@@ -85,10 +155,14 @@ services:
       TAC_PORT: "49"
       SHARED_SECRET: "e2e-shared-secret-k8s"
       WRONG_SECRET: "wrong-secret-value"
+      DEVICE_HOST: 172.30.0.21
+      DEVICE_PORT: "49"
     depends_on:
       usg-tacacs:
         condition: service_healthy
       tac-plus:
+        condition: service_healthy
+      usg-tacacs-device:
         condition: service_healthy
     networks:
       tacacs-e2e:

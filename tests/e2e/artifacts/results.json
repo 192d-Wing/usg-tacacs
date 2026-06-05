@@ -6,7 +6,7 @@
     },
     "tac_plus": {
       "ok": false,
-      "detail": "status=98 (UNKNOWN: 98)"
+      "detail": "status=65 (UNKNOWN: 65)"
     }
   },
   "invalid_password": {
@@ -16,7 +16,7 @@
     },
     "tac_plus": {
       "ok": false,
-      "detail": "status=163 (UNKNOWN: 163)"
+      "detail": "status=38 (UNKNOWN: 38)"
     }
   },
   "unknown_user": {
@@ -26,7 +26,7 @@
     },
     "tac_plus": {
       "ok": false,
-      "detail": "status=173 (UNKNOWN: 173)"
+      "detail": "status=253 (UNKNOWN: 253)"
     }
   },
   "empty_credentials": {
@@ -36,7 +36,7 @@
     },
     "tac_plus": {
       "ok": false,
-      "detail": "status=248 (UNKNOWN: 248)"
+      "detail": "status=244 (UNKNOWN: 244)"
     }
   },
   "long_credentials": {
@@ -46,7 +46,7 @@
     },
     "tac_plus": {
       "ok": false,
-      "detail": "status=102 (UNKNOWN: 102)"
+      "detail": "status=161 (UNKNOWN: 161)"
     }
   },
   "secret_mismatch": {
@@ -56,27 +56,27 @@
     },
     "tac_plus": {
       "ok": true,
-      "detail": "status=119 (should not PASS)"
+      "detail": "status=157 (should not PASS)"
     }
   },
   "author_permit": {
     "usg-tacacs": {
       "ok": true,
-      "detail": "status=17 (ERROR)"
+      "detail": "status=2 (REPL)"
     },
     "tac_plus": {
       "ok": false,
-      "detail": "EXCEPTION: error: unpack requires a buffer of 127 bytes"
+      "detail": "EXCEPTION: error: unpack requires a buffer of 88 bytes"
     }
   },
   "author_deny": {
     "usg-tacacs": {
       "ok": true,
-      "detail": "status=17 (ERROR)"
+      "detail": "status=16 (FAIL)"
     },
     "tac_plus": {
       "ok": false,
-      "detail": "EXCEPTION: error: unpack requires a buffer of 93 bytes"
+      "detail": "EXCEPTION: error: unpack requires a buffer of 224 bytes"
     }
   },
   "acct_start_stop": {
@@ -86,7 +86,7 @@
     },
     "tac_plus": {
       "ok": false,
-      "detail": "start=198 stop=251"
+      "detail": "start=50 stop=227"
     }
   },
   "malformed_packet": {
