@@ -14,9 +14,18 @@
       "priv-lvl=1"
     ]
   },
+  "shell_start_groups": {
+    "netops": [
+      "priv-lvl=15"
+    ]
+  },
+  "device_flow_exclude_users": [
+    "svc-tenable",
+    "svc-*"
+  ],
   "ascii_prompts": {
     "username": "Username:",
-    "password": "Password:"
+    "password": "Secret:"
   },
   "allow_raw_server_msg": true,
   "ascii_messages": {
