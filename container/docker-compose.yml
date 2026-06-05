@@ -58,7 +58,7 @@ services:
 
   tacacs-tls:
     build: .
-    image: usg-tacacs:latest
+    image: usg-tacacs-server:latest
     restart: unless-stopped
     networks:
       tacacs-net:
@@ -90,7 +90,7 @@ services:
 
   tacacs-legacy:
     build: .
-    image: usg-tacacs:latest
+    image: usg-tacacs-server:latest
     restart: unless-stopped
     networks:
       tacacs-net:

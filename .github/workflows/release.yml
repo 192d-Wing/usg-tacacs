@@ -6,11 +6,11 @@
 #   git tag v0.80.0 && git push --tags
 #
 # Produces:
-#   ghcr.io/192d-wing/usg-tacacs:0.80.0          (multi-arch manifest)
-#   ghcr.io/192d-wing/usg-tacacs:0.80.0-amd64
-#   ghcr.io/192d-wing/usg-tacacs:0.80.0-arm64
-#   ghcr.io/192d-wing/usg-tacacs:latest           (multi-arch manifest)
-#   (same pattern for tacacs-ui)
+#   ghcr.io/192d-wing/usg-tacacs-server:0.80.0          (multi-arch manifest)
+#   ghcr.io/192d-wing/usg-tacacs-server:0.80.0-amd64
+#   ghcr.io/192d-wing/usg-tacacs-server:0.80.0-arm64
+#   ghcr.io/192d-wing/usg-tacacs-server:latest           (multi-arch manifest)
+#   (same pattern for usg-tacacs-ui)
 
 name: Release
 
@@ -23,8 +23,8 @@ permissions:
   packages: write   # required for GHCR push via GITHUB_TOKEN
 
 env:
-  SERVER_IMAGE: ghcr.io/192d-wing/usg-tacacs
-  UI_IMAGE:     ghcr.io/192d-wing/tacacs-ui
+  SERVER_IMAGE: ghcr.io/192d-wing/usg-tacacs-server
+  UI_IMAGE:     ghcr.io/192d-wing/usg-tacacs-ui
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 now
 
 # ---------------------------------------------------------------------------
@@ -43,14 +43,14 @@ jobs:
           - component: server
             arch:       amd64
             runner:     ubuntu-latest
-            image:      ghcr.io/192d-wing/usg-tacacs
+            image:      ghcr.io/192d-wing/usg-tacacs-server
             dockerfile: container/Dockerfile.arm64   # native build; no cross-compile
             context:    .
 
           - component: server
             arch:       arm64
             runner:     ubuntu-24.04-arm             # GitHub native ARM runner
-            image:      ghcr.io/192d-wing/usg-tacacs
+            image:      ghcr.io/192d-wing/usg-tacacs-server
             dockerfile: container/Dockerfile.arm64
             context:    .
 
@@ -58,14 +58,14 @@ jobs:
           - component: ui
             arch:       amd64
             runner:     ubuntu-latest
-            image:      ghcr.io/192d-wing/tacacs-ui
+            image:      ghcr.io/192d-wing/usg-tacacs-ui
             dockerfile: ui/Dockerfile
             context:    ui
 
           - component: ui
             arch:       arm64
             runner:     ubuntu-24.04-arm
-            image:      ghcr.io/192d-wing/tacacs-ui
+            image:      ghcr.io/192d-wing/usg-tacacs-ui
             dockerfile: ui/Dockerfile
             context:    ui
 
@@ -82,6 +82,14 @@ jobs:
           # first pushed locally need an explicit PAT until manually linked
           # via Package Settings → Manage Actions Access.
           password:  ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # Iron Bank pull access: the server Dockerfiles FROM registry1.dso.mil.
+      # REPO1 is an org-level secret holding the registry1 CLI/pull token.
+      - uses: docker/login-action@v3
+        with:
+          registry:  registry1.dso.mil
+          username:  a1456055067
+          password:  ${{ secrets.REPO1 }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -118,9 +126,9 @@ jobs:
       matrix:
         include:
           - component: server
-            image:     ghcr.io/192d-wing/usg-tacacs
+            image:     ghcr.io/192d-wing/usg-tacacs-server
           - component: ui
-            image:     ghcr.io/192d-wing/tacacs-ui
+            image:     ghcr.io/192d-wing/usg-tacacs-ui
 
     steps:
       - uses: docker/login-action@v3

@@ -389,7 +389,7 @@ If the deployment is wrapped in a Helm chart, the recommended `values.yaml` stru
 ```yaml
 tacacs:
   image:
-    repository: ghcr.io/192d-wing/usg-tacacs
+    repository: ghcr.io/192d-wing/usg-tacacs-server
     tag: "0.78.1-arm64"
 
   icam:
