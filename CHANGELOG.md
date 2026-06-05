@@ -5,7 +5,40 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.79.0] - 2026-06-05
+
+### Added
+
+- **RFC 8628 Device Authorization Grant** (`--icam-device-flow`): ASCII auth now presents
+  a browser URL at the NAD terminal instead of collecting credentials inline. Users
+  authenticate via CAC in a browser; TACACS+ polls ICAM and returns PASS with JWT groups
+  on completion. Uses `verification_uri_complete` when available so only one URL is
+  shown with no separate code to transcribe.
+
+- **Group-based shell `priv-lvl`** (`shell_start_groups` in policy): shell-start
+  authorization can now grant privilege level by ICAM group membership (e.g.
+  `netops → priv-lvl=15`) without requiring per-username entries.
+
+- **`groups` field in policy schema**: authorization rules now accept a `groups` array
+  alongside `users`; schema validation correctly rejects unknown fields.
+
+- **Device flow in UI config page**: the Configuration page now shows an "Auth mode"
+  field — "Device flow (RFC 8628)" or "Password (ROPC)" — when ICAM is active.
+  Driven by the new `ICAM_DEVICE_FLOW` env var on the BFF.
+
+### Fixed
+
+- **Single-connect session-id mismatch**: RFC 8907 §5.3 allows each TACACS+ transaction
+  (auth, authz, accounting) to carry its own session_id on a shared connection. The
+  server was incorrectly comparing session IDs across transaction types; removed the
+  check from both `validate_authz_single_connect` and `validate_acct_single_connect`.
+
+- **OOM under concurrent PAP auth**: the dummy Argon2id hash (`m=524288` = 512 MB) was
+  running unconditionally on every request even when no argon2 users were configured.
+  The dummy now only fires when `creds.argon` is non-empty. E2E concurrent_burst
+  improved from 0/20 to 20/20.
+
+---
 
 ### 🎯 NASA Power of 10 Compliance & Code Quality Release
 

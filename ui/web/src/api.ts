@@ -44,6 +44,7 @@ export interface AuthConfig {
     client_id: string;
     groups_claim: string;
     reachable: boolean | null;
+    device_flow: boolean;
   };
   ldap?: {
     url: string;

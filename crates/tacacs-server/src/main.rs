@@ -932,3 +932,35 @@ mod session;
 mod session_registry;
 mod telemetry;
 mod tls;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_flow_without_icam_returns_error() {
+        let args = config::Args::try_parse_from([
+            "usg-tacacs",
+            "--icam-device-flow",
+        ])
+        .unwrap();
+        assert!(args.icam_device_flow);
+        assert!(args.icam_token_endpoint.is_none());
+        let result = build_device_flow_config(&args, None);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("--icam-device-flow requires"),
+            "error should mention --icam-device-flow, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn device_flow_disabled_without_icam_returns_none() {
+        let args = config::Args::try_parse_from(["usg-tacacs"]).unwrap();
+        assert!(!args.icam_device_flow);
+        let result = build_device_flow_config(&args, None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+}

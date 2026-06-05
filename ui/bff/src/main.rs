@@ -32,6 +32,8 @@ pub struct AppState {
     pub icam_client_id: Option<String>,
     /// JWT claim used for group membership (default: "groups").
     pub icam_groups_claim: Option<String>,
+    /// Whether the RFC 8628 device authorization flow is enabled on the server.
+    pub icam_device_flow: bool,
     /// LDAP server URL (when auth_source = "ldap").
     pub ldap_url: Option<String>,
 }
@@ -63,6 +65,9 @@ async fn main() -> anyhow::Result<()> {
         icam_internal_base: opt_env("ICAM_INTERNAL_BASE"),
         icam_client_id: opt_env("ICAM_CLIENT_ID"),
         icam_groups_claim: opt_env("ICAM_GROUPS_CLAIM"),
+        icam_device_flow: std::env::var("ICAM_DEVICE_FLOW")
+            .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
+            .unwrap_or(false),
         ldap_url: opt_env("LDAP_URL"),
     };
     let listen: SocketAddr = env_or("BFF_LISTEN", "0.0.0.0:8088").parse()?;

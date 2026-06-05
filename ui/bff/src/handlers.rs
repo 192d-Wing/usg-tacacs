@@ -75,6 +75,7 @@ pub async fn config(State(st): State<AppState>) -> impl IntoResponse {
                 "client_id": st.icam_client_id.as_deref().unwrap_or(""),
                 "groups_claim": st.icam_groups_claim.as_deref().unwrap_or("groups"),
                 "reachable": reachable,
+                "device_flow": st.icam_device_flow,
             });
         }
     }

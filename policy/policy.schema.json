@@ -174,7 +174,15 @@
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Usernames (case-insensitive) this rule applies to. If absent, rule applies to all users."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Group names (case-insensitive) this rule applies to. If absent, rule applies to all groups."
           }
         }
       }

@@ -87,6 +87,16 @@ function IcamDetail({
           <ReachabilityIndicator reachable={icam.reachable} />
         </Box>
       </div>
+      <div>
+        <Box variant="awsui-key-label">Auth mode</Box>
+        <Box>
+          {icam.device_flow ? (
+            <Badge color="blue">Device flow (RFC 8628)</Badge>
+          ) : (
+            <Badge color="grey">Password (ROPC)</Badge>
+          )}
+        </Box>
+      </div>
     </ColumnLayout>
   );
 }
