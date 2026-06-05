@@ -5,6 +5,27 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.79.1] - 2026-06-05
+
+### Added
+
+- **Username router for device flow** (`device_flow_exclude_users` in policy): service accounts
+  that cannot complete browser CAC authentication can be excluded from RFC 8628 device flow
+  and routed to password auth (ROPC/static) instead, with no NAD configuration changes needed.
+  Supports exact usernames and single-`*` glob patterns (`svc-*`, `*-scanner`).
+  Updatable via SIGHUP policy reload without a server restart.
+
+  ```json
+  { "device_flow_exclude_users": ["svc-tenable", "svc-*"] }
+  ```
+
+  Two routing cases are handled:
+  - Username pre-filled in ASCII START: decision is immediate (no extra round-trip).
+  - Username absent from START: server sends GETUSER, defers the decision until the
+    username arrives in the first CONTINUE, then routes to device flow or GETPASS.
+
+---
+
 ## [0.79.0] - 2026-06-05
 
 ### Added
