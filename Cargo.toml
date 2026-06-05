@@ -40,7 +40,7 @@ serde_json = "1"
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 log = "0.4"
 
 # OpenTelemetry
