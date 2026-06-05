@@ -42,5 +42,7 @@ feature gate (`--icam-device-flow`) and related single-connect fixes.
 
 ### Regression
 
-- [ ] **#9 E2E suite** — run `tests/e2e/compose.yaml` (PAP / CHAP / authz /
-  accounting) against the full server binary; all scenarios must pass.
+- [x] **#9 E2E suite** — all 12 usg-tacacs scenarios pass including concurrent_burst
+  (20/20). Root cause of prior OOM: dummy Argon2 (m=524288 = 512 MB) fired on
+  every PAP request even when no argon users existed; fixed to skip dummy when
+  `creds.argon.is_empty()`.

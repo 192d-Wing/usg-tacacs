@@ -336,17 +336,21 @@ pub async fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool
     }
 
     // Offload Argon2 work to blocking thread pool to avoid stalling async runtime.
-    // N6 FIX: Always run Argon2 (real or dummy) regardless of credential store,
-    // preventing timing differences between plain-only and argon users (CWE-208).
+    // The dummy only fires when the argon store is non-empty: if no users have argon
+    // hashes there is no argon timing to match, and running 512 MB of dummy work per
+    // request causes OOM under concurrency with no security benefit (CWE-208).
     let argon_hash = creds.argon.get(user).cloned();
+    let has_argon_users = !creds.argon.is_empty();
     let password_owned = password.to_string();
 
     let argon_result = tokio::task::spawn_blocking(move || {
         if let Some(hash) = argon_hash {
             verify_argon_hash(&hash, password_owned.as_bytes())
-        } else {
-            // User not in argon store: dummy work to match timing (NIST IA-6)
+        } else if has_argon_users {
+            // User not in argon store but others are: dummy work matches timing (NIST IA-6)
             let _ = verify_argon_hash(DUMMY_ARGON2_HASH, password_owned.as_bytes());
+            false
+        } else {
             false
         }
     })
@@ -419,17 +423,21 @@ pub async fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) 
     }
 
     // Offload Argon2 work to blocking thread pool to avoid stalling async runtime.
-    // N6 FIX: Always run Argon2 (real or dummy) regardless of credential store,
-    // preventing timing differences between plain-only and argon users (CWE-208).
+    // The dummy only fires when the argon store is non-empty: if no users have argon
+    // hashes there is no argon timing to match, and running 512 MB of dummy work per
+    // request causes OOM under concurrency with no security benefit (CWE-208).
     let argon_hash = creds.argon.get(user).cloned();
+    let has_argon_users = !creds.argon.is_empty();
     let password_owned = password.to_vec();
 
     let argon_result = tokio::task::spawn_blocking(move || {
         if let Some(hash) = argon_hash {
             verify_argon_hash(&hash, &password_owned)
-        } else {
-            // User not in argon store: dummy work to match timing (NIST IA-6)
+        } else if has_argon_users {
+            // User not in argon store but others are: dummy work matches timing (NIST IA-6)
             let _ = verify_argon_hash(DUMMY_ARGON2_HASH, &password_owned);
+            false
+        } else {
             false
         }
     })
