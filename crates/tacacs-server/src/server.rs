@@ -84,6 +84,9 @@ use crate::auth::{
 };
 use crate::icam::{IcamAuthResult, IcamConfig, icam_authenticate};
 use crate::icam_device::{DeviceFlowConfig, icam_device_auth_start, icam_device_format_prompt};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use std::sync::OnceLock;
 use crate::config::StaticCreds;
 use crate::policy::enforce_server_msg;
 use crate::session::{SingleConnectState, TaskIdTracker};
@@ -295,6 +298,10 @@ pub(crate) struct AuthContext {
     /// RFC 8628 Device Authorization Grant; when set, ASCII auth presents a
     /// browser URL instead of collecting credentials inline (IA-2, IA-8).
     pub device_flow: Option<Arc<DeviceFlowConfig>>,
+    /// Per-username cross-IP authentication rate limiter (AC-7).
+    pub username_limiter: Arc<crate::username_limiter::UsernameRateLimiter>,
+    /// HMAC-SHA256 key for audit event signing; `None` disables signing (AU-9).
+    pub audit_hmac_key: Option<Arc<Vec<u8>>>,
 }
 
 /// TLS-specific configuration for client certificate validation.
@@ -439,6 +446,41 @@ fn enforce_client_cert_policy(
     check_cert_names_allowed(&names, allowed_cn, allowed_san)
 }
 
+/// Process-global HMAC key set once at startup; `None` = signing disabled.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-9 | Protection of Audit Information | Global key for log integrity signing |
+static AUDIT_HMAC_KEY: OnceLock<Option<Vec<u8>>> = OnceLock::new();
+
+/// Initialize the audit HMAC key from `AuthContext`.  Must be called once
+/// before the first audit event is emitted.
+pub(crate) fn init_audit_hmac(key: Option<&Arc<Vec<u8>>>) {
+    let _ = AUDIT_HMAC_KEY.set(key.map(|k| k.as_ref().clone()));
+}
+
+/// Compute HMAC-SHA256 over the canonical audit event fields.
+///
+/// The input is `event|peer|user|session|status|reason|data` — pipe-delimited
+/// so field boundaries are unambiguous.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-9 | Protection of Audit Information | HMAC-SHA256 detects log tampering |
+/// | SC-13 | Cryptographic Protection | FIPS 198-1 compliant HMAC-SHA256 |
+fn compute_audit_hmac(key: &[u8], fields: &str) -> String {
+    assert!(!key.is_empty(), "HMAC key must not be empty");
+    assert!(!fields.is_empty(), "audit fields must not be empty");
+    let mut mac = Hmac::<Sha256>::new_from_slice(key)
+        .expect("HMAC accepts any key length");
+    mac.update(fields.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
 fn audit_event(
     event: &str,
     peer: &str,
@@ -448,17 +490,39 @@ fn audit_event(
     reason: &str,
     data: &str,
 ) {
-    info!(
-        target: "tacacs_audit",
-        event,
-        peer = %peer,
-        user = %user,
-        session = session,
-        status = %status,
-        reason = %reason,
-        data = %data,
-        "audit event"
-    );
+    let hmac_tag = AUDIT_HMAC_KEY
+        .get()
+        .and_then(|k| k.as_deref())
+        .map(|key| {
+            let fields = format!("{event}|{peer}|{user}|{session}|{status}|{reason}|{data}");
+            compute_audit_hmac(key, &fields)
+        });
+    if let Some(ref tag) = hmac_tag {
+        info!(
+            target: "tacacs_audit",
+            event,
+            peer = %peer,
+            user = %user,
+            session = session,
+            status = %status,
+            reason = %reason,
+            data = %data,
+            hmac = %tag,
+            "audit event"
+        );
+    } else {
+        info!(
+            target: "tacacs_audit",
+            event,
+            peer = %peer,
+            user = %user,
+            session = session,
+            status = %status,
+            reason = %reason,
+            data = %data,
+            "audit event"
+        );
+    }
 }
 
 fn authz_reason_response(
@@ -1129,6 +1193,8 @@ pub async fn serve_legacy(
                 ldap: conn_auth_ctx.ldap.clone(),
                 icam: conn_auth_ctx.icam.clone(),
                 device_flow: conn_auth_ctx.device_flow.clone(),
+                username_limiter: conn_auth_ctx.username_limiter.clone(),
+                audit_hmac_key: conn_auth_ctx.audit_hmac_key.clone(),
             };
             if let Err(err) = handle_connection(
                 socket,
@@ -3017,6 +3083,7 @@ async fn finalize_authentication<S>(
     single_connect_flag: bool,
     icam_groups: Vec<String>,
     identity_source: &str,
+    username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
     connection_id: u64,
     registry: &Arc<SessionRegistry>,
     policy: &Arc<RwLock<PolicyEngine>>,
@@ -3029,6 +3096,21 @@ where
     let header = extract_packet_header(packet);
     let is_terminal = is_terminal_status(reply.status);
     let single_user = state_snapshot.username.clone();
+
+    // Per-username rate limiting (AC-7): check lockout before sending reply;
+    // record failure/success when the authentication decision is terminal.
+    if let Some(ref username) = state_snapshot.username {
+        if is_terminal && username_limiter.is_locked(username).await {
+            reply.status = AUTHEN_STATUS_FAIL;
+            reply.server_msg = "authentication locked out".into();
+        } else if is_terminal {
+            if matches!(reply.status, AUTHEN_STATUS_PASS) {
+                username_limiter.record_success(username).await;
+            } else if matches!(reply.status, AUTHEN_STATUS_FAIL) {
+                username_limiter.record_failure(username).await;
+            }
+        }
+    }
 
     if is_terminal {
         log_terminal_authen_status(&reply, &state_snapshot, session_id, peer, identity_source);
@@ -3328,6 +3410,7 @@ async fn handle_authentication_packet<S>(
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
+    username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3385,6 +3468,7 @@ where
         single_connect_flag,
         icam_groups,
         identity_source,
+        username_limiter,
         connection_id,
         registry,
         policy,
@@ -3444,6 +3528,7 @@ async fn dispatch_packet_to_handler<S>(
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
+    username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3477,6 +3562,7 @@ where
                 ldap,
                 icam,
                 device_flow,
+                username_limiter,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3569,6 +3655,7 @@ async fn connection_loop<S>(
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
+    username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3614,6 +3701,7 @@ where
                 ldap,
                 icam,
                 device_flow,
+                username_limiter,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3673,6 +3761,8 @@ where
     let ldap = &auth_ctx.ldap;
     let icam = &auth_ctx.icam;
     let device_flow = &auth_ctx.device_flow;
+    let username_limiter = auth_ctx.username_limiter.clone();
+    init_audit_hmac(auth_ctx.audit_hmac_key.as_ref());
     let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
     let single_connect_keepalive_secs = conn_cfg.single_connect_keepalive_secs;
     let packet_read_timeout_secs = conn_cfg.packet_read_timeout_secs;
@@ -3695,6 +3785,7 @@ where
         ldap,
         icam,
         device_flow,
+        &username_limiter,
         ascii_cfg,
         secret.as_deref().map(|s| s.as_slice()),
         &peer,

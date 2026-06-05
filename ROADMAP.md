@@ -45,11 +45,13 @@
 
 ## Security Hardening
 
-- [ ] **Per-username rate limiting** — Complement the existing per-source-IP limit with a
-  per-username attempt counter that spans source IPs.  Closes username-spray attacks where
-  the attacker rotates source addresses.  State can live in the session registry or a
-  shared atomic map.
+- [x] **Per-username rate limiting** — `UsernameRateLimiter` tracks failure counts per
+  username across all source IPs with a sliding window.  CLI flags:
+  `--username-lockout-window-secs` (300), `--username-lockout-limit` (10),
+  `--username-lockout-secs` (900).  Lockout recorded in `finalize_authentication`
+  at every terminal auth event; success clears the counter.
 
-- [ ] **Audit log HMAC signing** — Append an HMAC tag to each structured audit event
-  before it reaches Loki so tamper detection is possible downstream.  Key provisioned via
-  the existing secrets infrastructure (OpenBao / EST).
+- [x] **Audit log HMAC signing** — `--audit-hmac-key` / `--audit-hmac-key-file`
+  (hex-encoded, min 32 bytes).  When set, every structured audit event includes an
+  `hmac` field containing HMAC-SHA256 over the pipe-delimited canonical fields.
+  Key stored in process-global `OnceLock`; no call-site changes required.

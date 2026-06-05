@@ -115,6 +115,9 @@ struct AppState {
     ldap_config: Option<Arc<LdapConfig>>,
     icam_config: Option<Arc<IcamConfig>>,
     device_flow_config: Option<Arc<crate::icam_device::DeviceFlowConfig>>,
+    username_limiter: Arc<crate::username_limiter::UsernameRateLimiter>,
+    /// HMAC-SHA256 key for audit event signing (`None` = disabled).
+    audit_hmac_key: Option<Arc<Vec<u8>>>,
     legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
     conn_limiter: ConnLimiter,
     session_registry: Arc<SessionRegistry>,
@@ -475,6 +478,8 @@ fn build_tls_contexts(
         ldap: state.ldap_config.clone(),
         icam: state.icam_config.clone(),
         device_flow: state.device_flow_config.clone(),
+        username_limiter: state.username_limiter.clone(),
+        audit_hmac_key: state.audit_hmac_key.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let tls_identity = TlsIdentityConfig {
@@ -554,6 +559,8 @@ fn setup_legacy_listener(
         ldap: state.ldap_config.clone(),
         icam: state.icam_config.clone(),
         device_flow: state.device_flow_config.clone(),
+        username_limiter: state.username_limiter.clone(),
+        audit_hmac_key: state.audit_hmac_key.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let nad_secrets = state.legacy_nad_secrets.clone();
@@ -820,6 +827,40 @@ fn build_device_flow_config(
     Ok(Some(Arc::new(cfg)))
 }
 
+/// Resolve and decode the hex audit HMAC key from file or CLI/env.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AU-9 | Protection of Audit Information | Loads key for log integrity signing |
+/// | SC-28 | Protection at Rest | Key stored in file with restrictive permissions |
+fn resolve_audit_hmac_key(args: &Args) -> std::result::Result<Option<Arc<Vec<u8>>>, String> {
+    let raw = if let Some(ref path) = args.audit_hmac_key_file {
+        Some(
+            std::fs::read_to_string(path)
+                .map_err(|e| format!("failed to read audit HMAC key file {path:?}: {e}"))?
+                .trim()
+                .to_string(),
+        )
+    } else {
+        args.audit_hmac_key.clone()
+    };
+    let Some(hex_key) = raw else {
+        return Ok(None);
+    };
+    let bytes = hex::decode(hex_key.trim())
+        .map_err(|e| format!("audit HMAC key must be hex-encoded: {e}"))?;
+    if bytes.len() < 32 {
+        return Err(format!(
+            "audit HMAC key must be at least 32 bytes ({} provided)",
+            bytes.len()
+        ));
+    }
+    info!(key_bytes = bytes.len(), "audit log HMAC signing enabled (AU-9)");
+    Ok(Some(Arc::new(bytes)))
+}
+
 /// Build application state from parsed arguments.
 async fn build_app_state(args: &Args) -> Result<AppState> {
     let policy_path = args
@@ -830,6 +871,12 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
     let ldap_config = validate_secrets_and_build_ldap(args)?;
     let icam_config = build_icam_config(args)?;
     let device_flow_config = build_device_flow_config(args, icam_config.as_deref())?;
+    let audit_hmac_key = resolve_audit_hmac_key(args).map_err(anyhow::Error::msg)?;
+    let username_limiter = crate::username_limiter::UsernameRateLimiter::new(
+        args.username_lockout_window_secs,
+        args.username_lockout_limit,
+        args.username_lockout_secs,
+    );
     let (est_provider, est_config) = setup_est_provider(args).await?;
 
     Ok(AppState {
@@ -845,6 +892,8 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         ldap_config,
         icam_config,
         device_flow_config,
+        username_limiter,
+        audit_hmac_key,
         legacy_nad_secrets: Arc::new(
             args.legacy_nad_secret
                 .iter()
@@ -926,6 +975,7 @@ mod http;
 mod icam;
 mod icam_device;
 mod metrics;
+mod username_limiter;
 mod policy;
 mod server;
 mod session;

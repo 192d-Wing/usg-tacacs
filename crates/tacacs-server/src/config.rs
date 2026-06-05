@@ -202,6 +202,28 @@ pub struct Args {
     #[arg(long, default_value_t = 5)]
     pub ascii_lockout_limit: u8,
 
+    // ==================== Per-Username Rate Limiting ====================
+    /// Sliding window (seconds) for per-username failure counting.
+    /// Failures older than this are discarded.  Default 300 (5 minutes).
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-7 | Unsuccessful Logon Attempts | Window for per-username attempt counting |
+    #[arg(long, default_value_t = 300, env = "USERNAME_LOCKOUT_WINDOW_SECS")]
+    pub username_lockout_window_secs: u64,
+
+    /// Maximum consecutive failures within the window before the username is
+    /// locked out (0 = disabled).  Default 10.
+    #[arg(long, default_value_t = 10, env = "USERNAME_LOCKOUT_LIMIT")]
+    pub username_lockout_limit: u32,
+
+    /// Lockout duration in seconds after the failure limit is reached.
+    /// 0 defaults to the window duration.  Default 900 (15 minutes).
+    #[arg(long, default_value_t = 900, env = "USERNAME_LOCKOUT_SECS")]
+    pub username_lockout_secs: u64,
+
     /// Idle timeout (seconds) for single-connection sessions before closing (0 = disabled).
     #[arg(long, default_value_t = 300)]
     pub single_connect_idle_secs: u64,
@@ -563,6 +585,30 @@ pub struct Args {
     /// Default 48 ≈ 4 minutes at the RFC 8628 recommended 5-second poll interval.
     #[arg(long, default_value_t = 48, env = "ICAM_DEVICE_AUTH_MAX_POLLS")]
     pub icam_device_auth_max_polls: u8,
+
+    // ==================== Audit Log HMAC Signing ====================
+    /// HMAC-SHA256 key for signing audit log events (hex-encoded, min 32 bytes).
+    ///
+    /// When set, every structured audit event includes an `hmac` field containing
+    /// HMAC-SHA256 over the canonical event fields.  Use the companion verify tool
+    /// to detect tampering in Loki-exported logs.
+    ///
+    /// Prefer `--audit-hmac-key-file` in production to avoid key exposure in
+    /// process listings.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AU-9 | Protection of Audit Information | HMAC ensures log integrity |
+    /// | SC-13 | Cryptographic Protection | HMAC-SHA256 per FIPS 198-1 |
+    #[arg(long, env = "AUDIT_HMAC_KEY")]
+    pub audit_hmac_key: Option<String>,
+
+    /// Path to file containing the hex-encoded HMAC key for audit signing.
+    /// Takes precedence over `--audit-hmac-key`.
+    #[arg(long, env = "AUDIT_HMAC_KEY_FILE")]
+    pub audit_hmac_key_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1163,6 +1209,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1235,6 +1284,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1277,6 +1328,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1349,6 +1403,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1389,6 +1445,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1461,6 +1520,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1501,6 +1562,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1573,6 +1637,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1614,6 +1680,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1686,6 +1755,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1726,6 +1797,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1798,6 +1872,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = credentials_map(&args);
@@ -1903,6 +1979,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1975,6 +2054,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -2012,6 +2093,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -2084,6 +2168,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -2121,6 +2207,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -2193,6 +2282,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = resolve_tacacs_secret(&args);
@@ -2235,6 +2326,9 @@ mod tests {
             ascii_backoff_ms: 0,
             ascii_backoff_max_ms: 5000,
             ascii_lockout_limit: 0,
+            username_lockout_window_secs: 300,
+            username_lockout_limit: 10,
+            username_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -2307,6 +2401,8 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            audit_hmac_key: None,
+            audit_hmac_key_file: None,
         };
 
         let result = resolve_ldap_bind_password(&args);
