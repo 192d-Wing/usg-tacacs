@@ -1,7 +1,0 @@
-# SPDX-License-Identifier: Apache-2.0
-# PgBouncer userlist
-# Managed by Ansible - do not edit manually
-# Format: "username" "password"
-{% for user in pgbouncer_users %}
-"{{ user.name }}" "{{ user.password }}"
-{% endfor %}

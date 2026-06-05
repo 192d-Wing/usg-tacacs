@@ -1,9 +1,0 @@
----
-# Handlers for OpenBao integration
-
-- name: Restart TACACS server
-  ansible.builtin.systemd:
-    name: tacacs-server
-    state: restarted
-    daemon_reload: true
-  when: ansible_service_mgr == "systemd"
