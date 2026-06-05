@@ -36,6 +36,10 @@ pub struct AppState {
     pub icam_device_flow: bool,
     /// LDAP server URL (when auth_source = "ldap").
     pub ldap_url: Option<String>,
+    /// Internal HTTP base URL of the TACACS+ server health/metrics port.
+    /// e.g. `http://tacacs-metrics.tacacs.svc:8080`
+    /// Used to proxy the `/sessions` snapshot for the live session dashboard.
+    pub tacacs_http_url: Option<String>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -69,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
             .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
             .unwrap_or(false),
         ldap_url: opt_env("LDAP_URL"),
+        tacacs_http_url: opt_env("TACACS_HTTP_URL"),
     };
     let listen: SocketAddr = env_or("BFF_LISTEN", "0.0.0.0:8088").parse()?;
     let static_dir = env_or("UI_STATIC_DIR", "/app/web");
@@ -85,6 +90,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/metrics", get(handlers::metrics))
         .route("/resources", get(handlers::resources))
         .route("/alerts", get(handlers::alerts))
+        .route("/policy/dry-run", axum::routing::post(handlers::policy_dry_run))
+        .route("/sessions", get(handlers::sessions))
         .with_state(state.clone());
 
     let app = Router::new()

@@ -19,19 +19,19 @@
 
 ## Observability
 
-- [ ] **Policy dry-run** — BFF endpoint that accepts a candidate policy JSON and replays
-  the last N audit events from Loki against it, returning a diff of which decisions would
-  change.  Lets operators validate policy changes before deploying, without touching
-  production.
+- [x] **Policy dry-run** — `POST /api/policy/dry-run` on the BFF accepts a candidate
+  policy JSON, fetches recent authz events from Loki, re-evaluates each command against
+  the new rules (compiled regex), and returns a list of changed decisions with summary
+  counts.  Groups field on rules is respected.
 
-- [ ] **Live session dashboard** — WebSocket stream of active single-connect sessions in
-  the UI.  The session registry already tracks them; surfacing it as a live view lets
-  operators see who is logged into which device in real time.
+- [x] **Live session dashboard** — `GET /sessions` on the TACACS+ health HTTP port
+  returns a JSON snapshot of all active connections (peer, user, session_id, idle_secs,
+  request count).  BFF proxies it as `GET /api/sessions` via `TACACS_HTTP_URL`.
+  New Sessions page in the UI polls every 5 s with idle-time colour coding.
 
-- [ ] **Command frequency alerting** — Extend the existing alert engine with unusual
-  command-volume detection.  If a user runs more than a configurable threshold of commands
-  in a rolling window, fire a warning alert.  Loki data is already available; this is an
-  additional alert rule in the BFF alerts handler.
+- [x] **Command frequency alerting** — Alert rule #5 in the BFF alerts handler queries
+  Loki for `authz_policy_allow` events, groups by user, and fires a warning when any
+  user exceeds 100 commands in 15 minutes.
 
 ## Protocol / Infrastructure
 

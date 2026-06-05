@@ -9,6 +9,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use regex::Regex;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,6 +35,172 @@ fn esc(s: &str) -> String {
 }
 fn err(e: anyhow::Error) -> (StatusCode, Json<Value>) {
     (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() })))
+}
+
+// ---------------------------------------------------------------------------
+// Policy dry-run types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct DryRunRule {
+    id: String,
+    priority: i64,
+    effect: String, // "allow" | "deny"
+    pattern: String,
+    #[serde(default)]
+    users: Vec<String>,
+    #[serde(default)]
+    groups: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct DryRunPolicy {
+    rules: Vec<DryRunRule>,
+    #[serde(default = "default_allow")]
+    default_allow: bool,
+}
+
+fn default_allow() -> bool { false }
+
+#[derive(Deserialize)]
+pub struct DryRunRequest {
+    policy: DryRunPolicy,
+    #[serde(default = "default_minutes")]
+    minutes: i64,
+    #[serde(default = "default_limit")]
+    limit: u32,
+}
+
+fn default_minutes() -> i64 { 60 }
+fn default_limit() -> u32 { 500 }
+
+// ---------------------------------------------------------------------------
+
+/// POST /api/policy/dry-run — evaluate a candidate policy against recent authz events.
+///
+/// Body: `{ "policy": { "rules": [...], "default_allow": false }, "minutes": 60 }`
+///
+/// Returns a list of events whose authz decision would change under the new policy,
+/// plus summary counts.  Only command-level authz events are evaluated; shell-start
+/// events (no `cmd`) are skipped.
+pub async fn policy_dry_run(
+    State(st): State<AppState>,
+    Json(req): Json<DryRunRequest>,
+) -> impl IntoResponse {
+    let minutes = req.minutes.clamp(1, 60 * 24);
+    let limit   = req.limit.clamp(1, 5000);
+    let end   = now_ns();
+    let start = end - minutes * 60 * 1_000_000_000;
+
+    // Fetch recent authz events (both allow and deny).
+    let logql = format!(
+        "{{logtarget=\"{}\"}} | json | event=~\"authz_policy_allow|authz_policy_deny\"",
+        esc(&st.audit_target)
+    );
+    let events = match loki_query_range(&st, &logql, start, end, limit, true).await {
+        Ok(e) => e,
+        Err(e) => return err(e).into_response(),
+    };
+
+    // Compile candidate policy rules once.
+    let mut compiled: Vec<(i64, &DryRunRule, Regex)> = Vec::new();
+    for rule in &req.policy.rules {
+        let anchored = format!("^(?:{})$", rule.pattern);
+        match Regex::new(&anchored) {
+            Ok(re) => compiled.push((rule.priority, rule, re)),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid pattern in rule {}: {}", rule.id, rule.pattern)})),
+                ).into_response();
+            }
+        }
+    }
+    compiled.sort_by_key(|(p, _, _)| *p);
+
+    let mut changes: Vec<Value> = Vec::new();
+    let mut evaluated = 0u32;
+
+    for ev in &events {
+        let current_decision = ev.fields.get("event")
+            .and_then(|v| v.as_str())
+            .map(|e| if e == "authz_policy_allow" { "allow" } else { "deny" })
+            .unwrap_or("unknown");
+        let user = ev.fields.get("user").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let data = ev.fields.get("data").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Extract command from data field: "...;cmd=show version;..."
+        let cmd = data.split(';')
+            .find_map(|p| p.strip_prefix("cmd="))
+            .unwrap_or("")
+            .to_string();
+
+        if cmd.is_empty() || cmd == "service=shell" {
+            continue; // skip shell-start events
+        }
+
+        evaluated += 1;
+        let new_decision = eval_policy(&compiled, &user, &cmd, req.policy.default_allow);
+
+        if new_decision != current_decision {
+            changes.push(json!({
+                "ts": ev.ts / 1_000_000,
+                "user": user,
+                "cmd": cmd,
+                "current": current_decision,
+                "new": new_decision,
+            }));
+        }
+    }
+
+    Json(json!({
+        "evaluated": evaluated,
+        "changed": changes.len(),
+        "changes": changes,
+    })).into_response()
+}
+
+/// Evaluate a single command against the compiled candidate rules.
+fn eval_policy(rules: &[(i64, &DryRunRule, Regex)], user: &str, cmd: &str, default: bool) -> &'static str {
+    for (_, rule, re) in rules {
+        if !rule.users.is_empty() && !rule.users.iter().any(|u| u.eq_ignore_ascii_case(user)) {
+            continue;
+        }
+        if re.is_match(cmd) {
+            return if rule.effect == "allow" { "allow" } else { "deny" };
+        }
+    }
+    if default { "allow" } else { "deny" }
+}
+
+/// GET /api/sessions — live snapshot of active TACACS+ sessions.
+///
+/// Proxies the `/sessions` endpoint on the TACACS+ server health port.
+/// Requires `TACACS_HTTP_URL` env var pointing at the internal HTTP service
+/// (e.g. `http://tacacs-metrics.tacacs.svc:8080`).
+pub async fn sessions(State(st): State<AppState>) -> impl IntoResponse {
+    let Some(ref base) = st.tacacs_http_url else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "TACACS_HTTP_URL not configured"})),
+        )
+            .into_response();
+    };
+    let url = format!("{base}/sessions");
+    match st.http.get(&url).timeout(std::time::Duration::from_secs(5)).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<Value>().await {
+                Ok(body) => Json(body).into_response(),
+                Err(e) => err(anyhow::anyhow!(e)).into_response(),
+            }
+        }
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": format!("upstream {}", resp.status())})),
+        )
+            .into_response(),
+        Err(e) => err(anyhow::anyhow!(e)).into_response(),
+    }
 }
 
 /// GET /api/config — active authentication source and (for ICAM) endpoint metadata.
@@ -297,6 +465,34 @@ pub async fn alerts(State(st): State<AppState>) -> impl IntoResponse {
     if let Ok(fails) = loki_query_range(&st, &fail_q, start, end, 1000, false).await {
         if fails.len() >= 20 {
             alerts.push(mk("warning", "Authentication failure burst", format!("{} failed auths in 15m", fails.len())));
+        }
+    }
+    // 5) Command frequency anomaly — alert when a single user runs an unusually
+    //    high volume of commands in 15 minutes (potential scripted compromise or
+    //    runaway automation).  Threshold: >100 authz events from one user.
+    let cmd_q = format!(
+        "{{logtarget=\"{}\", event=\"authz_policy_allow\"}} | json",
+        esc(&st.audit_target)
+    );
+    if let Ok(cmds) = loki_query_range(&st, &cmd_q, start, end, 5000, false).await {
+        let mut per_user: HashMap<String, usize> = HashMap::new();
+        for ev in &cmds {
+            let user = ev.fields.get("user")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !user.is_empty() {
+                *per_user.entry(user).or_insert(0) += 1;
+            }
+        }
+        for (user, count) in per_user {
+            if count > 100 {
+                alerts.push(mk(
+                    "warning",
+                    "Command frequency anomaly",
+                    format!("{user} ran {count} commands in 15m — possible scripted activity"),
+                ));
+            }
         }
     }
 

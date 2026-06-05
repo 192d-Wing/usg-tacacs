@@ -2,6 +2,7 @@
 //! HTTP server for health checks and Prometheus metrics.
 
 use crate::metrics::metrics;
+use crate::session_registry::SessionRegistry;
 use axum::{
     Router,
     http::StatusCode,
@@ -21,6 +22,8 @@ pub struct ServerState {
     ready: Arc<AtomicBool>,
     /// Whether the server is alive (not deadlocked).
     alive: Arc<AtomicBool>,
+    /// Active session registry for the `/sessions` snapshot endpoint.
+    pub registry: Option<Arc<SessionRegistry>>,
 }
 
 impl ServerState {
@@ -28,7 +31,14 @@ impl ServerState {
         Self {
             ready: Arc::new(AtomicBool::new(false)),
             alive: Arc::new(AtomicBool::new(true)),
+            registry: None,
         }
+    }
+
+    /// Attach the session registry so `/sessions` can serve live snapshots.
+    pub fn with_registry(mut self, registry: Arc<SessionRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
     }
 
     /// Set the ready state.
@@ -130,6 +140,53 @@ async fn metrics_handler() -> impl IntoResponse {
     )
 }
 
+/// GET /sessions — live snapshot of active TACACS+ sessions.
+///
+/// Returns all sessions currently tracked by the session registry.
+/// This endpoint is on the unauthenticated health port (internal-only);
+/// the BFF proxies it as `/api/sessions` for the operator UI.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-10 | Concurrent Session Control | Exposes live session count for monitoring |
+/// | SI-4 | System Monitoring | Supports real-time operator visibility |
+async fn sessions_handler(axum::extract::State(state): axum::extract::State<ServerState>) -> Response {
+    let Some(ref registry) = state.registry else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "session registry unavailable").into_response();
+    };
+    let sessions = registry.list_sessions().await;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let json: Vec<serde_json::Value> = sessions.iter().map(|s| {
+        let connected = s.connected_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last_active = s.last_activity
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        serde_json::json!({
+            "id":           s.connection_id,
+            "peer":         s.peer_addr.to_string(),
+            "user":         s.username,
+            "session_id":   s.session_id,
+            "connected_at": connected,
+            "last_active":  last_active,
+            "idle_secs":    now_secs.saturating_sub(last_active),
+            "requests":     s.request_count,
+        })
+    }).collect();
+    (StatusCode::OK, axum::Json(serde_json::json!({
+        "count": json.len(),
+        "sessions": json,
+    }))).into_response()
+}
+
 /// Build the HTTP router with all endpoints.
 fn build_router(state: ServerState) -> Router {
     Router::new()
@@ -137,6 +194,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/ready", get(ready_handler))
         .route("/live", get(live_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/sessions", get(sessions_handler))
         .with_state(state)
 }
 

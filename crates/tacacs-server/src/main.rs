@@ -918,7 +918,8 @@ async fn run_server(args: &Args, state: &AppState, otel_enabled: bool) -> Result
         bail!("no listeners configured; set --listen-tls and/or --listen-legacy");
     }
 
-    let server_state = ServerState::new();
+    let server_state = ServerState::new()
+        .with_registry(state.session_registry.clone());
     setup_http_server(args, &server_state, &mut handles);
 
     let (reload_tx, reload_rx) = mpsc::channel::<PolicyReloadRequest>(10);
