@@ -26,7 +26,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: ui
-          image: ghcr.io/192d-wing/tacacs-ui:0.1.2-arm64
+          image: ghcr.io/192d-wing/tacacs-ui:0.79.0-arm64
           imagePullPolicy: Always
           env:
             - { name: LOKI_URL, value: "http://loki.monitoring.svc:3100" }
@@ -38,6 +38,7 @@ spec:
             - { name: ICAM_CLIENT_ID, value: "tacacs-server" }
             - { name: ICAM_GROUPS_CLAIM, value: "groups" }
             - { name: ICAM_INTERNAL_BASE, value: "http://keycloak.icam.svc.cluster.local" }
+            - { name: ICAM_DEVICE_FLOW, value: "true" }
           ports:
             - { name: http, containerPort: 8088 }
           securityContext:
