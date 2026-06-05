@@ -590,6 +590,92 @@ async fn handle_device_poll_phase(
     }
 }
 
+/// Handle the deferred device-flow routing decision after the username arrives.
+///
+/// Called when `ascii_device_flow_pending` is true and the CONTINUE brings a
+/// non-empty username. Checks the policy exclude list: excluded users get a
+/// GETPASS prompt (password/ROPC path); all others start device flow.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | Routes service accounts to ROPC |
+/// | IA-6 | Authenticator Feedback | Excluded users receive password prompt |
+async fn handle_pending_device_flow(
+    user_msg: &[u8],
+    state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    device_flow: Option<&DeviceFlowConfig>,
+    pwd_prompt: Vec<u8>,
+) -> AuthenReply {
+    assert!(state.ascii_device_flow_pending, "pending flag must be set");
+    let username = String::from_utf8_lossy(user_msg).to_string();
+    let excluded = {
+        let guard = policy.read().await;
+        guard.is_device_flow_excluded(&username)
+    };
+    state.ascii_device_flow_pending = false;
+    state.username = Some(username.clone());
+    state.username_raw = Some(user_msg.to_vec());
+    state.ascii_need_user = false;
+    if !excluded {
+        if let Some(cfg) = device_flow {
+            return handle_device_flow_initiate(state, cfg).await;
+        }
+    }
+    // Excluded or no device flow config: transition to password phase.
+    state.ascii_need_pass = true;
+    tracing::debug!(user = %username, "device flow excluded; routing to password auth");
+    AuthenReply {
+        status: AUTHEN_STATUS_GETPASS,
+        flags: AUTHEN_FLAG_NOECHO,
+        server_msg: String::new(),
+        server_msg_raw: pwd_prompt,
+        data: Vec::new(),
+    }
+}
+
+/// Initiate device flow from within the ASCII CONTINUE handler.
+///
+/// Mirrors `handle_ascii_device_flow_start` in server.rs but callable from ascii.rs.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-2 | Identification and Authentication | Initiates ICAM device authorization |
+async fn handle_device_flow_initiate(
+    state: &mut AuthSessionState,
+    cfg: &DeviceFlowConfig,
+) -> AuthenReply {
+    assert!(cfg.max_polls > 0, "max_polls must be positive");
+    match crate::icam_device::icam_device_auth_start(cfg).await {
+        Some(resp) => {
+            let msg = crate::icam_device::icam_device_format_prompt(&resp, 0, cfg.max_polls);
+            state.device_code = Some(resp.device_code);
+            state.device_poll_count = 0;
+            AuthenReply {
+                status: AUTHEN_STATUS_GETDATA,
+                flags: 0,
+                server_msg: msg,
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        }
+        None => {
+            tracing::warn!("device auth start failed during deferred routing");
+            AuthenReply {
+                status: AUTHEN_STATUS_FAIL,
+                flags: 0,
+                server_msg: "device authorization initialization failed".into(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        }
+    }
+}
+
 /// Handle ASCII authentication continuation packets.
 ///
 /// # NIST Controls
@@ -661,6 +747,18 @@ pub async fn handle_ascii_continue(
         return handle_device_poll_phase(state, device_flow, icam_groups_out).await;
     }
 
+    // Deferred device-flow decision: username arrived in this CONTINUE.
+    if state.ascii_device_flow_pending && !cont_user_msg.is_empty() {
+        return handle_pending_device_flow(
+            cont_user_msg,
+            state,
+            policy,
+            device_flow,
+            pwd_prompt,
+        )
+        .await;
+    }
+
     if let Some(reply) = check_attempt_limits(state, config) {
         return reply;
     }
@@ -704,6 +802,7 @@ mod tests {
             default_allow: true,
             shell_start: Default::default(),
             shell_start_groups: Default::default(),
+            device_flow_exclude_users: Default::default(),
             ascii_prompts: None,
             ascii_user_prompts: Default::default(),
             ascii_password_prompts: Default::default(),
@@ -752,6 +851,7 @@ mod tests {
             action: Some(1),
             device_code: None,
             device_poll_count: 0,
+            ascii_device_flow_pending: false,
         }
     }
 

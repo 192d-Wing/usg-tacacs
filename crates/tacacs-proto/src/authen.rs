@@ -195,6 +195,9 @@ pub struct AuthSessionState {
     pub device_code: Option<String>,
     /// Number of times the device code has been polled (bound for rule 2).
     pub device_poll_count: u8,
+    /// Username was not in the ASCII START packet; device flow decision deferred
+    /// until the username arrives via GETUSER → CONTINUE.
+    pub ascii_device_flow_pending: bool,
 }
 
 impl AuthSessionState {
@@ -232,6 +235,7 @@ impl AuthSessionState {
             action: Some(start.action),
             device_code: None,
             device_poll_count: 0,
+            ascii_device_flow_pending: false,
         })
     }
 
@@ -280,6 +284,7 @@ impl AuthSessionState {
             action: Some(action),
             device_code: None,
             device_poll_count: 0,
+            ascii_device_flow_pending: false,
         })
     }
 

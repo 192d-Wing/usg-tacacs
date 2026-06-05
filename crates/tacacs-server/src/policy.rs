@@ -101,6 +101,7 @@ mod tests {
             default_allow: true,
             shell_start: Default::default(),
             shell_start_groups: Default::default(),
+            device_flow_exclude_users: Default::default(),
             ascii_prompts: None,
             ascii_user_prompts: Default::default(),
             ascii_password_prompts: Default::default(),
@@ -138,6 +139,7 @@ mod tests {
             action: Some(1),  // TAC_PLUS_AUTHEN_LOGIN
             device_code: None,
             device_poll_count: 0,
+            ascii_device_flow_pending: false,
         }
     }
 

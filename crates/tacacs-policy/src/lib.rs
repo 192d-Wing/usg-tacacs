@@ -96,6 +96,11 @@ pub struct PolicyDocument {
     /// the user has no entry in `shell_start`; first matching group wins.
     #[serde(default)]
     pub shell_start_groups: HashMap<String, Vec<String>>,
+    /// Usernames (or glob patterns with `*`) that bypass device flow and use
+    /// password auth (ROPC/static). Case-insensitive. Use for service accounts
+    /// that cannot complete browser authentication.
+    #[serde(default)]
+    pub device_flow_exclude_users: Vec<String>,
     #[serde(default)]
     pub ascii_prompts: Option<AsciiPrompts>,
     #[serde(default)]
@@ -162,6 +167,7 @@ pub struct PolicyEngine {
     default_allow: bool,
     shell_start: HashMap<String, Vec<String>>,
     shell_start_groups: HashMap<String, Vec<String>>,
+    device_flow_exclude_users: Vec<String>,
     ascii_prompts: Option<AsciiPrompts>,
     ascii_user_prompts: HashMap<String, String>,
     ascii_password_prompts: HashMap<String, String>,
@@ -173,6 +179,26 @@ pub struct PolicyEngine {
     raw_server_msg_user_overrides: HashMap<String, RawServerMsgOverride>,
     ascii_messages: Option<AsciiMessages>,
     rules: Vec<Rule>,
+}
+
+/// Case-insensitive glob match supporting a single `*` wildcard.
+///
+/// Both `pattern` and `text` are expected to be already lowercased by the caller.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    assert!(!pattern.is_empty(), "glob pattern must not be empty");
+    match pattern.find('*') {
+        None => pattern == text,
+        Some(star) => {
+            let prefix = &pattern[..star];
+            let suffix = &pattern[star + 1..];
+            assert!(
+                !suffix.contains('*'),
+                "only one wildcard per pattern is supported"
+            );
+            text.starts_with(prefix) && text.ends_with(suffix)
+                && text.len() >= prefix.len() + suffix.len()
+        }
+    }
 }
 
 fn default_allow_raw_server_msg() -> bool {
@@ -243,6 +269,11 @@ impl PolicyEngine {
                 .shell_start_groups
                 .into_iter()
                 .map(|(g, v)| (g.to_lowercase(), v))
+                .collect(),
+            device_flow_exclude_users: document
+                .device_flow_exclude_users
+                .into_iter()
+                .map(|u| u.to_lowercase())
                 .collect(),
             ascii_prompts: document.ascii_prompts,
             ascii_user_prompts: document
@@ -349,6 +380,27 @@ impl PolicyEngine {
     /// | Control | Name | Implementation |
     /// |---------|------|----------------|
     /// | AC-3 | Access Enforcement | Group-based privilege attribute lookup |
+    /// Return true if the username matches an entry in `device_flow_exclude_users`.
+    ///
+    /// Matching is case-insensitive. Entries may contain a single `*` wildcard
+    /// that matches any sequence of characters (glob-style: `svc-*`, `*-scanner`).
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | IA-2 | Identification and Authentication | Routes service accounts to password auth |
+    pub fn is_device_flow_excluded(&self, username: &str) -> bool {
+        assert!(!username.is_empty(), "username must not be empty");
+        let lower = username.to_lowercase();
+        for pattern in &self.device_flow_exclude_users {
+            if glob_match(pattern, &lower) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn shell_attributes_for_with_groups(
         &self,
         user: &str,
@@ -602,6 +654,7 @@ mod tests {
             default_allow: false,
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
+            device_flow_exclude_users: Vec::new(),
             ascii_prompts: None,
             ascii_user_prompts: HashMap::new(),
             ascii_password_prompts: HashMap::new(),
@@ -1618,5 +1671,98 @@ mod tests {
             let result = compile_pattern(pattern);
             assert!(result.is_ok(), "Pattern '{}' should compile", pattern);
         }
+    }
+
+    // ==================== device_flow_exclude_users Tests ====================
+
+    fn make_engine_with_excludes(patterns: Vec<&str>) -> PolicyEngine {
+        let doc = PolicyDocument {
+            default_allow: false,
+            shell_start: HashMap::new(),
+            shell_start_groups: HashMap::new(),
+            device_flow_exclude_users: patterns.iter().map(|s| s.to_string()).collect(),
+            ascii_prompts: None,
+            ascii_user_prompts: HashMap::new(),
+            ascii_password_prompts: HashMap::new(),
+            ascii_port_prompts: HashMap::new(),
+            ascii_remaddr_prompts: HashMap::new(),
+            allow_raw_server_msg: true,
+            raw_server_msg_allow_prefixes: Vec::new(),
+            raw_server_msg_deny_prefixes: Vec::new(),
+            raw_server_msg_user_overrides: HashMap::new(),
+            ascii_messages: None,
+            rules: vec![],
+        };
+        PolicyEngine::from_document(doc).unwrap()
+    }
+
+    #[test]
+    fn exclude_exact_match() {
+        let e = make_engine_with_excludes(vec!["svc-tenable"]);
+        assert!(e.is_device_flow_excluded("svc-tenable"));
+        assert!(!e.is_device_flow_excluded("operator"));
+    }
+
+    #[test]
+    fn exclude_case_insensitive() {
+        let e = make_engine_with_excludes(vec!["SVC-TENABLE"]);
+        assert!(e.is_device_flow_excluded("svc-tenable"));
+        assert!(e.is_device_flow_excluded("SVC-TENABLE"));
+    }
+
+    #[test]
+    fn exclude_prefix_glob() {
+        let e = make_engine_with_excludes(vec!["svc-*"]);
+        assert!(e.is_device_flow_excluded("svc-tenable"));
+        assert!(e.is_device_flow_excluded("svc-monitoring"));
+        assert!(!e.is_device_flow_excluded("operator"));
+        assert!(!e.is_device_flow_excluded("svc"));
+    }
+
+    #[test]
+    fn exclude_suffix_glob() {
+        let e = make_engine_with_excludes(vec!["*-scanner"]);
+        assert!(e.is_device_flow_excluded("tenable-scanner"));
+        assert!(!e.is_device_flow_excluded("operator"));
+    }
+
+    #[test]
+    fn exclude_wildcard_only_matches_anything() {
+        let e = make_engine_with_excludes(vec!["*"]);
+        assert!(e.is_device_flow_excluded("operator"));
+        assert!(e.is_device_flow_excluded("svc-tenable"));
+    }
+
+    #[test]
+    fn exclude_empty_list_never_excludes() {
+        let e = make_engine_with_excludes(vec![]);
+        assert!(!e.is_device_flow_excluded("svc-tenable"));
+        assert!(!e.is_device_flow_excluded("operator"));
+    }
+
+    #[test]
+    fn glob_match_no_wildcard() {
+        assert!(glob_match("alice", "alice"));
+        assert!(!glob_match("alice", "bob"));
+    }
+
+    #[test]
+    fn glob_match_prefix_wildcard() {
+        assert!(glob_match("svc-*", "svc-tenable"));
+        assert!(glob_match("svc-*", "svc-"));
+        assert!(!glob_match("svc-*", "svc"));
+        assert!(!glob_match("svc-*", "notasvc-thing"));
+    }
+
+    #[test]
+    fn glob_match_suffix_wildcard() {
+        assert!(glob_match("*-svc", "tenable-svc"));
+        assert!(!glob_match("*-svc", "tenable"));
+    }
+
+    #[test]
+    fn glob_match_star_alone_matches_all() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", ""));
     }
 }

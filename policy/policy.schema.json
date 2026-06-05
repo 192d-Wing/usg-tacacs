@@ -29,6 +29,13 @@
       },
       "description": "Shell-start attributes keyed by group name (case-insensitive). Checked when the user has no entry in shell_start; first matching group wins."
     },
+    "device_flow_exclude_users": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Usernames or glob patterns (single * wildcard) that bypass RFC 8628 device flow and use password auth instead. Case-insensitive. Use for service accounts that cannot complete browser authentication (e.g. 'svc-tenable', 'svc-*')."
+    },
     "ascii_prompts": {
       "type": "object",
       "properties": {

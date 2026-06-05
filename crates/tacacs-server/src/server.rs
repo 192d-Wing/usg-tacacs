@@ -2216,6 +2216,7 @@ fn create_state_from_start(start: &AuthenStart) -> AuthSessionState {
         ascii_pass_attempts: 0,
         device_code: None,
         device_poll_count: 0,
+        ascii_device_flow_pending: false,
     })
 }
 
@@ -2248,6 +2249,7 @@ fn create_state_from_continue(cont: &AuthenContinue) -> AuthSessionState {
         action: None,
         device_code: None,
         device_poll_count: 0,
+        ascii_device_flow_pending: false,
     }
 }
 
@@ -2688,9 +2690,26 @@ async fn handle_authen_start_ascii(
     state.service = Some(start.service);
     state.action = Some(start.action);
 
-    // Device flow feature gate: bypass username/password, initiate browser auth.
+    // Device flow feature gate: route based on username from START packet.
     if let Some(df_cfg) = device_flow.as_deref() {
-        return handle_ascii_device_flow_start(state, df_cfg).await;
+        let username = start.user.trim();
+        if username.is_empty() {
+            // Username not in START — send GETUSER and defer the device-flow vs
+            // password decision until the username arrives in the CONTINUE.
+            state.ascii_device_flow_pending = true;
+            let (user_prompt, _) = fetch_ascii_prompts_from_policy(policy, state).await;
+            state.ascii_need_user = true;
+            return build_getuser_reply(user_prompt.as_deref(), state.service);
+        }
+        let excluded = {
+            let policy_guard = policy.read().await;
+            policy_guard.is_device_flow_excluded(username)
+        };
+        extract_ascii_username_from_start(start, state);
+        if !excluded {
+            return handle_ascii_device_flow_start(state, df_cfg).await;
+        }
+        // Username is on the exclude list — fall through to password auth.
     }
 
     extract_ascii_username_from_start(start, state);
