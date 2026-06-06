@@ -24,6 +24,54 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // Keys rendered as their own fields; everything else falls into the raw JSON.
 const KNOWN = new Set(["ts", "event", "status", "peer", "user", "session", "reason", "data"]);
 
+// The audit `data` blob is a ';'-delimited list of key=value pairs, e.g.
+// "type=stop;flags=0x04;attrs=5;service=shell;cmd=show running-config <cr>;
+//  task_id=4110;status=-;bytes_in=-;bytes_out=-". Parse it into ordered pairs;
+// `hasEq` marks whether the segment was actually key=value (vs free text).
+type DetailPair = { k: string; v: string; hasEq: boolean };
+function parseDetail(data: string): DetailPair[] {
+  return data
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((seg) => {
+      const i = seg.indexOf("=");
+      return i === -1
+        ? { k: seg, v: "", hasEq: false }
+        : { k: seg.slice(0, i), v: seg.slice(i + 1), hasEq: true };
+    });
+}
+
+// Render the parsed accounting/audit detail as a labelled field grid, falling
+// back to the raw string when it isn't a clean key=value blob.
+function DetailFields({ data }: Readonly<{ data: string }>) {
+  if (!data) {
+    return <Field label="Detail"><Box color="text-status-inactive">—</Box></Field>;
+  }
+  const pairs = parseDetail(data);
+  const structured = pairs.length >= 2 && pairs.every((p) => p.hasEq);
+  if (!structured) {
+    return <Field label="Detail"><Box variant="code" fontSize="body-s">{data}</Box></Field>;
+  }
+  return (
+    <SpaceBetween size="s">
+      <Box variant="awsui-key-label">Detail</Box>
+      <ColumnLayout columns={3} variant="text-grid" borders="horizontal">
+        {pairs.map(({ k, v }) => (
+          <Field key={k} label={k}>
+            <Box variant="code" fontSize="body-s">
+              {v === "" || v === "-" ? "—" : v}
+            </Box>
+          </Field>
+        ))}
+      </ColumnLayout>
+      <ExpandableSection headerText="Raw detail" variant="footer">
+        <Box variant="code" fontSize="body-s">{data}</Box>
+      </ExpandableSection>
+    </SpaceBetween>
+  );
+}
+
 function EventDetail({ e }: { e: AuditEvent }) {
   const iso = (() => { try { return new Date(e.ts / 1e6).toISOString(); } catch { return ""; } })();
   const extra = Object.keys(e).filter((k) => !KNOWN.has(k));
@@ -47,11 +95,7 @@ function EventDetail({ e }: { e: AuditEvent }) {
 
       <Field label="Reason"><Box>{e.reason || "—"}</Box></Field>
 
-      <Field label="Detail">
-        {e.data
-          ? <Box variant="code" fontSize="body-s">{e.data}</Box>
-          : <Box color="text-status-inactive">—</Box>}
-      </Field>
+      <DetailFields data={e.data || ""} />
 
       {extra.length > 0 && (
         <ColumnLayout columns={2} variant="text-grid">
