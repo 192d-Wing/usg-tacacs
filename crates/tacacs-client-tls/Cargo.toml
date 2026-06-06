@@ -29,5 +29,5 @@ bytes = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-rcgen = "0.13"
+rcgen = "0.14"
 tempfile = "3"
