@@ -5,6 +5,27 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.2] - 2026-06-06
+
+### Added
+
+- **Shared login→authz group cache (Valkey)**: ICAM/OIDC group memberships exist only in
+  the login JWT, bound to the authentication connection. A command-authorization request is
+  an independent TACACS+ transaction that arrives on a separate connection — and possibly a
+  different replica — with no JWT, so group-based policy rules could not match standalone
+  command authorization (`aaa authorization commands` denied group members even with a
+  matching allow rule). On a successful ICAM authentication the user's groups are now written
+  to a shared Valkey cache keyed by username with a bounded TTL; at authorization time
+  `resolve_authz_groups()` reads them back, resolving groups in order: connection auth →
+  shared cache → LDAP → empty. The cache is best-effort — every Valkey error is logged and
+  swallowed, so an outage degrades to prior behavior and never blocks authentication.
+
+  New flags: `--group-cache-url` (use `rediss://` for TLS), `--group-cache-password` /
+  `--group-cache-password-file`, `--group-cache-ttl-secs` (default 900),
+  `--group-cache-key-prefix` (default `tacacs`). New `redis` dependency (BSD-3-Clause).
+  Deploy: `deploy/k3s/manifests/valkey.yaml` (no persistence, password-protected, restricted
+  to the tacacs pods by NetworkPolicy). NIST: AC-2, AC-3, SC-5, SC-7, SC-8, SI-10, IA-5.
+
 ## [0.81.1] - 2026-06-06
 
 ### Fixed

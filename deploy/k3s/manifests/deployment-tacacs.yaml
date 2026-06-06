@@ -47,7 +47,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: tacacs
-          image: ghcr.io/192d-wing/usg-tacacs-server:0.81.1
+          image: ghcr.io/192d-wing/usg-tacacs-server:0.81.2
           imagePullPolicy: Always
           args:
             # Bind [::] for dual-stack: on Linux (bindv6only=0) this accepts both
