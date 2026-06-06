@@ -472,6 +472,25 @@ pub(crate) fn init_audit_hmac(key: Option<&Arc<Vec<u8>>>) {
 /// |---------|------|----------------|
 /// | AU-9 | Protection of Audit Information | HMAC-SHA256 detects log tampering |
 /// | SC-13 | Cryptographic Protection | FIPS 198-1 compliant HMAC-SHA256 |
+/// Build the canonical, pipe-delimited field string that the audit HMAC is
+/// computed over. Every logged field (including `identity_source`) is included
+/// so the signature covers the whole record; pipe delimiters keep field
+/// boundaries unambiguous. Keep this in lock-step with the fields emitted by
+/// [`emit_audit_event`].
+#[allow(clippy::too_many_arguments)]
+fn audit_canonical_fields(
+    event: &str,
+    peer: &str,
+    user: &str,
+    session: u32,
+    status: &str,
+    reason: &str,
+    data: &str,
+    identity_source: &str,
+) -> String {
+    format!("{event}|{peer}|{user}|{session}|{status}|{reason}|{data}|{identity_source}")
+}
+
 fn compute_audit_hmac(key: &[u8], fields: &str) -> String {
     assert!(!key.is_empty(), "HMAC key must not be empty");
     assert!(!fields.is_empty(), "audit fields must not be empty");
@@ -489,8 +508,44 @@ fn audit_event(
     reason: &str,
     data: &str,
 ) {
+    // Most events carry no identity source; delegate to the full emitter so
+    // every `tacacs_audit` record flows through one signing path (AU-9).
+    emit_audit_event(event, peer, user, session, status, reason, data, "");
+}
+
+/// Emit a signed `tacacs_audit` event. This is the single emission point for
+/// audit records: all callers (including authentication-terminal events that
+/// carry an `identity_source`) MUST route through here so the HMAC covers
+/// every logged field. Adding a raw `info!` to the audit tracing target
+/// elsewhere would produce an unsigned, forgeable record (AU-9).
+///
+/// `identity_source` is the empty string for events without one; it is always
+/// included in both the canonical HMAC input and the emitted record so the
+/// signature covers it.
+#[allow(clippy::too_many_arguments)]
+fn emit_audit_event(
+    event: &str,
+    peer: &str,
+    user: &str,
+    session: u32,
+    status: &str,
+    reason: &str,
+    data: &str,
+    identity_source: &str,
+) {
+    assert!(!event.is_empty(), "audit event name must not be empty");
+    assert!(!status.is_empty(), "audit status must not be empty");
     let hmac_tag = AUDIT_HMAC_KEY.get().and_then(|k| k.as_deref()).map(|key| {
-        let fields = format!("{event}|{peer}|{user}|{session}|{status}|{reason}|{data}");
+        let fields = audit_canonical_fields(
+            event,
+            peer,
+            user,
+            session,
+            status,
+            reason,
+            data,
+            identity_source,
+        );
         compute_audit_hmac(key, &fields)
     });
     if let Some(ref tag) = hmac_tag {
@@ -503,6 +558,7 @@ fn audit_event(
             status = %status,
             reason = %reason,
             data = %data,
+            identity_source = %identity_source,
             hmac = %tag,
             "audit event"
         );
@@ -516,6 +572,7 @@ fn audit_event(
             status = %status,
             reason = %reason,
             data = %data,
+            identity_source = %identity_source,
             "audit event"
         );
     }
@@ -2998,17 +3055,18 @@ fn log_terminal_authen_status(
     });
     let msg_data = build_authen_audit_message(reply, state_snapshot);
 
-    info!(
-        target: "tacacs_audit",
-        event = "authn_terminal",
-        peer = %peer,
-        user = %user_for_log,
-        session = session_id,
-        status = %status_label,
-        reason = "terminal",
-        identity_source = %identity_source,
-        data = %msg_data,
-        "audit event"
+    // Route through the signed emitter so the authentication-outcome record is
+    // HMAC-covered like every other audit event (AU-9). The identity_source is
+    // carried as a dedicated field included in the signature.
+    emit_audit_event(
+        "authn_terminal",
+        peer,
+        user_for_log,
+        session_id,
+        status_label,
+        "terminal",
+        &msg_data,
+        identity_source,
     );
 }
 
@@ -3831,7 +3889,8 @@ where
     let icam = &auth_ctx.icam;
     let device_flow = &auth_ctx.device_flow;
     let username_limiter = auth_ctx.username_limiter.clone();
-    init_audit_hmac(auth_ctx.audit_hmac_key.as_ref());
+    // Audit HMAC key is initialized once at startup in run_server (AU-9), not
+    // per-connection, so the first conn_open event is already signed.
     let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
     let single_connect_keepalive_secs = conn_cfg.single_connect_keepalive_secs;
     let packet_read_timeout_secs = conn_cfg.packet_read_timeout_secs;
@@ -4234,6 +4293,92 @@ pub fn tls_acceptor(
 /// |---------|------|----------------|
 /// | AC-3 | Access Enforcement | Standalone authz/acct permitted per RFC 8907 |
 /// | IA-11 | Re-authentication | User-binding consistency enforced across sessions |
+#[cfg(test)]
+mod audit_signing_tests {
+    use super::*;
+
+    const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn canonical_fields_include_identity_source() {
+        // identity_source must be part of the signed input, else it could be
+        // tampered with undetected (AU-9).
+        let fields = audit_canonical_fields(
+            "authn_terminal",
+            "1.2.3.4:1",
+            "alice",
+            7,
+            "pass",
+            "terminal",
+            "type=pap",
+            "icam",
+        );
+        assert!(
+            fields.ends_with("|icam"),
+            "identity_source missing: {fields}"
+        );
+        assert_eq!(
+            fields.matches('|').count(),
+            7,
+            "expected 8 pipe-delimited fields"
+        );
+    }
+
+    #[test]
+    fn hmac_covers_identity_source() {
+        // Two records identical except for identity_source MUST produce
+        // different signatures, proving the field is authenticated.
+        let base = |src: &str| {
+            let f = audit_canonical_fields(
+                "authn_terminal",
+                "1.2.3.4:1",
+                "alice",
+                7,
+                "pass",
+                "terminal",
+                "type=pap",
+                src,
+            );
+            compute_audit_hmac(KEY, &f)
+        };
+        assert_ne!(base("icam"), base("local"));
+    }
+
+    #[test]
+    fn hmac_is_deterministic() {
+        let f = audit_canonical_fields(
+            "conn_open",
+            "1.2.3.4:1",
+            "",
+            0,
+            "info",
+            "open",
+            "connection started",
+            "",
+        );
+        assert_eq!(compute_audit_hmac(KEY, &f), compute_audit_hmac(KEY, &f));
+    }
+
+    #[test]
+    fn no_raw_tacacs_audit_emissions_outside_emitter() {
+        // Regression guard for AU-9: every audit record must flow through
+        // emit_audit_event so it is HMAC-signed. The audit tracing target
+        // literal may appear only in the two info! branches inside
+        // emit_audit_event itself; a new raw emission elsewhere would produce
+        // an unsigned, forgeable record and must fail this test. (This comment
+        // deliberately avoids writing the literal so it is not self-counted.)
+        let src = include_str!("server.rs");
+        let needle = format!("target: {}tacacs_audit{}", '"', '"');
+        let count = src.matches(&needle).count();
+        assert_eq!(
+            count, 2,
+            "found {count} `target: \"tacacs_audit\"` sites; expected exactly 2 \
+             (both inside emit_audit_event). Route new audit events through \
+             emit_audit_event so they are signed (AU-9)."
+        );
+    }
+}
+
 #[cfg(test)]
 mod single_connect_validation_tests {
     use super::*;

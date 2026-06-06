@@ -82,7 +82,7 @@ use crate::icam::{IcamConfig, icam_build_client};
 use crate::metrics::metrics;
 use crate::server::{
     AuthContext, CertificateReloadRequest, ConnLimiter, ConnectionConfig, PolicyReloadRequest,
-    TlsIdentityConfig, serve_legacy, serve_tls, tls_acceptor, validate_policy,
+    TlsIdentityConfig, init_audit_hmac, serve_legacy, serve_tls, tls_acceptor, validate_policy,
     watch_certificate_changes, watch_policy_changes,
 };
 use crate::session_registry::{SessionLimits, SessionRegistry, run_idle_sweep_task};
@@ -966,6 +966,11 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
 
 /// Run all server tasks and await completion.
 async fn run_server(args: &Args, state: &AppState, otel_enabled: bool) -> Result<()> {
+    // Initialize the audit HMAC key once, before any listener accepts a
+    // connection, so the very first audit event (conn_open) is already signed
+    // (AU-9). Initializing per-connection raced the OnceLock against the first
+    // emitted events, leaving early conn_open records unsigned.
+    init_audit_hmac(state.audit_hmac_key.as_ref());
     let mut handles = Vec::new();
     setup_tls_listener(args, state, &mut handles).await?;
     setup_legacy_listener(args, state, &mut handles)?;
