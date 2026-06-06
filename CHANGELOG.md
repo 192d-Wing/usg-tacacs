@@ -5,6 +5,16 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.3] - 2026-06-06
+
+### Fixed
+
+- **Group cache init is non-fatal**: because the TACACS+ server gates network access, a
+  Valkey outage during a pod restart must not prevent startup. Initialization failure is now
+  logged and swallowed — the server proceeds with the cache disabled (group resolution
+  degrades to LDAP/empty) rather than crash-looping. A pod started while the cache was
+  unreachable picks it up on its next restart. NIST: SI-13 Predictable Failure Prevention.
+
 ## [0.81.2] - 2026-06-06
 
 ### Added
