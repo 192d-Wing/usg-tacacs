@@ -46,24 +46,44 @@ pub fn parse_attributes(args: &[String]) -> Vec<Attribute> {
         .collect()
 }
 
+/// Validate one attribute's syntax (RFC 8907 §8.2) and return its name.
+///
+/// An attribute is `name=value` (mandatory) or `name*value` (optional),
+/// delimited by the first `=` or `*`; the value MAY be empty (e.g. the `cmd=`
+/// a NAS sends for shell-login authorization). Names are not checked here.
+fn validate_attribute_syntax(idx: usize, arg: &str) -> Result<&str> {
+    if arg.is_empty() {
+        return Err(anyhow!("attr[{idx}] is empty"));
+    }
+    if arg.len() > 255 {
+        return Err(anyhow!("attr[{idx}] exceeds 255 bytes"));
+    }
+    let Some(sep) = arg.find(['=', '*']) else {
+        return Err(anyhow!("attr[{idx}] must be name=value or name*value"));
+    };
+    let name = &arg[..sep];
+    if name.is_empty() {
+        return Err(anyhow!("attr[{idx}] has an empty name"));
+    }
+    Ok(name)
+}
+
+/// Validate attribute *syntax only*, without restricting attribute names.
+///
+/// Used for accounting, which is descriptive: network devices emit many vendor
+/// attributes (e.g. `timezone`, `stop_time`, `reason`) and an accounting record
+/// MUST NOT be rejected for carrying a well-formed but unrecognized attribute —
+/// doing so silently drops the entire record.
+pub fn validate_attribute_format(args: &[String]) -> Result<()> {
+    for (idx, arg) in args.iter().enumerate() {
+        validate_attribute_syntax(idx, arg)?;
+    }
+    Ok(())
+}
+
 pub fn validate_attributes(args: &[String], allowed_prefixes: &[&str]) -> Result<()> {
     for (idx, arg) in args.iter().enumerate() {
-        if arg.is_empty() {
-            return Err(anyhow!("attr[{idx}] is empty"));
-        }
-        if arg.len() > 255 {
-            return Err(anyhow!("attr[{idx}] exceeds 255 bytes"));
-        }
-        // RFC 8907 §8.2: name=value (mandatory) or name*value (optional),
-        // delimited by the first '=' or '*'. The value MAY be empty, e.g. the
-        // "cmd=" a NAS sends for shell-login (exec) authorization.
-        let Some(sep) = arg.find(['=', '*']) else {
-            return Err(anyhow!("attr[{idx}] must be name=value or name*value"));
-        };
-        let name = &arg[..sep];
-        if name.is_empty() {
-            return Err(anyhow!("attr[{idx}] has an empty name"));
-        }
+        let name = validate_attribute_syntax(idx, arg)?;
         if !allowed_prefixes
             .iter()
             .any(|p| name.eq_ignore_ascii_case(p))

@@ -2,7 +2,7 @@
 //! TACACS+ accounting packet structures plus parsing/encoding helpers.
 
 use crate::header::Header;
-use crate::util::{parse_attributes, read_string, validate_attributes};
+use crate::util::{parse_attributes, read_string, validate_attribute_format};
 use crate::{
     ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, ACCT_STATUS_ERROR, ACCT_STATUS_FOLLOW,
     ACCT_STATUS_SUCCESS,
@@ -92,25 +92,12 @@ fn parse_acct_args(body: &[u8], cursor: usize, arg_cnt: usize) -> Result<Vec<Str
         cursor = next_cursor;
         args.push(arg);
     }
-    validate_attributes(
-        &args,
-        &[
-            "cmd",
-            "cmd-arg",
-            "service",
-            "protocol",
-            "acl",
-            "addr",
-            "priv-lvl",
-            "task_id",
-            "elapsed_time",
-            "status",
-            "start_time",
-            "elapsed_seconds",
-            "bytes_in",
-            "bytes_out",
-        ],
-    )?;
+    // Accounting is descriptive: validate attribute *syntax* only. Devices emit
+    // many vendor attributes (timezone, stop_time, reason, …); rejecting a
+    // record for an unrecognized-but-well-formed attribute silently drops all
+    // accounting. Semantic checks on the attributes we act on are applied later
+    // in validate_accounting_semantics.
+    validate_attribute_format(&args)?;
     Ok(args)
 }
 
@@ -469,6 +456,40 @@ mod tests {
         assert_eq!(req.args.len(), 2);
         assert_eq!(req.args[0], "service=shell");
         assert_eq!(req.args[1], "task_id=42");
+    }
+
+    /// Regression: Cisco accounting records carry vendor attributes such as
+    /// `timezone` that are in no allow-list. The record MUST parse — accounting
+    /// validates attribute syntax only, not names (otherwise the whole record is
+    /// silently dropped, as happened with live IOS accounting).
+    #[test]
+    fn parse_accounting_body_accepts_vendor_timezone_attr() {
+        let header = make_header();
+        let mut body = vec![
+            ACCT_FLAG_STOP, // flags
+            0x01,           // authen_method
+            0x01,           // priv_lvl
+            0x01,           // authen_type
+            0x01,           // authen_service
+            0x05,           // user_len = 5
+            0x00,           // port_len = 0
+            0x00,           // rem_addr_len = 0
+            0x02,           // arg_cnt = 2
+        ];
+        body.push(13); // arg[0] = "service=shell"
+        body.push(12); // arg[1] = "timezone=UTC"
+        body.extend_from_slice(b"alice"); // user
+        body.extend_from_slice(b"service=shell");
+        body.extend_from_slice(b"timezone=UTC");
+
+        let req = parse_accounting_body(header, &body).expect("vendor timezone attr must parse");
+
+        assert_eq!(req.args.len(), 2);
+        assert!(
+            req.args.iter().any(|a| a == "timezone=UTC"),
+            "timezone attribute must be preserved, got {:?}",
+            req.args
+        );
     }
 
     #[test]
