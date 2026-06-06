@@ -5,6 +5,28 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.1] - 2026-06-06
+
+### Fixed
+
+- **Single-connect standalone authorization/accounting**: `validate_authz_single_connect`
+  and `validate_acct_single_connect` rejected any single-connect authz/acct request that
+  arrived on a connection with no prior authentication ("authorization/accounting before
+  authentication"). RFC 8907 §6/§7 treat authz and accounting as independent transactions
+  that carry their own `user` and may arrive without a preceding authentication on the same
+  TCP connection. This broke `aaa authorization commands <lvl> group ...`: IOS opens a fresh
+  connection per command authorization, every request was rejected, and the device denied
+  all commands. The validators now enforce user-binding consistency only when a user is
+  already bound to the connection; standalone authz/acct is permitted. Rejection still fires
+  on user mismatch and on a missing single-connect flag for an already-active session.
+  Adds `single_connect_validation_tests` (2 regression tests + mismatch/missing-flag/happy
+  path).
+
+- **Deploy**: `tacacs-policy` ConfigMap must carry both `policy.json` and `policy.schema.json`
+  (the server validates against the schema at startup and exits if it is missing). Added
+  `deploy/k3s/apply-policy.sh` as the canonical, idempotent build so a bare
+  `--from-file=policy.json` can no longer drop the schema key and crash-loop new pods.
+
 ## [0.81.0] - 2026-06-05
 
 ### Added
