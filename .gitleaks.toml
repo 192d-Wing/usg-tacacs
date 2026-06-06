@@ -1,0 +1,36 @@
+# gitleaks configuration for usg-tacacs.
+#
+# Prevents hardcoded secrets (e.g. the legacy TACACS+ shared secret) from
+# landing in version control. Pairs with the pre-commit hook and the
+# secret-scan CI workflow. NIST SP 800-53 Rev. 5: IA-5, SA-11, SC-12.
+title = "usg-tacacs gitleaks config"
+
+[extend]
+# Start from the maintained default ruleset (AWS keys, private keys, tokens…).
+useDefault = true
+
+[[rules]]
+id = "tacacs-shared-secret-literal"
+description = "Hardcoded TACACS+ shared secret written to the 'secret' file"
+# Catches:  printf '%s' "somesecret" > secret
+# Ignores:  printf '%s' "$TACACS_SECRET" > secret   (variable, has $)
+regex = '''(?i)printf\s+['"]%s['"]\s+['"][^'"$]{6,}['"]\s*>\s*secret'''
+tags = ["secret", "tacacs"]
+
+[allowlist]
+description = "Known-safe placeholders, generated artifacts, and gitignored key material"
+paths = [
+  '''deploy/k3s/creds\.example\.txt''',
+  '''.*\.example\..*''',
+  '''.*\.md''',
+  # Generated / gitignored content (never in git; only hit by --no-git scans).
+  '''target/.*''',
+  '''ui/.*/target/.*''',
+  '''deploy/k3s/pki/.*''',
+  '''deploy/kind/pki/.*''',
+  '''Cargo\.lock''',
+  '''sbom\.spdx\.json''',
+]
+regexes = [
+  '''CHANGE-ME''',
+]

@@ -5,7 +5,8 @@
 #   - ca.pem / ca-key.pem        self-signed CA (also the mTLS client CA)
 #   - server.pem / server-key.pem  server cert (SANs incl. the anycast IPs)
 #   - client.pem / client-key.pem  test client cert for mTLS into :300
-#   - secret                       TACACS+ shared secret (set to ciscotest12-)
+#   - secret                       TACACS+ shared secret (random per run, or
+#                                   taken from the TACACS_SECRET env var)
 #
 # NIST SP 800-53 Rev. 5: SC-8/SC-17 (TLS material), IA-5 (key generation).
 set -euo pipefail
@@ -36,8 +37,16 @@ extendedKeyUsage=serverAuth"
 echo "==> client cert (mTLS test)"
 gen_leaf client "tacacs-test-client" "extendedKeyUsage=clientAuth"
 
+# Shared secret: never hardcode a value. Use TACACS_SECRET if provided
+# (so an operator can supply a managed secret), otherwise generate a strong
+# random one. The legacy MD5 obfuscation key is the entire trust boundary for
+# the :49 listener, so it must be high-entropy and unique per environment.
 echo "==> shared secret"
-printf '%s' "ciscotest12-" > secret
+if [ -n "${TACACS_SECRET:-}" ]; then
+  printf '%s' "$TACACS_SECRET" > secret
+else
+  openssl rand -base64 32 | tr -d '\n' > secret
+fi
 
 rm -f ca.srl
 chmod 600 ./*-key.pem secret

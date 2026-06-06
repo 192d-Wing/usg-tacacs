@@ -1,0 +1,39 @@
+# Restrict who can reach the TACACS+ pods. The legacy :49 listener's only trust
+# boundary is the shared secret, so reduce exposure: accept :49 and :300 only
+# from the management / NAD network, and :8080 health/metrics only from inside
+# the cluster (kubelet probes + Prometheus).
+#
+# >>> BEFORE APPLYING: replace 10.0.0.0/16 with your real NAD/management CIDR(s).
+#     externalTrafficPolicy:Local preserves the real NAD source IP at the pod,
+#     so ipBlock matching works against actual device addresses.
+#
+# NIST SP 800-53 Rev. 5: AC-4 (information flow), SC-7 (boundary protection).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tacacs-ingress
+  namespace: tacacs
+  labels:
+    app: tacacs
+    app.kubernetes.io/name: tacacs
+spec:
+  podSelector:
+    matchLabels:
+      app: tacacs
+  policyTypes:
+    - Ingress
+  ingress:
+    # TACACS+ (legacy :49 and TLS :300) only from the management / NAD network.
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/16        # <<< SET to your NAD/management CIDR
+      ports:
+        - { protocol: TCP, port: 49 }
+        - { protocol: TCP, port: 300 }
+    # Health/metrics :8080 from inside the cluster only (node CIDR = kubelet
+    # liveness/readiness probes; adjust to your pod/node network).
+    - from:
+        - ipBlock:
+            cidr: 10.0.111.0/24      # <<< cluster node network (probes)
+      ports:
+        - { protocol: TCP, port: 8080 }
