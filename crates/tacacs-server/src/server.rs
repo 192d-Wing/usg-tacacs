@@ -3187,6 +3187,30 @@ fn cleanup_terminal_auth_state(
     }
 }
 
+/// Generic credential-failure text used when the policy sets no failure
+/// message; chosen to match the default normal-failure wording.
+const DEFAULT_AUTH_FAILURE_MSG: &str = "invalid credentials";
+
+/// Replace a lockout failure message with the same generic message a normal
+/// credential failure returns, so a locked-out user is indistinguishable on
+/// the wire from an ordinary bad-credential failure (finding #7 — information
+/// disclosure / AC-7). The real "lockout" reason is preserved in the audit log
+/// because `log_terminal_authen_status` runs before this sanitization. No-op
+/// for non-FAIL replies and for failures that do not reveal lockout state.
+fn sanitize_locked_out_message(reply: &mut AuthenReply, failure_msg: &str) {
+    assert!(
+        !failure_msg.is_empty(),
+        "generic failure message must not be empty"
+    );
+    if reply.status != AUTHEN_STATUS_FAIL {
+        return;
+    }
+    if reply.server_msg.to_lowercase().contains("locked out") {
+        reply.server_msg = failure_msg.to_string();
+        reply.server_msg_raw = Vec::new();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 // NASA-RULE4-EXEMPT: length driven by 16-param signature + finalize fan-out, not logic complexity
 async fn finalize_authentication<S>(
@@ -3226,6 +3250,15 @@ where
 
     if is_terminal {
         log_terminal_authen_status(&reply, &state_snapshot, session_id, peer, identity_source);
+        // #7: after the real reason is audited, mask lockout state on the wire
+        // so a locked-out user looks like an ordinary credential failure.
+        let failure_msg = policy
+            .read()
+            .await
+            .message_failure()
+            .unwrap_or(DEFAULT_AUTH_FAILURE_MSG)
+            .to_string();
+        sanitize_locked_out_message(&mut reply, &failure_msg);
     }
 
     write_authen_reply(stream, header, &reply, secret)
@@ -4376,6 +4409,53 @@ mod audit_signing_tests {
              (both inside emit_audit_event). Route new audit events through \
              emit_audit_event so they are signed (AU-9)."
         );
+    }
+}
+
+#[cfg(test)]
+mod lockout_message_tests {
+    use super::*;
+
+    fn fail(msg: &str) -> AuthenReply {
+        AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: msg.into(),
+            server_msg_raw: vec![1, 2, 3],
+            data: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn lockout_message_is_masked_as_generic_failure() {
+        // #7: a locked-out reply must be indistinguishable from a normal
+        // credential failure on the wire.
+        let mut r = fail("authentication locked out");
+        sanitize_locked_out_message(&mut r, "invalid credentials");
+        assert_eq!(r.server_msg, "invalid credentials");
+        assert!(r.server_msg_raw.is_empty());
+        assert_eq!(r.status, AUTHEN_STATUS_FAIL);
+    }
+
+    #[test]
+    fn ordinary_failure_is_unchanged() {
+        let mut r = fail("invalid credentials");
+        sanitize_locked_out_message(&mut r, "invalid credentials");
+        assert_eq!(r.server_msg, "invalid credentials");
+    }
+
+    #[test]
+    fn non_fail_reply_is_unchanged() {
+        // A PASS that somehow mentions lockout must not be rewritten.
+        let mut r = AuthenReply {
+            status: AUTHEN_STATUS_PASS,
+            flags: 0,
+            server_msg: "locked out".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        };
+        sanitize_locked_out_message(&mut r, "invalid credentials");
+        assert_eq!(r.server_msg, "locked out");
     }
 }
 
