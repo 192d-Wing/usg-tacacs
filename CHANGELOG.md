@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.81.6] - 2026-06-06
 
+### Security
+
+- **All audit events are now HMAC-signed (AU-9)**: closes a gap where the
+  `authn_terminal` record (the authentication pass/fail outcome) was emitted via a raw
+  tracing call that bypassed the signing helper, leaving it unsigned and forgeable, and
+  where the HMAC key was initialized per-connection — racing the first `conn_open` events
+  so they could be emitted unsigned. Every audit record now flows through a single
+  `emit_audit_event()` whose HMAC covers an added `identity_source` field, and the key is
+  initialized once at startup before any listener accepts. A regression test fails if a new
+  raw audit emission is added outside the signed emitter. The canonical signed field set is
+  now `event|peer|user|session|status|reason|data|identity_source`. NIST: AU-9.
+- **Per-username lockout limit lowered 10 → 5** in the k3s deployment, and audit HMAC
+  signing enabled there via `--audit-hmac-key-file` (the key lives in the `tacacs-tls`
+  Secret under `audit-hmac-key`). NIST: AC-7, AU-9.
+
 ### Changed
 
 - **Group cache backend migrated from Valkey to Iron Bank Redis**: the shared login→authz
