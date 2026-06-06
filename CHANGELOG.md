@@ -5,6 +5,16 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.10] - 2026-06-06
+
+### Changed
+
+- **Audit UI: accounting detail split into labelled fields**: the event-detail
+  modal parsed the `;`-delimited `data` blob (e.g.
+  `type=stop;flags=0x04;attrs=5;service=shell;cmd=...;task_id=4110;status=-;...`)
+  into a labelled field grid instead of one raw line, with a collapsible raw
+  view and an em-dash for absent values. UI-only.
+
 ## [0.81.9] - 2026-06-06
 
 ### Fixed
