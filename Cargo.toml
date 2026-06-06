@@ -56,7 +56,7 @@ tokio-rustls = "0.26"
 # Crypto
 openssl = "0.10"
 argon2 = "0.5"
-sha2 = "0.10"
+sha2 = "0.11"
 hmac = "0.12"
 
 # EST client for zero-touch certificate provisioning
