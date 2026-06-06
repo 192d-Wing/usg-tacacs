@@ -88,6 +88,15 @@
         "testadmin"
       ],
       "pattern": ".*"
+    },
+    {
+      "id": "allow-netops",
+      "priority": 70,
+      "effect": "allow",
+      "groups": [
+        "netops"
+      ],
+      "pattern": ".*"
     }
   ]
 }
