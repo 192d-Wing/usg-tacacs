@@ -26,14 +26,23 @@ spec:
     # TACACS+ (legacy :49 and TLS :300) only from the management / NAD network.
     - from:
         - ipBlock:
-            cidr: 10.0.0.0/16        # <<< SET to your NAD/management CIDR
+            cidr: 10.0.100.0/24            # NAD / management network (IPv4)
+        - ipBlock:
+            cidr: 2601:443:c200:570::/64   # NAD / management network (IPv6)
       ports:
         - { protocol: TCP, port: 49 }
         - { protocol: TCP, port: 300 }
-    # Health/metrics :8080 from inside the cluster only (node CIDR = kubelet
-    # liveness/readiness probes; adjust to your pod/node network).
+    # Health/metrics :8080 from inside the cluster only. Cilium matches
+    # in-cluster pod traffic by security identity, NOT by ipBlock CIDR, so
+    # Prometheus (a pod) must be allowed via namespaceSelector — an ipBlock of
+    # the pod CIDR does not match pod-sourced traffic. The node-CIDR ipBlock
+    # covers kubelet liveness/readiness probes (host-sourced). Not reachable
+    # from the NAD network or the anycast LB.
     - from:
         - ipBlock:
-            cidr: 10.0.111.0/24      # <<< cluster node network (probes)
+            cidr: 10.0.111.0/24      # cluster node network (kubelet probes)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring   # Prometheus scrape
       ports:
         - { protocol: TCP, port: 8080 }
