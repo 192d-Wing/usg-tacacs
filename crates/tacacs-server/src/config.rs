@@ -586,8 +586,8 @@ pub struct Args {
     #[arg(long, default_value_t = 48, env = "ICAM_DEVICE_AUTH_MAX_POLLS")]
     pub icam_device_auth_max_polls: u8,
 
-    // ==================== Shared Group Cache (Valkey) ====================
-    /// Valkey/Redis URL for the shared login→authz group cache.
+    // ==================== Shared Group Cache (Redis) ====================
+    /// Redis URL for the shared login→authz group cache.
     ///
     /// When set, ICAM group memberships resolved at authentication time are
     /// written to this cache keyed by username and read back during command
