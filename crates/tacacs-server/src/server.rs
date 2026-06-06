@@ -114,12 +114,12 @@ use usg_tacacs_proto::{
     AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW,
     AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS,
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
-    AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
-    AccountingRequest, AccountingResponse, AuthSessionState, AuthenContinue, AuthenData,
-    AuthenPacket, AuthenReply, AuthenStart, AuthorizationRequest, AuthorizationResponse,
-    CAPABILITY_FLAG_REQUEST, CAPABILITY_FLAG_RESPONSE, Capability, Packet, read_packet,
-    validate_accounting_response_header, validate_author_response_header,
-    write_accounting_response, write_authen_reply, write_author_response,
+    AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AccountingRequest,
+    AccountingResponse, AuthSessionState, AuthenContinue, AuthenData, AuthenPacket, AuthenReply,
+    AuthenStart, AuthorizationRequest, AuthorizationResponse, CAPABILITY_FLAG_REQUEST,
+    CAPABILITY_FLAG_RESPONSE, Capability, Packet, read_packet, validate_accounting_response_header,
+    validate_author_response_header, write_accounting_response, write_authen_reply,
+    write_author_response,
 };
 
 /// Normalize IPv4-mapped IPv6 addresses to their IPv4 equivalent.
@@ -558,40 +558,6 @@ fn authz_context(req: &AuthorizationRequest) -> String {
     let cmd = req.command_string().unwrap_or_else(|| "-".to_string());
     let args = req.args.len();
     format!("service={service};protocol={protocol};cmd={cmd};args={args}")
-}
-
-fn authz_allow_attrs(req: &AuthorizationRequest) -> Vec<String> {
-    let mut out = Vec::new();
-    out.push(format!("priv-lvl={}", req.priv_lvl));
-    let attrs = req.attributes();
-    if let Some(service) = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("service"))
-        .and_then(|a| a.value.as_deref())
-    {
-        out.push(format!("service={service}"));
-    }
-    if let Some(protocol) = attrs
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("protocol"))
-        .and_then(|a| a.value.as_deref())
-    {
-        out.push(format!("protocol={protocol}"));
-    }
-    for attr in attrs.iter().filter(|a| a.name.eq_ignore_ascii_case("cmd")) {
-        if let Some(val) = attr.value.as_deref() {
-            out.push(format!("cmd={val}"));
-        }
-    }
-    for attr in attrs
-        .iter()
-        .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
-    {
-        if let Some(val) = attr.value.as_deref() {
-            out.push(format!("cmd-arg={val}"));
-        }
-    }
-    out
 }
 
 fn ensure_priv_attr(mut args: Vec<String>, priv_lvl: u8) -> Vec<String> {
@@ -1555,11 +1521,18 @@ fn build_authz_allow_response(
     } else {
         String::new()
     };
+    // Command authorization: PASS_ADD with NO av-pairs is the portable
+    // "permit the command as typed" response (RFC 8907 §6.2). Returning
+    // PASS_REPL while echoing the command back (`cmd=…`, `cmd-arg=…`) makes
+    // Cisco IOS treat the response as an argument *replacement* it cannot map,
+    // so it silently refuses the command and returns to the prompt with no
+    // message. The session's privilege level is already established by exec
+    // (shell-start) authorization, so no attributes need to be returned here.
     let resp = AuthorizationResponse {
-        status: AUTHOR_STATUS_PASS_REPL,
+        status: AUTHOR_STATUS_PASS_ADD,
         server_msg: String::new(),
         data: format!("{data}{ldap_data}"),
-        args: authz_allow_attrs(request),
+        args: Vec::new(),
     };
     audit_event(
         "authz_policy_allow",
@@ -4399,6 +4372,88 @@ mod single_connect_validation_tests {
         assert!(
             result.is_none(),
             "matching bound user must be allowed, got {result:?}"
+        );
+    }
+}
+
+/// Command-authorization response-format tests.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Permitted commands return a portable PASS_ADD |
+#[cfg(test)]
+mod authz_response_format_tests {
+    use super::*;
+    use usg_tacacs_proto::Header;
+
+    fn cmd_authz_req() -> AuthorizationRequest {
+        AuthorizationRequest {
+            header: Header {
+                version: 0xc0,
+                packet_type: 2,
+                seq_no: 1,
+                flags: 0,
+                session_id: 7,
+                length: 0,
+            },
+            authen_method: 6,
+            priv_lvl: 15,
+            authen_type: 1,
+            authen_service: 1,
+            user: "operator".into(),
+            port: "tty0".into(),
+            rem_addr: "10.0.0.1".into(),
+            args: vec![
+                "service=shell".into(),
+                "cmd=configure".into(),
+                "cmd-arg=terminal".into(),
+            ],
+        }
+    }
+
+    /// A permitted command must be PASS_ADD with NO av-pairs. PASS_REPL while
+    /// echoing the command back makes Cisco IOS silently refuse the command.
+    #[test]
+    fn command_allow_is_pass_add_with_no_args() {
+        let req = cmd_authz_req();
+        let resp = build_authz_allow_response(
+            &req,
+            Some("allow-netops".into()),
+            &["netops".into()],
+            "service=shell",
+            "10.0.0.1:49",
+        );
+        assert_eq!(
+            resp.status, AUTHOR_STATUS_PASS_ADD,
+            "command allow must be PASS_ADD"
+        );
+        assert!(
+            resp.args.is_empty(),
+            "command allow must carry no av-pairs, got {:?}",
+            resp.args
+        );
+    }
+
+    /// The audit/reason metadata still records the matched rule and groups.
+    #[test]
+    fn command_allow_records_rule_and_groups() {
+        let req = cmd_authz_req();
+        let resp = build_authz_allow_response(
+            &req,
+            Some("allow-netops".into()),
+            &["netops".into()],
+            "service=shell",
+            "10.0.0.1:49",
+        );
+        assert!(
+            resp.data.contains("rule=allow-netops"),
+            "data must record the matched rule"
+        );
+        assert!(
+            resp.data.contains("groups=netops"),
+            "data must record resolved groups"
         );
     }
 }
