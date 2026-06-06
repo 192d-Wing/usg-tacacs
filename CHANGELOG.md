@@ -5,6 +5,19 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.4] - 2026-06-06
+
+### Fixed
+
+- **Command authorization response format**: permitted shell command authorizations were
+  returned as `AUTHOR_STATUS_PASS_REPL` with the command echoed back as av-pairs. Cisco IOS
+  treats `PASS_REPL` as an argument *replacement* and, when it cannot cleanly map the echoed
+  command, silently refuses it — so every authorized command (`configure terminal`,
+  `show running-config`, …) failed with no message despite the server granting it. The
+  server now returns `AUTHOR_STATUS_PASS_ADD` with no av-pairs — the portable "permit as
+  typed" response (RFC 8907 §6.2) used by tac_plus/ISE. The session privilege level is still
+  set by exec (shell-start) authorization, which is unchanged. NIST: AC-3.
+
 ## [0.81.3] - 2026-06-06
 
 ### Fixed
