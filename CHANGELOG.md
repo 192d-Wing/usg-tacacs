@@ -5,6 +5,18 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.9] - 2026-06-06
+
+### Fixed
+
+- **Command-accounting STOP still rejected after 0.81.8** (`acct_semantic_reject`
+  / `acct_error`): 0.81.8 relaxed the proto RFC validator, but the server has a
+  duplicate semantic validator (`validate_accounting_semantics`) that re-applied
+  the same over-strict STOP requirements (`elapsed_time` + `status` + bytes), so
+  command accounting still failed — just with a different audit event. The
+  server-side validator now matches: a STOP requires only `task_id`. NIST:
+  AU-12, SI-10.
+
 ## [0.81.8] - 2026-06-06
 
 ### Fixed

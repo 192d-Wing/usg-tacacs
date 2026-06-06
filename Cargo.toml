@@ -13,7 +13,7 @@ members = [
 exclude = ["crates/tacacs-proto/fuzz"]
 
 [workspace.package]
-version = "0.81.8"
+version = "0.81.9"
 edition = "2024"
 license = "Apache-2.0"
 
