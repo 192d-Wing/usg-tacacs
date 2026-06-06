@@ -1319,19 +1319,19 @@ fn validate_authz_single_connect(
         return None;
     }
 
-    // Only verify that the authenticated user matches the authz request user.
-    // Each TACACS+ transaction (auth, authz, acct) generates its own session_id
-    // even in single-connect mode; comparing them across transaction types is wrong.
-    if let Some(ref bound_user) = single_connect.user {
-        if bound_user != &request.user {
-            warn!(peer = %peer, user = %request.user, bound_user = %bound_user,
-                session = request.header.session_id, "single-connect violation: user mismatch on authorization");
-            return Some("single-connection user mismatch".into());
-        }
-    } else {
-        warn!(peer = %peer, user = %request.user, session = request.header.session_id,
-            "single-connect violation: authorization before authentication");
-        return Some("single-connection not authenticated".into());
+    // RFC 8907 §6: an authorization request is an independent transaction that
+    // MAY arrive on a connection where no authentication has occurred — it carries
+    // its own `user`, which policy evaluates. A standalone authz (e.g. `aaa
+    // authorization commands` over a freshly opened connection) is therefore
+    // permitted. Only enforce consistency when a user is already bound to this
+    // connection; each transaction still carries its own session_id, so we never
+    // compare session_ids across transaction types.
+    if let Some(ref bound_user) = single_connect.user
+        && bound_user != &request.user
+    {
+        warn!(peer = %peer, user = %request.user, bound_user = %bound_user,
+            session = request.header.session_id, "single-connect violation: user mismatch on authorization");
+        return Some("single-connection user mismatch".into());
     }
 
     None
@@ -1422,18 +1422,17 @@ fn validate_acct_single_connect(
         return None;
     }
 
-    // Accounting transactions carry their own session_id (RFC 8907 §5.3);
-    // validate only the bound username, not the session_id.
-    if let Some(ref bound_user) = single_connect.user {
-        if bound_user != &request.user {
-            warn!(peer = %peer, user = %request.user, bound_user = %bound_user,
-                session = request.header.session_id, "single-connect violation: user mismatch on accounting");
-            return Some("single-connection user mismatch".into());
-        }
-    } else {
-        warn!(peer = %peer, user = %request.user, session = request.header.session_id,
-            "single-connect violation: accounting before authentication");
-        return Some("single-connection not authenticated".into());
+    // RFC 8907 §7: accounting is an independent transaction that MAY arrive on a
+    // connection where no authentication has occurred (it carries its own `user`).
+    // A standalone accounting record is therefore permitted; accounting also
+    // carries its own session_id (RFC 8907 §5.3), so we never compare session_ids
+    // across transaction types. Only enforce consistency when a user is bound.
+    if let Some(ref bound_user) = single_connect.user
+        && bound_user != &request.user
+    {
+        warn!(peer = %peer, user = %request.user, bound_user = %bound_user,
+            session = request.header.session_id, "single-connect violation: user mismatch on accounting");
+        return Some("single-connection user mismatch".into());
     }
 
     None
@@ -4219,4 +4218,154 @@ pub fn tls_acceptor(
 ) -> Result<TlsAcceptor> {
     let tls_config = build_tls_config(cert, key, ca, extra_trust_roots)?;
     Ok(TlsAcceptor::from(Arc::new(tls_config)))
+}
+
+/// Single-connect validation tests for authorization and accounting.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Standalone authz/acct permitted per RFC 8907 |
+/// | IA-11 | Re-authentication | User-binding consistency enforced across sessions |
+#[cfg(test)]
+mod single_connect_validation_tests {
+    use super::*;
+    use usg_tacacs_proto::{FLAG_SINGLE_CONNECT, Header};
+
+    fn header(flags: u8) -> Header {
+        Header {
+            version: 0xc0,
+            packet_type: 2,
+            seq_no: 1,
+            flags,
+            session_id: 4242,
+            length: 0,
+        }
+    }
+
+    fn authz_req(user: &str, single_connect: bool) -> AuthorizationRequest {
+        let flags = if single_connect {
+            FLAG_SINGLE_CONNECT
+        } else {
+            0
+        };
+        AuthorizationRequest {
+            header: header(flags),
+            authen_method: 6,
+            priv_lvl: 15,
+            authen_type: 1,
+            authen_service: 1,
+            user: user.to_string(),
+            port: "tty0".into(),
+            rem_addr: "10.0.0.1".into(),
+            args: vec!["service=shell".into(), "cmd=show".into()],
+        }
+    }
+
+    fn acct_req(user: &str, single_connect: bool) -> AccountingRequest {
+        let flags = if single_connect {
+            FLAG_SINGLE_CONNECT
+        } else {
+            0
+        };
+        AccountingRequest {
+            header: header(flags),
+            flags: ACCT_FLAG_START,
+            authen_method: 6,
+            priv_lvl: 15,
+            authen_type: 1,
+            authen_service: 1,
+            user: user.to_string(),
+            port: "tty0".into(),
+            rem_addr: "10.0.0.1".into(),
+            args: vec!["service=shell".into()],
+        }
+    }
+
+    fn bound_state(user: &str) -> SingleConnectState {
+        let mut s = SingleConnectState::default();
+        s.activate(user.to_string(), 4242);
+        assert!(s.active, "bound state must be active");
+        assert!(s.user.is_some(), "bound state must carry a user");
+        s
+    }
+
+    /// Regression: a single-connect authorization request on a connection with no
+    /// prior authentication (e.g. `aaa authorization commands` over a fresh
+    /// connection) MUST be permitted — it carries its own user for policy.
+    #[test]
+    fn standalone_authz_no_bound_user_is_allowed() {
+        let state = SingleConnectState::default();
+        assert!(state.user.is_none(), "precondition: no bound user");
+        let result =
+            validate_authz_single_connect(&state, &authz_req("operator", true), "10.0.0.1:49");
+        assert!(
+            result.is_none(),
+            "standalone authz must be allowed, got {result:?}"
+        );
+    }
+
+    /// Regression: a standalone single-connect accounting record (no prior authn
+    /// on the connection) MUST be permitted.
+    #[test]
+    fn standalone_acct_no_bound_user_is_allowed() {
+        let state = SingleConnectState::default();
+        assert!(state.user.is_none(), "precondition: no bound user");
+        let result =
+            validate_acct_single_connect(&state, &acct_req("operator", true), "10.0.0.1:49");
+        assert!(
+            result.is_none(),
+            "standalone acct must be allowed, got {result:?}"
+        );
+    }
+
+    /// A bound connection still rejects an authz request for a different user.
+    #[test]
+    fn authz_user_mismatch_still_rejected() {
+        let state = bound_state("alice");
+        let result = validate_authz_single_connect(&state, &authz_req("bob", true), "10.0.0.1:49");
+        let msg = result.expect("user mismatch must be rejected");
+        assert!(
+            msg.contains("mismatch"),
+            "expected mismatch error, got {msg}"
+        );
+    }
+
+    /// A bound connection still rejects an accounting record for a different user.
+    #[test]
+    fn acct_user_mismatch_still_rejected() {
+        let state = bound_state("alice");
+        let result = validate_acct_single_connect(&state, &acct_req("bob", true), "10.0.0.1:49");
+        let msg = result.expect("user mismatch must be rejected");
+        assert!(
+            msg.contains("mismatch"),
+            "expected mismatch error, got {msg}"
+        );
+    }
+
+    /// An active single-connect session still requires the flag on authz packets.
+    #[test]
+    fn authz_missing_flag_when_active_is_rejected() {
+        let state = bound_state("alice");
+        assert!(state.active, "precondition: session active");
+        let result =
+            validate_authz_single_connect(&state, &authz_req("alice", false), "10.0.0.1:49");
+        assert!(
+            result.is_some(),
+            "missing single-connect flag must be rejected"
+        );
+    }
+
+    /// A matching bound user with the flag set is allowed (happy path).
+    #[test]
+    fn authz_matching_bound_user_is_allowed() {
+        let state = bound_state("alice");
+        let result =
+            validate_authz_single_connect(&state, &authz_req("alice", true), "10.0.0.1:49");
+        assert!(
+            result.is_none(),
+            "matching bound user must be allowed, got {result:?}"
+        );
+    }
 }
