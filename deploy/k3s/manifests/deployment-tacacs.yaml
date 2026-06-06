@@ -81,6 +81,12 @@ spec:
             # AC-7: tighten cross-IP per-username lockout (default limit is 10).
             - "--username-lockout-limit"
             - "5"
+            # AC-7/SC-5: per-source-IP failed-auth throttle (catches password
+            # spray across distinct usernames from one source). The source IP is
+            # a NAD aggregating many users, so this is set high to avoid locking
+            # out a whole NAD; raise it for very busy NADs (0 disables).
+            - "--ip-lockout-limit"
+            - "50"
             # ICAM/OIDC authentication — credentials forwarded to Keycloak via ROPC.
             # Uses the HTTPS ingress endpoint; CoreDNS forwards oopl.dev.mil to Pi-hole.
             - "--icam-token-endpoint"

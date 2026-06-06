@@ -5,6 +5,25 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **Lockout state no longer disclosed to clients (finding #7)**: a locked-out or
+  rate-limited authentication now returns the same generic failure message as an
+  ordinary bad-credential failure, so an attacker can no longer distinguish
+  lockout state (or confirm a username/source crossed the threshold) from the
+  wire. The real reason is still recorded in the audit log. NIST: AC-7.
+- **Per-source-IP authentication rate limiter (finding #6)**: a new limiter
+  throttles failed authentications per source address across all usernames,
+  catching password-spray that rotates usernames from one source (the
+  per-username limiter cannot see it). Configured via `--ip-lockout-window-secs`
+  / `--ip-lockout-limit` / `--ip-lockout-secs` (env `IP_LOCKOUT_*`). Enabled by
+  default at 50 failures / 5 min → 15 min lockout. NOTE: the source IP is
+  typically a NAD aggregating many users — keep the limit above the busiest
+  NAD's failed-auth volume, or set `--ip-lockout-limit 0` to disable. In-process
+  per pod (resets on restart). NIST: AC-7, SC-5.
+
 ## [0.81.6] - 2026-06-06
 
 ### Security

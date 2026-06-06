@@ -300,6 +300,9 @@ pub(crate) struct AuthContext {
     pub device_flow: Option<Arc<DeviceFlowConfig>>,
     /// Per-username cross-IP authentication rate limiter (AC-7).
     pub username_limiter: Arc<crate::username_limiter::UsernameRateLimiter>,
+    /// Per-source-IP failed-auth rate limiter (AC-7/SC-5); throttles spray
+    /// across distinct usernames from one source.
+    pub ip_limiter: Arc<crate::ip_limiter::IpRateLimiter>,
     /// HMAC-SHA256 key for audit event signing; `None` disables signing (AU-9).
     pub audit_hmac_key: Option<Arc<Vec<u8>>>,
 }
@@ -1192,6 +1195,7 @@ fn auth_ctx_with_secret(base: AuthContext, secret: Option<Arc<Vec<u8>>>) -> Auth
         icam: base.icam.clone(),
         device_flow: base.device_flow.clone(),
         username_limiter: base.username_limiter.clone(),
+        ip_limiter: base.ip_limiter.clone(),
         audit_hmac_key: base.audit_hmac_key.clone(),
     }
 }
@@ -3079,20 +3083,54 @@ fn log_terminal_authen_status(
 ///
 /// Overrides `reply.status` to FAIL when the username is locked out, and
 /// records success/failure so the limiter can update its sliding window.
-async fn apply_username_rate_limit(
-    limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+/// Parse the source `IpAddr` from a peer socket-address string (e.g.
+/// `"10.0.100.7:5000"` or `"[::ffff:10.0.100.7]:5000"`), normalizing
+/// IPv4-mapped IPv6 to the IPv4 form so the limiter keys match the conn limiter.
+fn parse_peer_ip(peer: &str) -> Option<IpAddr> {
+    peer.parse::<SocketAddr>()
+        .ok()
+        .map(|sa| normalize_ip(sa.ip()))
+}
+
+/// Apply per-username and per-source-IP authentication rate limiting (AC-7,
+/// SC-5). Recording decisions use the *original* reply status so the two
+/// limiters do not feed each other; either limiter being locked overrides the
+/// reply to FAIL. The "locked out" wording is masked before the wire by
+/// [`sanitize_locked_out_message`] (finding #7).
+async fn apply_auth_rate_limits(
+    username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     username: Option<&str>,
+    peer: &str,
     reply: &mut AuthenReply,
 ) {
-    let Some(user) = username else { return };
-    assert!(!user.is_empty(), "username must not be empty");
-    if limiter.is_locked(user).await {
-        reply.status = AUTHEN_STATUS_FAIL;
-        reply.server_msg = "authentication locked out".into();
-    } else if matches!(reply.status, AUTHEN_STATUS_PASS) {
-        limiter.record_success(user).await;
-    } else if matches!(reply.status, AUTHEN_STATUS_FAIL) {
-        limiter.record_failure(user).await;
+    let was_pass = matches!(reply.status, AUTHEN_STATUS_PASS);
+    let was_fail = matches!(reply.status, AUTHEN_STATUS_FAIL);
+
+    // Per-source-IP throttle: independent of username, so a spray that rotates
+    // usernames from one source is caught (the username limiter cannot see it).
+    if let Some(ip) = parse_peer_ip(peer) {
+        if ip_limiter.is_locked(ip).await {
+            reply.status = AUTHEN_STATUS_FAIL;
+            reply.server_msg = "authentication locked out".into();
+        } else if was_pass {
+            ip_limiter.record_success(ip).await;
+        } else if was_fail {
+            ip_limiter.record_failure(ip).await;
+        }
+    }
+
+    // Per-username throttle (cross-IP).
+    if let Some(user) = username {
+        assert!(!user.is_empty(), "username must not be empty");
+        if username_limiter.is_locked(user).await {
+            reply.status = AUTHEN_STATUS_FAIL;
+            reply.server_msg = "authentication locked out".into();
+        } else if was_pass {
+            username_limiter.record_success(user).await;
+        } else if was_fail {
+            username_limiter.record_failure(user).await;
+        }
     }
 }
 
@@ -3225,6 +3263,7 @@ async fn finalize_authentication<S>(
     icam_groups: Vec<String>,
     identity_source: &str,
     username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     connection_id: u64,
     registry: &Arc<SessionRegistry>,
     policy: &Arc<RwLock<PolicyEngine>>,
@@ -3238,11 +3277,13 @@ where
     let is_terminal = is_terminal_status(reply.status);
     let single_user = state_snapshot.username.clone();
 
-    // Per-username rate limiting (AC-7).
+    // Per-username and per-source-IP rate limiting (AC-7, SC-5).
     if is_terminal {
-        apply_username_rate_limit(
+        apply_auth_rate_limits(
             username_limiter,
+            ip_limiter,
             state_snapshot.username.as_deref(),
+            peer,
             &mut reply,
         )
         .await;
@@ -3552,6 +3593,7 @@ async fn handle_authentication_packet<S>(
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
     username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3604,6 +3646,7 @@ where
         icam_groups,
         identity_source,
         username_limiter,
+        ip_limiter,
         connection_id,
         registry,
         policy,
@@ -3665,6 +3708,7 @@ async fn dispatch_packet_to_handler<S>(
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
     username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3699,6 +3743,7 @@ where
                 icam,
                 device_flow,
                 username_limiter,
+                ip_limiter,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3833,6 +3878,7 @@ async fn connection_loop<S>(
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
     username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3872,6 +3918,7 @@ where
             icam,
             device_flow,
             username_limiter,
+            ip_limiter,
             ascii_cfg,
             secret,
             peer,
@@ -3922,6 +3969,7 @@ where
     let icam = &auth_ctx.icam;
     let device_flow = &auth_ctx.device_flow;
     let username_limiter = auth_ctx.username_limiter.clone();
+    let ip_limiter = auth_ctx.ip_limiter.clone();
     // Audit HMAC key is initialized once at startup in run_server (AU-9), not
     // per-connection, so the first conn_open event is already signed.
     let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
@@ -3947,6 +3995,7 @@ where
         icam,
         device_flow,
         &username_limiter,
+        &ip_limiter,
         ascii_cfg,
         secret.as_deref().map(|s| s.as_slice()),
         &peer,
@@ -4456,6 +4505,24 @@ mod lockout_message_tests {
         };
         sanitize_locked_out_message(&mut r, "invalid credentials");
         assert_eq!(r.server_msg, "locked out");
+    }
+
+    #[test]
+    fn parse_peer_ip_handles_v4_v6_and_mapped() {
+        assert_eq!(
+            parse_peer_ip("10.0.100.7:5000"),
+            Some("10.0.100.7".parse().unwrap())
+        );
+        // IPv4-mapped IPv6 normalizes to the v4 form (matches ConnLimiter keys).
+        assert_eq!(
+            parse_peer_ip("[::ffff:10.0.100.7]:49"),
+            Some("10.0.100.7".parse().unwrap())
+        );
+        assert_eq!(
+            parse_peer_ip("[2601:443:c200:570::5]:300"),
+            Some("2601:443:c200:570::5".parse().unwrap())
+        );
+        assert_eq!(parse_peer_ip("not-a-socket-addr"), None);
     }
 }
 
