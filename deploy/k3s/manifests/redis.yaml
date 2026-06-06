@@ -27,6 +27,14 @@ spec:
     metadata:
       labels: { app: redis }
     spec:
+      # Iron Bank registry requires authentication; pull token lives in the
+      # tacacs namespace as the registry1-pull dockerconfigjson Secret. Create it
+      # once from a workstation logged in to registry1.dso.mil:
+      #   kubectl -n tacacs create secret docker-registry registry1-pull \
+      #     --docker-server=registry1.dso.mil \
+      #     --docker-username=<robot-user> --docker-password=<cli-token>
+      imagePullSecrets:
+        - name: registry1-pull
       securityContext:
         runAsNonRoot: true
         runAsUser: 997
