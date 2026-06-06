@@ -728,27 +728,19 @@ fn validate_acct_required_attrs(
     is_watchdog: bool,
     req: &AccountingRequest,
 ) -> Result<(), &'static str> {
+    // Only task_id is required (start/stop correlation key). elapsed_time,
+    // status, bytes_in, bytes_out etc. are OPTIONAL per RFC 8907 §8.3; Cisco
+    // command accounting (`aaa accounting commands`) STOP records carry none of
+    // them, so mandating them wrongly rejects legitimate command accounting.
+    // Mirrors usg_tacacs_proto::validate_accounting_request; keep both in sync.
     let attrs = req.attributes();
     let has_task = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("task_id"));
-    let has_elapsed = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("elapsed_time"));
-    let has_status = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("status"));
-    let has_bytes_in = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("bytes_in"));
-    let has_bytes_out = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("bytes_out"));
 
     if is_start && !has_task {
         return Err("start accounting requires task_id attribute");
     }
-    if is_stop && (!has_task || !has_elapsed || !has_status) {
-        return Err("stop accounting requires task_id, elapsed_time, and status attributes");
-    }
-    if is_stop && (!has_bytes_in || !has_bytes_out) {
-        return Err("stop accounting requires bytes_in and bytes_out attributes");
+    if is_stop && !has_task {
+        return Err("stop accounting requires task_id attribute");
     }
     if is_watchdog && !has_task {
         return Err("watchdog accounting requires task_id attribute");
@@ -4529,6 +4521,33 @@ mod lockout_message_tests {
             Some("2601:443:c200:570::5".parse().unwrap())
         );
         assert_eq!(parse_peer_ip("not-a-socket-addr"), None);
+    }
+}
+
+#[cfg(test)]
+mod acct_semantics_tests {
+    use super::*;
+    use usg_tacacs_proto::{ACCT_FLAG_STOP, AccountingRequest};
+
+    #[test]
+    fn cisco_command_stop_passes_semantics() {
+        // service=shell + cmd + task_id + priv-lvl + start_time, no
+        // elapsed_time/status/bytes — must pass (was rejected as
+        // acct_semantic_reject / acct_error before the fix).
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP)
+            .with_service("shell")
+            .with_task_id("4321")
+            .add_arg("cmd=show running-config".to_string())
+            .add_arg("priv-lvl=15".to_string())
+            .add_arg("start_time=1717689600".to_string());
+        assert!(validate_accounting_semantics(&req).is_ok());
+    }
+
+    #[test]
+    fn stop_without_task_id_is_rejected() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP).with_service("shell");
+        let err = validate_accounting_semantics(&req).unwrap_err();
+        assert!(err.contains("task_id"));
     }
 }
 
