@@ -726,30 +726,20 @@ fn validate_acct_required_attrs(
         "accounting requires service or command attributes"
     );
 
+    // task_id correlates start/stop/watchdog records and is sent by all common
+    // NADs, so it is the one attribute we require. elapsed_time, status,
+    // bytes_in, bytes_out and friends are OPTIONAL per RFC 8907 §8.3: command
+    // accounting (`aaa accounting commands`) STOP records carry none of them
+    // (they are EXEC/network-session fields), so mandating them wrongly rejects
+    // legitimate command accounting. Any of these attributes that *are* present
+    // is still syntax-checked in validate_acct_numeric_attrs.
     let has_task = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("task_id"));
-    let has_elapsed = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("elapsed_time"));
-    let has_status = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("status"));
-    let has_bytes_in = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("bytes_in"));
-    let has_bytes_out = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("bytes_out"));
 
     if is_start {
         ensure!(has_task, "start accounting requires task_id attribute");
     }
     if is_stop {
-        ensure!(
-            has_task && has_elapsed && has_status,
-            "stop accounting requires task_id, elapsed_time, and status attributes"
-        );
-        ensure!(
-            has_bytes_in && has_bytes_out,
-            "stop accounting requires bytes_in and bytes_out attributes"
-        );
+        ensure!(has_task, "stop accounting requires task_id attribute");
     }
     if is_watchdog {
         ensure!(has_task, "watchdog accounting requires task_id attribute");
@@ -1193,29 +1183,53 @@ mod tests {
     }
 
     #[test]
-    fn validate_accounting_request_stop_missing_elapsed_time() {
+    fn validate_accounting_request_stop_without_elapsed_time_ok() {
+        // RFC 8907 §8.3: elapsed_time is optional. A STOP with task_id but no
+        // elapsed_time must be accepted (was previously rejected).
         let req = AccountingRequest::builder(123, ACCT_FLAG_STOP)
             .with_service("shell")
             .with_task_id("42")
             .with_status("0")
             .with_bytes("0", "0");
 
-        let result = validate_accounting_request(&req);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("elapsed_time"));
+        assert!(validate_accounting_request(&req).is_ok());
     }
 
     #[test]
-    fn validate_accounting_request_stop_missing_bytes() {
+    fn validate_accounting_request_stop_without_bytes_ok() {
+        // bytes_in/bytes_out are optional per RFC 8907 §8.3.
         let req = AccountingRequest::builder(123, ACCT_FLAG_STOP)
             .with_service("shell")
             .with_task_id("42")
             .add_arg("elapsed_time=100".to_string())
             .with_status("0");
 
+        assert!(validate_accounting_request(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_accounting_request_cisco_command_stop_ok() {
+        // Real Cisco `aaa accounting commands` STOP: task_id + service=shell +
+        // cmd + priv-lvl + start_time, no elapsed_time/status/bytes. Must be
+        // accepted (regression test for the over-strict stop requirements).
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP)
+            .with_service("shell")
+            .with_task_id("4321")
+            .add_arg("cmd=show running-config".to_string())
+            .add_arg("priv-lvl=15".to_string())
+            .add_arg("start_time=1717689600".to_string());
+
+        assert!(validate_accounting_request(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_accounting_request_stop_still_requires_task_id() {
+        // task_id remains required (start/stop correlation key).
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP).with_service("shell");
+
         let result = validate_accounting_request(&req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("bytes"));
+        assert!(result.unwrap_err().to_string().contains("task_id"));
     }
 
     #[test]

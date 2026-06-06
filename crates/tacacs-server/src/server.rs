@@ -2062,7 +2062,13 @@ where
         data: format!("reason=rfc-validate;detail={err}"),
         args: Vec::new(),
     };
-    let meta = format!("flags=0x{:02x};attrs={}", request.flags, request.args.len());
+    // Include the validation detail so the rejection reason is visible in the
+    // audit pipeline (not only the warn log) for NAD-compatibility debugging.
+    let meta = format!(
+        "flags=0x{:02x};attrs={};detail={err}",
+        request.flags,
+        request.args.len()
+    );
     audit_event(
         "acct_rfc_invalid",
         peer,
