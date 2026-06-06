@@ -300,6 +300,9 @@ pub(crate) struct AuthContext {
     pub device_flow: Option<Arc<DeviceFlowConfig>>,
     /// Per-username cross-IP authentication rate limiter (AC-7).
     pub username_limiter: Arc<crate::username_limiter::UsernameRateLimiter>,
+    /// Per-source-IP failed-auth rate limiter (AC-7/SC-5); throttles spray
+    /// across distinct usernames from one source.
+    pub ip_limiter: Arc<crate::ip_limiter::IpRateLimiter>,
     /// HMAC-SHA256 key for audit event signing; `None` disables signing (AU-9).
     pub audit_hmac_key: Option<Arc<Vec<u8>>>,
 }
@@ -1192,6 +1195,7 @@ fn auth_ctx_with_secret(base: AuthContext, secret: Option<Arc<Vec<u8>>>) -> Auth
         icam: base.icam.clone(),
         device_flow: base.device_flow.clone(),
         username_limiter: base.username_limiter.clone(),
+        ip_limiter: base.ip_limiter.clone(),
         audit_hmac_key: base.audit_hmac_key.clone(),
     }
 }
@@ -3079,20 +3083,54 @@ fn log_terminal_authen_status(
 ///
 /// Overrides `reply.status` to FAIL when the username is locked out, and
 /// records success/failure so the limiter can update its sliding window.
-async fn apply_username_rate_limit(
-    limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+/// Parse the source `IpAddr` from a peer socket-address string (e.g.
+/// `"10.0.100.7:5000"` or `"[::ffff:10.0.100.7]:5000"`), normalizing
+/// IPv4-mapped IPv6 to the IPv4 form so the limiter keys match the conn limiter.
+fn parse_peer_ip(peer: &str) -> Option<IpAddr> {
+    peer.parse::<SocketAddr>()
+        .ok()
+        .map(|sa| normalize_ip(sa.ip()))
+}
+
+/// Apply per-username and per-source-IP authentication rate limiting (AC-7,
+/// SC-5). Recording decisions use the *original* reply status so the two
+/// limiters do not feed each other; either limiter being locked overrides the
+/// reply to FAIL. The "locked out" wording is masked before the wire by
+/// [`sanitize_locked_out_message`] (finding #7).
+async fn apply_auth_rate_limits(
+    username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     username: Option<&str>,
+    peer: &str,
     reply: &mut AuthenReply,
 ) {
-    let Some(user) = username else { return };
-    assert!(!user.is_empty(), "username must not be empty");
-    if limiter.is_locked(user).await {
-        reply.status = AUTHEN_STATUS_FAIL;
-        reply.server_msg = "authentication locked out".into();
-    } else if matches!(reply.status, AUTHEN_STATUS_PASS) {
-        limiter.record_success(user).await;
-    } else if matches!(reply.status, AUTHEN_STATUS_FAIL) {
-        limiter.record_failure(user).await;
+    let was_pass = matches!(reply.status, AUTHEN_STATUS_PASS);
+    let was_fail = matches!(reply.status, AUTHEN_STATUS_FAIL);
+
+    // Per-source-IP throttle: independent of username, so a spray that rotates
+    // usernames from one source is caught (the username limiter cannot see it).
+    if let Some(ip) = parse_peer_ip(peer) {
+        if ip_limiter.is_locked(ip).await {
+            reply.status = AUTHEN_STATUS_FAIL;
+            reply.server_msg = "authentication locked out".into();
+        } else if was_pass {
+            ip_limiter.record_success(ip).await;
+        } else if was_fail {
+            ip_limiter.record_failure(ip).await;
+        }
+    }
+
+    // Per-username throttle (cross-IP).
+    if let Some(user) = username {
+        assert!(!user.is_empty(), "username must not be empty");
+        if username_limiter.is_locked(user).await {
+            reply.status = AUTHEN_STATUS_FAIL;
+            reply.server_msg = "authentication locked out".into();
+        } else if was_pass {
+            username_limiter.record_success(user).await;
+        } else if was_fail {
+            username_limiter.record_failure(user).await;
+        }
     }
 }
 
@@ -3187,6 +3225,30 @@ fn cleanup_terminal_auth_state(
     }
 }
 
+/// Generic credential-failure text used when the policy sets no failure
+/// message; chosen to match the default normal-failure wording.
+const DEFAULT_AUTH_FAILURE_MSG: &str = "invalid credentials";
+
+/// Replace a lockout failure message with the same generic message a normal
+/// credential failure returns, so a locked-out user is indistinguishable on
+/// the wire from an ordinary bad-credential failure (finding #7 — information
+/// disclosure / AC-7). The real "lockout" reason is preserved in the audit log
+/// because `log_terminal_authen_status` runs before this sanitization. No-op
+/// for non-FAIL replies and for failures that do not reveal lockout state.
+fn sanitize_locked_out_message(reply: &mut AuthenReply, failure_msg: &str) {
+    assert!(
+        !failure_msg.is_empty(),
+        "generic failure message must not be empty"
+    );
+    if reply.status != AUTHEN_STATUS_FAIL {
+        return;
+    }
+    if reply.server_msg.to_lowercase().contains("locked out") {
+        reply.server_msg = failure_msg.to_string();
+        reply.server_msg_raw = Vec::new();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 // NASA-RULE4-EXEMPT: length driven by 16-param signature + finalize fan-out, not logic complexity
 async fn finalize_authentication<S>(
@@ -3201,6 +3263,7 @@ async fn finalize_authentication<S>(
     icam_groups: Vec<String>,
     identity_source: &str,
     username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     connection_id: u64,
     registry: &Arc<SessionRegistry>,
     policy: &Arc<RwLock<PolicyEngine>>,
@@ -3214,11 +3277,13 @@ where
     let is_terminal = is_terminal_status(reply.status);
     let single_user = state_snapshot.username.clone();
 
-    // Per-username rate limiting (AC-7).
+    // Per-username and per-source-IP rate limiting (AC-7, SC-5).
     if is_terminal {
-        apply_username_rate_limit(
+        apply_auth_rate_limits(
             username_limiter,
+            ip_limiter,
             state_snapshot.username.as_deref(),
+            peer,
             &mut reply,
         )
         .await;
@@ -3226,6 +3291,15 @@ where
 
     if is_terminal {
         log_terminal_authen_status(&reply, &state_snapshot, session_id, peer, identity_source);
+        // #7: after the real reason is audited, mask lockout state on the wire
+        // so a locked-out user looks like an ordinary credential failure.
+        let failure_msg = policy
+            .read()
+            .await
+            .message_failure()
+            .unwrap_or(DEFAULT_AUTH_FAILURE_MSG)
+            .to_string();
+        sanitize_locked_out_message(&mut reply, &failure_msg);
     }
 
     write_authen_reply(stream, header, &reply, secret)
@@ -3519,6 +3593,7 @@ async fn handle_authentication_packet<S>(
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
     username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3571,6 +3646,7 @@ where
         icam_groups,
         identity_source,
         username_limiter,
+        ip_limiter,
         connection_id,
         registry,
         policy,
@@ -3632,6 +3708,7 @@ async fn dispatch_packet_to_handler<S>(
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
     username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3666,6 +3743,7 @@ where
                 icam,
                 device_flow,
                 username_limiter,
+                ip_limiter,
                 ascii_cfg,
                 secret,
                 peer,
@@ -3800,6 +3878,7 @@ async fn connection_loop<S>(
     icam: &Option<Arc<IcamConfig>>,
     device_flow: &Option<Arc<DeviceFlowConfig>>,
     username_limiter: &Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: &Arc<crate::ip_limiter::IpRateLimiter>,
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
@@ -3839,6 +3918,7 @@ where
             icam,
             device_flow,
             username_limiter,
+            ip_limiter,
             ascii_cfg,
             secret,
             peer,
@@ -3889,6 +3969,7 @@ where
     let icam = &auth_ctx.icam;
     let device_flow = &auth_ctx.device_flow;
     let username_limiter = auth_ctx.username_limiter.clone();
+    let ip_limiter = auth_ctx.ip_limiter.clone();
     // Audit HMAC key is initialized once at startup in run_server (AU-9), not
     // per-connection, so the first conn_open event is already signed.
     let single_connect_idle_secs = conn_cfg.single_connect_idle_secs;
@@ -3914,6 +3995,7 @@ where
         icam,
         device_flow,
         &username_limiter,
+        &ip_limiter,
         ascii_cfg,
         secret.as_deref().map(|s| s.as_slice()),
         &peer,
@@ -4376,6 +4458,71 @@ mod audit_signing_tests {
              (both inside emit_audit_event). Route new audit events through \
              emit_audit_event so they are signed (AU-9)."
         );
+    }
+}
+
+#[cfg(test)]
+mod lockout_message_tests {
+    use super::*;
+
+    fn fail(msg: &str) -> AuthenReply {
+        AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: msg.into(),
+            server_msg_raw: vec![1, 2, 3],
+            data: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn lockout_message_is_masked_as_generic_failure() {
+        // #7: a locked-out reply must be indistinguishable from a normal
+        // credential failure on the wire.
+        let mut r = fail("authentication locked out");
+        sanitize_locked_out_message(&mut r, "invalid credentials");
+        assert_eq!(r.server_msg, "invalid credentials");
+        assert!(r.server_msg_raw.is_empty());
+        assert_eq!(r.status, AUTHEN_STATUS_FAIL);
+    }
+
+    #[test]
+    fn ordinary_failure_is_unchanged() {
+        let mut r = fail("invalid credentials");
+        sanitize_locked_out_message(&mut r, "invalid credentials");
+        assert_eq!(r.server_msg, "invalid credentials");
+    }
+
+    #[test]
+    fn non_fail_reply_is_unchanged() {
+        // A PASS that somehow mentions lockout must not be rewritten.
+        let mut r = AuthenReply {
+            status: AUTHEN_STATUS_PASS,
+            flags: 0,
+            server_msg: "locked out".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        };
+        sanitize_locked_out_message(&mut r, "invalid credentials");
+        assert_eq!(r.server_msg, "locked out");
+    }
+
+    #[test]
+    fn parse_peer_ip_handles_v4_v6_and_mapped() {
+        assert_eq!(
+            parse_peer_ip("10.0.100.7:5000"),
+            Some("10.0.100.7".parse().unwrap())
+        );
+        // IPv4-mapped IPv6 normalizes to the v4 form (matches ConnLimiter keys).
+        assert_eq!(
+            parse_peer_ip("[::ffff:10.0.100.7]:49"),
+            Some("10.0.100.7".parse().unwrap())
+        );
+        assert_eq!(
+            parse_peer_ip("[2601:443:c200:570::5]:300"),
+            Some("2601:443:c200:570::5".parse().unwrap())
+        );
+        assert_eq!(parse_peer_ip("not-a-socket-addr"), None);
     }
 }
 

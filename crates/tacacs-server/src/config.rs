@@ -224,6 +224,33 @@ pub struct Args {
     #[arg(long, default_value_t = 900, env = "USERNAME_LOCKOUT_SECS")]
     pub username_lockout_secs: u64,
 
+    // ==================== Per-Source-IP Rate Limiting ====================
+    /// Sliding window (seconds) for per-source-IP failed-auth counting.
+    /// Default 300 (5 minutes).
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-7 | Unsuccessful Logon Attempts | Window for per-source attempt counting |
+    /// | SC-5 | Denial of Service Protection | Caps spray volume per source |
+    #[arg(long, default_value_t = 300, env = "IP_LOCKOUT_WINDOW_SECS")]
+    pub ip_lockout_window_secs: u64,
+
+    /// Maximum failed authentications from one source IP within the window
+    /// before that source is locked out (0 = disabled). Default 50.
+    ///
+    /// NOTE: on a TACACS+ server the source IP is usually a NAD aggregating
+    /// many users, so keep this comfortably above the busiest NAD's expected
+    /// failed-auth volume in the window — too low locks out a whole NAD.
+    #[arg(long, default_value_t = 50, env = "IP_LOCKOUT_LIMIT")]
+    pub ip_lockout_limit: u32,
+
+    /// Lockout duration in seconds after the per-source limit is reached.
+    /// 0 defaults to the window duration.  Default 900 (15 minutes).
+    #[arg(long, default_value_t = 900, env = "IP_LOCKOUT_SECS")]
+    pub ip_lockout_secs: u64,
+
     /// Idle timeout (seconds) for single-connection sessions before closing (0 = disabled).
     #[arg(long, default_value_t = 300)]
     pub single_connect_idle_secs: u64,
@@ -1250,6 +1277,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1374,6 +1404,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1496,6 +1529,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1618,6 +1654,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1741,6 +1780,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -1863,6 +1905,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -2050,6 +2095,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -2169,6 +2217,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -2288,6 +2339,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,
@@ -2412,6 +2466,9 @@ mod tests {
             username_lockout_window_secs: 300,
             username_lockout_limit: 10,
             username_lockout_secs: 900,
+            ip_lockout_window_secs: 300,
+            ip_lockout_limit: 50,
+            ip_lockout_secs: 900,
             single_connect_idle_secs: 300,
             single_connect_keepalive_secs: 120,
             packet_read_timeout_secs: 30,

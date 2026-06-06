@@ -116,6 +116,7 @@ struct AppState {
     icam_config: Option<Arc<IcamConfig>>,
     device_flow_config: Option<Arc<crate::icam_device::DeviceFlowConfig>>,
     username_limiter: Arc<crate::username_limiter::UsernameRateLimiter>,
+    ip_limiter: Arc<crate::ip_limiter::IpRateLimiter>,
     /// HMAC-SHA256 key for audit event signing (`None` = disabled).
     audit_hmac_key: Option<Arc<Vec<u8>>>,
     legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
@@ -479,6 +480,7 @@ fn build_tls_contexts(
         icam: state.icam_config.clone(),
         device_flow: state.device_flow_config.clone(),
         username_limiter: state.username_limiter.clone(),
+        ip_limiter: state.ip_limiter.clone(),
         audit_hmac_key: state.audit_hmac_key.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
@@ -560,6 +562,7 @@ fn setup_legacy_listener(
         icam: state.icam_config.clone(),
         device_flow: state.device_flow_config.clone(),
         username_limiter: state.username_limiter.clone(),
+        ip_limiter: state.ip_limiter.clone(),
         audit_hmac_key: state.audit_hmac_key.clone(),
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
@@ -933,6 +936,11 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         args.username_lockout_limit,
         args.username_lockout_secs,
     );
+    let ip_limiter = crate::ip_limiter::IpRateLimiter::new(
+        args.ip_lockout_window_secs,
+        args.ip_lockout_limit,
+        args.ip_lockout_secs,
+    );
     let (est_provider, est_config) = setup_est_provider(args).await?;
 
     Ok(AppState {
@@ -949,6 +957,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         icam_config,
         device_flow_config,
         username_limiter,
+        ip_limiter,
         audit_hmac_key,
         legacy_nad_secrets: Arc::new(
             args.legacy_nad_secret
@@ -1036,6 +1045,7 @@ mod group_cache;
 mod http;
 mod icam;
 mod icam_device;
+mod ip_limiter;
 mod metrics;
 mod policy;
 mod server;
