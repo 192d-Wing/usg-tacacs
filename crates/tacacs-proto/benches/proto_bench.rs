@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Benchmarks for TACACS+ protocol hot paths.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 // ---------- helpers ----------
 
