@@ -31,6 +31,12 @@ paths = [
   '''Cargo\.lock''',
   '''sbom\.spdx\.json''',
 ]
+# Match against the finding's line(s), not just the secret bytes, so we can
+# allowlist by the well-known test-fixture constant names.
+regexTarget = "line"
 regexes = [
   '''CHANGE-ME''',
+  # RSA test fixtures used only inside #[cfg(test)] modules (e.g.
+  # tacacs-server/src/tls.rs TEST_KEY_PEM / TEST_CERT_PEM).
+  '''TEST_(KEY|CERT)_PEM''',
 ]
