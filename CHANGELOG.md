@@ -5,6 +5,22 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.8] - 2026-06-06
+
+### Fixed
+
+- **Command-accounting STOP records were rejected (`acct_rfc_invalid`)**: the
+  accounting validator mandated `elapsed_time`, `status`, `bytes_in` and
+  `bytes_out` on every STOP record, but those are EXEC/network-session fields —
+  Cisco command accounting (`aaa accounting commands`) STOP records carry only
+  `task_id`, `service`, `cmd`, `priv-lvl` and `start_time`, so legitimate
+  command accounting was rejected and dropped. Per RFC 8907 §8.3 those
+  attributes are optional; a STOP now requires only `task_id` (the start/stop
+  correlation key), and any optional numeric attributes present are still
+  syntax-checked. The `acct_rfc_invalid` audit event now includes the
+  validation `detail=` so rejections are diagnosable from the audit pipeline.
+  NIST: AU-12, SI-10.
+
 ## [0.81.7] - 2026-06-06
 
 ### Security
