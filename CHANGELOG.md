@@ -5,6 +5,17 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.11] - 2026-06-06
+
+### Changed
+
+- **Server image caches Rust dependencies via cargo-chef**: the release build
+  previously recompiled the whole dependency graph (aws-lc-sys/openssl-static,
+  ring, tokio, …) every time because `COPY . . && cargo build` was one layer.
+  Restructured with cargo-chef so dependencies build in a cached layer and only
+  workspace crates recompile; the recipe is version-normalized so release
+  version bumps don't bust the cache. Build-only; no runtime change.
+
 ## [0.81.10] - 2026-06-06
 
 ### Changed
