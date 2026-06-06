@@ -880,8 +880,11 @@ fn resolve_group_cache_password(args: &Args) -> Result<Option<String>> {
 /// Initialize the shared login→authz group cache when `--group-cache-url` is set.
 ///
 /// A no-op when the cache is unconfigured. Failure to connect is fatal at
-/// startup so a misconfigured cache surfaces immediately rather than silently
-/// degrading authorization.
+/// A no-op when the cache is unconfigured. Initialization failure is logged but
+/// NOT fatal: the TACACS+ server gates network access, so a cache outage during
+/// a pod restart must never prevent startup. The server proceeds with the cache
+/// disabled (group resolution degrades to LDAP/empty); a pod started while the
+/// cache was unreachable picks it up on its next restart.
 ///
 /// # NIST Controls
 ///
@@ -889,19 +892,23 @@ fn resolve_group_cache_password(args: &Args) -> Result<Option<String>> {
 /// |---------|------|----------------|
 /// | AC-3 | Access Enforcement | Enables cross-session group resolution for authz |
 /// | SC-8 | Transmission Confidentiality | `rediss://` URLs use TLS transport |
+/// | SI-13 | Predictable Failure Prevention | Cache outage cannot block server startup |
 async fn setup_group_cache(args: &Args) -> Result<()> {
     let Some(url) = args.group_cache_url.as_ref() else {
         return Ok(());
     };
     let password = resolve_group_cache_password(args)?;
-    crate::group_cache::init_group_cache(
+    if let Err(e) = crate::group_cache::init_group_cache(
         url,
         password.as_deref(),
         args.group_cache_ttl_secs,
         &args.group_cache_key_prefix,
     )
     .await
-    .context("failed to initialize shared group cache")?;
+    {
+        warn!(error = %e, "shared group cache unavailable; continuing without it");
+        return Ok(());
+    }
     info!(
         ttl_secs = args.group_cache_ttl_secs,
         "shared login→authz group cache enabled"
