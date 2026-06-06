@@ -33,7 +33,7 @@ serde.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
 base64.workspace = true
-# Valkey/Redis-wire client for the shared login→authz group cache (BSD-3-Clause).
+# Redis-wire client for the shared login→authz group cache (BSD-3-Clause).
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # HTTP server for metrics and health endpoints

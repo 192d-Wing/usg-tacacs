@@ -5,6 +5,23 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.6] - 2026-06-06
+
+### Changed
+
+- **Group cache backend migrated from Valkey to Iron Bank Redis**: the shared login→authz
+  group cache now runs the hardened Iron Bank image
+  `registry1.dso.mil/ironbank/opensource/redis/redis8:8.8.0` instead of
+  `docker.io/valkey/valkey:8.1-alpine`. The cache speaks the Redis wire protocol, so the
+  `redis` client and all `--group-cache-*` flags are unchanged. The Deployment, Service, and
+  NetworkPolicy were renamed `valkey` → `redis` (the tacacs cache URL is now
+  `redis://redis:6379`), the container runs as the image's non-root `redis` user (uid/gid
+  997) with a read-only root filesystem, and cache flags are passed via `args:` so the Iron
+  Bank entrypoint (which hardens umask) is preserved. Persistence stays disabled, the
+  password still comes from the `tacacs-group-cache` Secret, and access remains restricted to
+  the tacacs pods. Deploy: `deploy/k3s/manifests/redis.yaml` (replaces `valkey.yaml`).
+  NIST: CM-6, SA-22, SC-7, SC-28, IA-5.
+
 ## [0.81.5] - 2026-06-06
 
 ### Fixed

@@ -2,40 +2,44 @@
 # Enforcement), SC-5 (DoS Protection), SC-7 (Boundary Protection),
 # IA-5 (Authenticator Management).
 #
-# Valkey (Redis-wire-compatible) backing the shared login→authz group cache.
+# Redis (Iron Bank hardened image) backing the shared login→authz group cache.
 # Pure in-memory cache: persistence is disabled (--save "" / --appendonly no),
 # so a restart simply re-populates from subsequent logins. Password-protected
 # and restricted to the tacacs pods via NetworkPolicy.
+#
+# Image: registry1.dso.mil/ironbank/opensource/redis/redis8:8.8.0
+# The Iron Bank image runs as the non-root "redis" user (uid/gid 997) and its
+# entrypoint prepends "redis-server" to any flag arguments, so the cache flags
+# are supplied via `args:` rather than overriding the hardened entrypoint.
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: valkey
+  name: redis
   namespace: tacacs
-  labels: { app: valkey }
+  labels: { app: redis }
 spec:
   replicas: 1
   strategy: { type: Recreate }
   selector:
-    matchLabels: { app: valkey }
+    matchLabels: { app: redis }
   template:
     metadata:
-      labels: { app: valkey }
+      labels: { app: redis }
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
+        runAsUser: 997
+        runAsGroup: 997
+        fsGroup: 997
         seccompProfile: { type: RuntimeDefault }
       containers:
-        - name: valkey
-          image: docker.io/valkey/valkey:8.1-alpine
+        - name: redis
+          image: registry1.dso.mil/ironbank/opensource/redis/redis8:8.8.0
           imagePullPolicy: IfNotPresent
-          command:
-            - "valkey-server"
+          args:
             - "--requirepass"
-            - "$(VALKEY_PASSWORD)"
+            - "$(REDIS_PASSWORD)"
             - "--save"
             - ""
             - "--appendonly"
@@ -45,13 +49,13 @@ spec:
             - "--maxmemory-policy"
             - "allkeys-lru"
           env:
-            - name: VALKEY_PASSWORD
+            - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: tacacs-group-cache
                   key: password
           ports:
-            - { name: valkey, containerPort: 6379 }
+            - { name: redis, containerPort: 6379 }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -66,10 +70,12 @@ spec:
           readinessProbe:
             exec:
               command:
-                ["sh", "-c", "valkey-cli -a \"$VALKEY_PASSWORD\" ping | grep -q PONG"]
+                ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             periodSeconds: 10
           volumeMounts:
-            - { name: data, mountPath: /data }
+            # Iron Bank redis workdir / data dir; writable scratch so the root
+            # filesystem can stay read-only (no persistence is written here).
+            - { name: data, mountPath: /home/data }
       volumes:
         - name: data
           emptyDir: {}
@@ -77,24 +83,24 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: valkey
+  name: redis
   namespace: tacacs
-  labels: { app: valkey }
+  labels: { app: redis }
 spec:
   type: ClusterIP
-  selector: { app: valkey }
+  selector: { app: redis }
   ports:
-    - { name: valkey, port: 6379, targetPort: 6379 }
+    - { name: redis, port: 6379, targetPort: 6379 }
 ---
-# SC-7 boundary protection: only the tacacs server pods may reach Valkey.
+# SC-7 boundary protection: only the tacacs server pods may reach Redis.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: valkey-allow-tacacs
+  name: redis-allow-tacacs
   namespace: tacacs
 spec:
   podSelector:
-    matchLabels: { app: valkey }
+    matchLabels: { app: redis }
   policyTypes: ["Ingress"]
   ingress:
     - from:

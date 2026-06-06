@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Shared login→authz group cache backed by Valkey (Redis wire protocol).
+//! Shared login→authz group cache backed by Redis (Redis wire protocol).
 //!
 //! ICAM/OIDC group memberships are present only in the JWT at authentication
 //! time, bound to the authentication connection's [`SingleConnectState`]. A
@@ -9,10 +9,10 @@
 //! standalone command authorization.
 //!
 //! This module bridges that gap. On a successful ICAM authentication the user's
-//! groups are written to a shared Valkey cache keyed by username with a bounded
+//! groups are written to a shared Redis cache keyed by username with a bounded
 //! TTL; at authorization time the groups are read back, so group-based policy
 //! applies to standalone command authorization across all replicas. The cache
-//! is best-effort: every Valkey error is logged and swallowed so a cache outage
+//! is best-effort: every Redis error is logged and swallowed so a cache outage
 //! never blocks authentication or authorization (it degrades to the prior
 //! "no groups resolved" behavior).
 //!
@@ -36,7 +36,7 @@ const MAX_CACHED_GROUPS: usize = 256;
 /// Process-global cache handle, initialized once at startup when configured.
 static GROUP_CACHE: OnceLock<GroupCache> = OnceLock::new();
 
-/// A shared group cache backed by a Valkey/Redis connection manager.
+/// A shared group cache backed by a Redis connection manager.
 ///
 /// `ConnectionManager` is cheaply cloneable and transparently reconnects, so a
 /// single handle is shared across all connection-handling tasks.
@@ -49,7 +49,7 @@ pub struct GroupCache {
 
 /// Build the namespaced cache key for a username.
 ///
-/// Kept free-standing (no `self`) so it can be unit-tested without a live Valkey.
+/// Kept free-standing (no `self`) so it can be unit-tested without a live Redis.
 fn build_key(prefix: &str, username: &str) -> String {
     assert!(!prefix.is_empty(), "key prefix must not be empty");
     assert!(!username.is_empty(), "username must not be empty");
@@ -146,7 +146,7 @@ impl GroupCache {
     }
 }
 
-/// Initialize the global group cache from a Valkey URL (called once at startup).
+/// Initialize the global group cache from a Redis URL (called once at startup).
 ///
 /// `password`, when present, overrides any password embedded in the URL so the
 /// secret can be supplied via a mounted file rather than the connection string.

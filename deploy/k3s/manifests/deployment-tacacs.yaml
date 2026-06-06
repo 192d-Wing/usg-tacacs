@@ -98,11 +98,11 @@ spec:
             # RFC 8628 device authorization flow: present browser URL to NAD
             # users instead of collecting credentials inline (CAC via browser).
             - "--icam-device-flow"
-            # Shared login→authz group cache (Valkey). ICAM groups resolved at
+            # Shared login→authz group cache (Redis). ICAM groups resolved at
             # login are written here and read back during command authorization,
             # so group-based policy applies to standalone authz on any replica.
             - "--group-cache-url"
-            - "redis://valkey:6379"
+            - "redis://redis:6379"
           env:
             - name: TACACS_SECRET
               valueFrom:
