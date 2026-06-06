@@ -90,7 +90,7 @@ use crate::session::{SingleConnectState, TaskIdTracker};
 use crate::session_registry::SessionRegistry;
 use crate::tls::build_tls_config;
 use anyhow::{Context, Result};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use openssl::nid::Nid;
 use openssl::rand::rand_bytes;
 use openssl::x509::X509;
