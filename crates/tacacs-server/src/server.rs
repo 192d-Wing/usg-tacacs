@@ -1720,11 +1720,43 @@ fn build_authz_semantic_error_response(
     resp
 }
 
+/// Resolve the effective groups for an authorization decision.
+///
+/// Preference order: (1) groups bound to this connection's authentication, the
+/// fast path; (2) the shared login→authz cache, which covers a standalone
+/// command-authorization request arriving on a separate connection or replica
+/// with no JWT; (3) a live LDAP query for LDAP-only deployments; (4) empty.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Supplies groups for the policy decision |
+/// | AC-2 | Account Management | Group memberships drive authorization |
+async fn resolve_authz_groups(
+    icam_groups: &[String],
+    ldap: &Option<Arc<LdapConfig>>,
+    user: &str,
+) -> Vec<String> {
+    if !icam_groups.is_empty() {
+        return icam_groups.to_vec();
+    }
+    if let Some(cache) = crate::group_cache::group_cache()
+        && let Some(groups) = cache.get(user).await
+        && !groups.is_empty()
+    {
+        return groups;
+    }
+    if let Some(ldap_cfg) = ldap.as_ref() {
+        return ldap_fetch_groups(ldap_cfg, user).await;
+    }
+    Vec::new()
+}
+
 /// Execute authorization decision based on request type.
 ///
-/// Groups are resolved from ICAM (cached at auth time) when available,
-/// otherwise fetched from LDAP.  This avoids a second ICAM credential
-/// round-trip while still supporting LDAP-only deployments.
+/// Groups are resolved via [`resolve_authz_groups`] (connection auth → shared
+/// cache → LDAP), then matched against policy rules.
 ///
 /// # NIST Controls
 ///
@@ -1739,16 +1771,9 @@ async fn execute_authorization_decision(
     icam_groups: &[String],
     peer: &str,
 ) -> AuthorizationResponse {
-    // Prefer ICAM groups cached at auth time; fall back to live LDAP query.
-    let effective_groups = if !icam_groups.is_empty() {
-        icam_groups.to_vec()
-    } else if let Some(ldap_cfg) = ldap.as_ref() {
-        // Fetch LDAP groups BEFORE acquiring policy lock to avoid holding
-        // the lock across a potentially slow network call.
-        ldap_fetch_groups(ldap_cfg, &request.user).await
-    } else {
-        Vec::new()
-    };
+    // Resolve groups before acquiring the policy lock to avoid holding it
+    // across a potentially slow network call (cache/LDAP).
+    let effective_groups = resolve_authz_groups(icam_groups, ldap, &request.user).await;
 
     let policy_guard = policy.read().await;
 
@@ -3185,6 +3210,14 @@ where
         cleanup_terminal_auth_state(auth_states, single_connect, session_id, reply.status);
     }
     if matches!(reply.status, AUTHEN_STATUS_PASS) && !icam_groups.is_empty() {
+        // Persist to the shared cache so a standalone command-authorization
+        // request on a separate connection or replica can resolve this user's
+        // groups even though it carries no JWT (AC-2, AC-3).
+        if let Some(cache) = crate::group_cache::group_cache()
+            && let Some(user) = state_snapshot.username.as_deref()
+        {
+            cache.put(user, &icam_groups).await;
+        }
         single_connect.icam_groups = icam_groups; // AC-2, AC-3: cache for authz
     }
     activate_single_connect_on_success(

@@ -586,6 +586,44 @@ pub struct Args {
     #[arg(long, default_value_t = 48, env = "ICAM_DEVICE_AUTH_MAX_POLLS")]
     pub icam_device_auth_max_polls: u8,
 
+    // ==================== Shared Group Cache (Valkey) ====================
+    /// Valkey/Redis URL for the shared login→authz group cache.
+    ///
+    /// When set, ICAM group memberships resolved at authentication time are
+    /// written to this cache keyed by username and read back during command
+    /// authorization — so group-based policy applies to standalone authz
+    /// transactions that carry no JWT. Use `rediss://` for TLS transport.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Supplies groups for cross-session authz |
+    /// | SC-8 | Transmission Confidentiality | `rediss://` enables TLS |
+    #[arg(long, env = "GROUP_CACHE_URL")]
+    pub group_cache_url: Option<String>,
+
+    /// Password for the group cache (overrides any embedded in the URL).
+    ///
+    /// Prefer `--group-cache-password-file` in production to avoid exposure in
+    /// process listings.
+    #[arg(long, env = "GROUP_CACHE_PASSWORD")]
+    pub group_cache_password: Option<String>,
+
+    /// Path to a file containing the group cache password.
+    ///
+    /// Takes precedence over `--group-cache-password` and `GROUP_CACHE_PASSWORD`.
+    #[arg(long, env = "GROUP_CACHE_PASSWORD_FILE")]
+    pub group_cache_password_file: Option<PathBuf>,
+
+    /// Time-to-live (seconds) for cached group entries. Default 900 (15 min).
+    #[arg(long, default_value_t = 900, env = "GROUP_CACHE_TTL_SECS")]
+    pub group_cache_ttl_secs: u64,
+
+    /// Key namespace prefix for cache entries. Default `tacacs`.
+    #[arg(long, default_value = "tacacs", env = "GROUP_CACHE_KEY_PREFIX")]
+    pub group_cache_key_prefix: String,
+
     // ==================== Audit Log HMAC Signing ====================
     /// HMAC-SHA256 key for signing audit log events (hex-encoded, min 32 bytes).
     ///
@@ -1284,6 +1322,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -1403,6 +1446,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -1520,6 +1568,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -1637,6 +1690,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -1755,6 +1813,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -1872,6 +1935,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -2054,6 +2122,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -2168,6 +2241,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -2282,6 +2360,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };
@@ -2401,6 +2484,11 @@ mod tests {
             icam_device_flow: false,
             icam_device_auth_endpoint: None,
             icam_device_auth_max_polls: 48,
+            group_cache_url: None,
+            group_cache_password: None,
+            group_cache_password_file: None,
+            group_cache_ttl_secs: 900,
+            group_cache_key_prefix: "tacacs".into(),
             audit_hmac_key: None,
             audit_hmac_key_file: None,
         };

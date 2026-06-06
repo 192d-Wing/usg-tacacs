@@ -861,6 +861,54 @@ fn resolve_audit_hmac_key(args: &Args) -> std::result::Result<Option<Arc<Vec<u8>
     Ok(Some(Arc::new(bytes)))
 }
 
+/// Resolve the group cache password, preferring a file over the flag/env value.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | IA-5 | Authenticator Management | File-based secret avoids process-listing exposure |
+fn resolve_group_cache_password(args: &Args) -> Result<Option<String>> {
+    if let Some(path) = &args.group_cache_password_file {
+        let pw = std::fs::read_to_string(path)
+            .with_context(|| format!("reading group cache password file {path:?}"))?;
+        return Ok(Some(pw.trim().to_string()));
+    }
+    Ok(args.group_cache_password.clone())
+}
+
+/// Initialize the shared login→authz group cache when `--group-cache-url` is set.
+///
+/// A no-op when the cache is unconfigured. Failure to connect is fatal at
+/// startup so a misconfigured cache surfaces immediately rather than silently
+/// degrading authorization.
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Enables cross-session group resolution for authz |
+/// | SC-8 | Transmission Confidentiality | `rediss://` URLs use TLS transport |
+async fn setup_group_cache(args: &Args) -> Result<()> {
+    let Some(url) = args.group_cache_url.as_ref() else {
+        return Ok(());
+    };
+    let password = resolve_group_cache_password(args)?;
+    crate::group_cache::init_group_cache(
+        url,
+        password.as_deref(),
+        args.group_cache_ttl_secs,
+        &args.group_cache_key_prefix,
+    )
+    .await
+    .context("failed to initialize shared group cache")?;
+    info!(
+        ttl_secs = args.group_cache_ttl_secs,
+        "shared login→authz group cache enabled"
+    );
+    Ok(())
+}
+
 /// Build application state from parsed arguments.
 async fn build_app_state(args: &Args) -> Result<AppState> {
     let policy_path = args
@@ -872,6 +920,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
     let icam_config = build_icam_config(args)?;
     let device_flow_config = build_device_flow_config(args, icam_config.as_deref())?;
     let audit_hmac_key = resolve_audit_hmac_key(args).map_err(anyhow::Error::msg)?;
+    setup_group_cache(args).await?;
     let username_limiter = crate::username_limiter::UsernameRateLimiter::new(
         args.username_lockout_window_secs,
         args.username_lockout_limit,
@@ -971,6 +1020,7 @@ mod api;
 mod ascii;
 mod auth;
 mod config;
+mod group_cache;
 mod http;
 mod icam;
 mod icam_device;
