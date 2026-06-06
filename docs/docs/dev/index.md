@@ -285,7 +285,7 @@ refactor(server): extract session state to module
 
 ## Pull Request Process
 
-1. **Create a branch** from `master`
+1. **Create a branch** from `main`
 2. **Make changes** with tests
 3. **Run quality checks**:
    ```sh

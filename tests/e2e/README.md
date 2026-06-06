@@ -82,21 +82,22 @@ The compose file is designed for non-interactive CI:
 - Deterministic fixed IPs prevent DNS race conditions
 - All timeouts are finite to avoid CI hangs
 
-### GitLab CI example
+### GitHub Actions example
 
 ```yaml
 e2e-interop:
-  stage: test
-  image: docker:latest
-  services:
-    - docker:dind
-  script:
-    - docker compose -f tests/e2e/compose.yaml up
-        --build --abort-on-container-exit --exit-code-from test-runner
-  artifacts:
-    paths:
-      - tests/e2e/artifacts/
-    when: always
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v6
+    - name: Run interop suite
+      run: |
+        docker compose -f tests/e2e/compose.yaml up \
+          --build --abort-on-container-exit --exit-code-from test-runner
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: e2e-artifacts
+        path: tests/e2e/artifacts/
 ```
 
 ## Known differences between servers

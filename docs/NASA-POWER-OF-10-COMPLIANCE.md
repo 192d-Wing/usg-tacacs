@@ -308,7 +308,7 @@ The function length validator runs in CI to prevent regressions:
 1. ✅ **Production Code Refactoring** - 100% compliant (all 659 functions ≤60 lines)
 2. ✅ **Test Code Refactoring** - 100% compliant (included in 659 total)
 3. ✅ **NIST Control Headers** - 100% coverage across all 31 files
-4. ✅ **CI/CD Integration** - GitLab CI validates both Rule #4 and Rule #11
+4. ✅ **CI/CD Integration** - GitHub Actions CI validates both Rule #4 and Rule #11
 5. ✅ **Documentation** - Comprehensive compliance report and tooling
 
 **No remaining work - all objectives achieved!**
