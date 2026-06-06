@@ -72,6 +72,15 @@ spec:
             - "/etc/tacacs/policy/policy.json"
             - "--schema"
             - "/etc/tacacs/policy/policy.schema.json"
+            # AU-9/AU-10: HMAC-sign every structured audit event so injected or
+            # forged accounting records can be distinguished downstream (Loki/ES).
+            # Key lives in the tacacs-tls Secret under 'audit-hmac-key' and is
+            # surfaced as a file by the tls volume mount.
+            - "--audit-hmac-key-file"
+            - "/etc/tacacs/tls/audit-hmac-key"
+            # AC-7: tighten cross-IP per-username lockout (default limit is 10).
+            - "--username-lockout-limit"
+            - "5"
             # ICAM/OIDC authentication — credentials forwarded to Keycloak via ROPC.
             # Uses the HTTPS ingress endpoint; CoreDNS forwards oopl.dev.mil to Pi-hole.
             - "--icam-token-endpoint"
