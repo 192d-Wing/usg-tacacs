@@ -5,6 +5,20 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.5] - 2026-06-06
+
+### Fixed
+
+- **Accounting records dropped over unrecognized attributes**: accounting attributes were
+  parsed against a fixed name allow-list, but Cisco IOS includes vendor attributes such as
+  `timezone` in every accounting record. The parser rejected the entire packet
+  (`attr[1] uses unsupported name 'timezone'`) before it reached the accounting handler, so
+  every accounting record from a live device was silently dropped and nothing was ingested.
+  Accounting is descriptive, so attributes are now validated for **syntax only** (RFC 8907
+  §8.2) and any well-formed attribute name is accepted; semantic checks on the attributes we
+  act on remain in `validate_accounting_semantics`. Authorization keeps its name allow-list.
+  NIST: AU-3, AU-12.
+
 ## [0.81.4] - 2026-06-06
 
 ### Fixed
