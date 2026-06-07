@@ -41,6 +41,8 @@ data:
     global:
       scrape_interval: 15s
       evaluation_interval: 15s
+    rule_files:
+      - /etc/prometheus/tacacs-alerts.yml
     scrape_configs:
       # tacacs server /metrics via the headless tacacs-metrics Service endpoints.
       - job_name: tacacs
@@ -78,6 +80,63 @@ data:
             regex: (.+)
             target_label: __metrics_path__
             replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+  # Alerting rules. These FIRE in the Prometheus /alerts UI; to route them to
+  # notifications, point an `alerting:`/Alertmanager (or Grafana alerting) at
+  # this Prometheus. Thresholds are conservative starting points — tune per
+  # environment. NIST: AU-6 (audit review/analysis/reporting), SI-4 (monitoring).
+  tacacs-alerts.yml: |
+    groups:
+      - name: tacacs
+        rules:
+          # Availability: a scrape target (pod) is down/unscrapable.
+          - alert: TacacsServerTargetDown
+            expr: up{job="tacacs"} == 0
+            for: 5m
+            labels: { severity: critical }
+            annotations:
+              summary: "TACACS+ metrics target down ({{ $labels.pod }})"
+              description: "Prometheus cannot scrape a tacacs pod for 5m — pod down or :8080 blocked."
+
+          # Accounting rejections — would have caught the command-accounting bug.
+          # Any sustained non-success accounting record points at a NAD/attribute
+          # compatibility problem dropping accounting data.
+          - alert: TacacsAccountingRejections
+            expr: sum(rate(tacacs_acct_records_total{status!="success"}[5m])) > 0
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "TACACS+ accounting records being rejected"
+              description: "Non-success accounting for 10m — likely NAD/attribute incompatibility (acct_rfc_invalid / acct_error). Check the audit log detail= field."
+
+          # AC-7 lockouts firing: password spray OR a misconfigured/busy NAD
+          # self-locking (per-source-IP limiter at --ip-lockout-limit).
+          - alert: TacacsRateLimitLockouts
+            expr: sum(rate(tacacs_ratelimit_rejections_total[5m])) > 0
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "TACACS+ rate-limit lockouts active"
+              description: "Per-username/per-source-IP lockouts firing for 10m — possible spray, or a busy NAD exceeding --ip-lockout-limit (self-lock). Review and tune if legitimate."
+
+          # Connection rejections: per-IP concurrency cap / session limits, or a
+          # source blocked by the NetworkPolicy hammering the listener.
+          - alert: TacacsConnectionRejections
+            expr: sum(rate(tacacs_connections_rejected_total[5m])) > 0.2
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "TACACS+ connections being rejected"
+              description: "Sustained connection rejections for 10m — per-IP concurrency cap, session limit, or an unauthorized source retrying."
+
+          # Server-side auth errors (backend/ICAM failures), distinct from normal
+          # bad-credential failures.
+          - alert: TacacsAuthnErrors
+            expr: sum(rate(tacacs_authn_requests_total{result="error"}[5m])) > 0
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "TACACS+ authentication errors"
+              description: "Authn ERROR results for 10m — backend/ICAM failure rather than bad credentials. Check ICAM endpoint reachability."
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
