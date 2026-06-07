@@ -55,6 +55,31 @@
       },
       "description": "Shell-start attributes keyed by group name (case-insensitive). Checked when the user has no entry in shell_start; first matching group wins."
     },
+    "author_service_attributes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "users": {
+            "type": "object",
+            "additionalProperties": { "type": "array", "items": { "type": "string" } },
+            "description": "Per-username AV-pair lists (case-insensitive). Highest priority."
+          },
+          "groups": {
+            "type": "object",
+            "additionalProperties": { "type": "array", "items": { "type": "string" } },
+            "description": "Per-group AV-pair lists (case-insensitive). First matching group wins."
+          },
+          "default": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Fallback AV-pairs when no user or group matches. Absent = deny."
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Vendor-service authorization attributes keyed by service name (e.g. 'paloalto'). For a service=<vendor> attribute request the server returns these AV-pairs (e.g. PaloAlto-Admin-Role=superuser), resolved by user then group then default."
+    },
     "device_flow_exclude_users": {
       "type": "array",
       "items": {

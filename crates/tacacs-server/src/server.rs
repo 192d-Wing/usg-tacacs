@@ -818,7 +818,10 @@ struct AuthzSemanticError {
 /// | Control | Implementation |
 /// |---------|----------------|
 /// | AC-3 | Service-based access control validation |
-fn validate_service_attribute(req: &AuthorizationRequest) -> Result<String, AuthzSemanticError> {
+fn validate_service_attribute(
+    req: &AuthorizationRequest,
+    extra_services: &[String],
+) -> Result<String, AuthzSemanticError> {
     let attrs = req.attributes();
     let service_attrs: Vec<_> = attrs
         .iter()
@@ -837,13 +840,50 @@ fn validate_service_attribute(req: &AuthorizationRequest) -> Result<String, Auth
             offending_index: None,
         });
     }
-    if !usg_tacacs_proto::header::is_known_service(service_val) {
+    let known = usg_tacacs_proto::header::is_known_service(service_val)
+        || extra_services
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(service_val));
+    if !known {
         return Err(AuthzSemanticError {
             msg: "authorization service attribute value unknown",
             offending_index: None,
         });
     }
     Ok(service_val.to_string())
+}
+
+/// Semantic validation for a configured vendor (non-RFC) service such as
+/// `service=PaloAlto`. This is an attribute request: no `cmd` is required and
+/// the vendor `protocol` value is not constrained to the RFC enumeration. A
+/// duplicated or empty-valued `protocol` is still rejected.
+///
+/// # NIST SP 800-53 Controls
+///
+/// | Control | Implementation |
+/// |---------|----------------|
+/// | AC-3 | Vendor service-specific validation |
+fn validate_vendor_service(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
+    let attrs = req.attributes();
+    let protocol_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("protocol"))
+        .collect();
+    if protocol_attrs.len() > 1 {
+        return Err(AuthzSemanticError {
+            msg: "authorization must include at most one protocol attribute",
+            offending_index: None,
+        });
+    }
+    if let Some(proto) = protocol_attrs.first()
+        && proto.value.as_deref().unwrap_or("").is_empty()
+    {
+        return Err(AuthzSemanticError {
+            msg: "authorization protocol attribute must have a value",
+            offending_index: None,
+        });
+    }
+    Ok(())
 }
 
 /// Validate shell (service=shell) authorization requirements.
@@ -1072,15 +1112,23 @@ fn validate_priv_lvl(req: &AuthorizationRequest) -> Result<(), AuthzSemanticErro
     Ok(())
 }
 
-fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
-    let service_val = validate_service_attribute(req)?;
+fn validate_authorization_semantics(
+    req: &AuthorizationRequest,
+    extra_services: &[String],
+) -> Result<(), AuthzSemanticError> {
+    let service_val = validate_service_attribute(req, extra_services)?;
 
     // Shell service has special validation rules
     if service_val.eq_ignore_ascii_case("shell") {
         return validate_shell_service(req);
     }
 
-    // Non-shell services: validate all aspects
+    // Configured vendor service (e.g. PaloAlto): attribute request, lenient.
+    if !usg_tacacs_proto::header::is_known_service(&service_val) {
+        return validate_vendor_service(req);
+    }
+
+    // Non-shell RFC services: validate all aspects
     validate_protocol_attribute(req)?;
     validate_cmd_attributes(req)?;
     validate_attribute_ordering(req)?;
@@ -1507,6 +1555,83 @@ where
     Ok(())
 }
 
+/// Return the value of the single `service` attribute, if present.
+///
+/// Used to route configured vendor services (e.g. `service=PaloAlto`) to the
+/// vendor-attribute authorization path. The RFC/semantic validators have
+/// already ensured at most one well-formed service attribute by this point.
+fn author_service_name(req: &AuthorizationRequest) -> Option<String> {
+    req.attributes()
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("service"))
+        .and_then(|a| a.value.clone())
+}
+
+/// Authorize a configured vendor-service attribute request (e.g.
+/// `service=PaloAlto`) by returning the policy-resolved vendor AV-pairs
+/// (`PaloAlto-Admin-Role=…`, optionally `PaloAlto-Admin-Access-Domain=…`)
+/// for the user's IdP groups.
+///
+/// A match returns `PASS_ADD` with the AV-pairs; no match returns `FAIL`,
+/// which the NAS treats as "no role granted" (access denied).
+///
+/// # NIST Controls
+///
+/// | Control | Name | Implementation |
+/// |---------|------|----------------|
+/// | AC-3 | Access Enforcement | Returns vendor role/scope per identity |
+/// | AC-6 | Least Privilege | Role granted is bounded by IdP group membership |
+/// | AU-12 | Audit Generation | Logs allow/deny decision |
+fn authorize_vendor_service(
+    request: &AuthorizationRequest,
+    policy: &PolicyEngine,
+    groups: &[String],
+    service: &str,
+    peer: &str,
+) -> AuthorizationResponse {
+    assert!(!service.is_empty(), "service must not be empty");
+    assert!(!peer.is_empty(), "peer must not be empty");
+    let ctx = authz_context(request);
+    match policy.service_attributes_for_with_groups(service, &request.user, groups) {
+        Some(attrs) => {
+            let resp = AuthorizationResponse {
+                status: AUTHOR_STATUS_PASS_ADD,
+                server_msg: String::new(),
+                data: format!("reason=policy-vendor;service={service};ctx={ctx}"),
+                args: attrs,
+            };
+            audit_event(
+                "authz_policy_allow",
+                peer,
+                &request.user,
+                request.header.session_id,
+                "pass",
+                "policy-vendor",
+                &resp.data,
+            );
+            resp
+        }
+        None => {
+            let resp = authz_reason_response(
+                AUTHOR_STATUS_FAIL,
+                format!("no {service} role mapping for user"),
+                "vendor-no-mapping",
+                None,
+            );
+            audit_event(
+                "authz_policy_deny",
+                peer,
+                &request.user,
+                request.header.session_id,
+                "fail",
+                "vendor-no-mapping",
+                &resp.data,
+            );
+            resp
+        }
+    }
+}
+
 /// Authorize shell start command.
 ///
 /// # NIST Controls
@@ -1670,34 +1795,6 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
-    // TEMP(pan-os-debug): dump the raw authZ AV-pairs so we can see exactly what
-    // the NAD sent (e.g. service=PaloAlto, PaloAlto-Admin-Role, access domains)
-    // before building the vendor-service authorization mapping. The validation
-    // detail above does not include the offending values. Remove once the
-    // PAN-OS authorization mapping lands.
-    let attr_dump: Vec<String> = request
-        .attributes()
-        .iter()
-        .map(|a| match a.value.as_deref() {
-            Some(v) => format!("{}={}", a.name, v),
-            None => a.name.clone(),
-        })
-        .collect();
-    assert!(
-        attr_dump.len() == request.attributes().len(),
-        "attribute dump must cover every attribute"
-    );
-    warn!(
-        peer = %peer,
-        user = %request.user,
-        session = request.header.session_id,
-        authen_method = request.authen_method,
-        priv_lvl = request.priv_lvl,
-        authen_type = request.authen_type,
-        authen_service = request.authen_service,
-        attrs = %attr_dump.join(" | "),
-        "TEMP pan-os-debug: raw authZ request attributes"
-    );
     let response = authz_reason_response(
         AUTHOR_STATUS_ERROR,
         err.to_string(),
@@ -1834,6 +1931,21 @@ async fn execute_authorization_decision(
     // Resolve the NAD's policy group based on its source IP (AC-3).
     let nad_groups = policy_guard.resolve_nad_groups(peer);
 
+    // Configured vendor service (e.g. service=PaloAlto): return vendor AV-pairs
+    // resolved from the user's IdP groups. Checked before shell/command because
+    // a vendor request carries no `cmd` and would otherwise be misrouted.
+    if let Some(service) = author_service_name(request)
+        && policy_guard.is_custom_author_service(&service)
+    {
+        return authorize_vendor_service(
+            request,
+            &policy_guard,
+            &effective_groups,
+            &service,
+            peer,
+        );
+    }
+
     if request.is_shell_start() {
         authorize_shell_command(request, &policy_guard, &effective_groups, &nad_groups, peer)
     } else if let Some(cmd) = request.command_string() {
@@ -1867,7 +1979,14 @@ async fn handle_authorization_packet<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    if let Err(err) = usg_tacacs_proto::validate_author_request(request) {
+    // Configured vendor services (e.g. PaloAlto) must be accepted by both the
+    // RFC validator and the semantic validator, neither of which can see the
+    // policy. Snapshot the names under a short read lock and pass them in.
+    let custom_services = { policy.read().await.custom_author_services() };
+
+    if let Err(err) =
+        usg_tacacs_proto::validate_author_request_with_services(request, &custom_services)
+    {
         return handle_authz_rfc_error(stream, request, secret, peer, err).await;
     }
 
@@ -1875,7 +1994,7 @@ where
         return handle_authz_single_connect_error(stream, request, secret, err_msg).await;
     }
 
-    let decision = match validate_authorization_semantics(request) {
+    let decision = match validate_authorization_semantics(request, &custom_services) {
         Ok(()) => {
             execute_authorization_decision(request, policy, ldap, &single_connect.icam_groups, peer)
                 .await
@@ -4576,6 +4695,59 @@ mod acct_semantics_tests {
         let req = AccountingRequest::builder(123, ACCT_FLAG_STOP).with_service("shell");
         let err = validate_accounting_semantics(&req).unwrap_err();
         assert!(err.contains("task_id"));
+    }
+
+    // ============ Vendor-service (PaloAlto) authorization ============
+
+    const PALOALTO_POLICY: &str = r#"{
+        "default_allow": false,
+        "rules": [],
+        "author_service_attributes": {
+            "paloalto": { "groups": { "netops": ["PaloAlto-Admin-Role=superuser"] } }
+        }
+    }"#;
+
+    #[test]
+    fn vendor_service_semantics_accepts_configured_paloalto() {
+        // Real PAN-OS shape: service=PaloAlto, protocol=firewall, no cmd.
+        let req = AuthorizationRequest::builder(123)
+            .with_service("PaloAlto")
+            .with_protocol("firewall");
+        let services = vec!["paloalto".to_string()];
+        assert!(validate_authorization_semantics(&req, &services).is_ok());
+        // Unknown unless the service is configured.
+        assert!(validate_authorization_semantics(&req, &[]).is_err());
+    }
+
+    #[test]
+    fn vendor_service_returns_role_for_group() {
+        let engine = PolicyEngine::from_json_str(PALOALTO_POLICY, None::<&str>).unwrap();
+        let req = AuthorizationRequest::builder(123)
+            .with_service("PaloAlto")
+            .with_protocol("firewall")
+            .with_user("operator".to_string());
+        let groups = vec!["netops".to_string()];
+        let resp = authorize_vendor_service(&req, &engine, &groups, "PaloAlto", "10.0.100.52:49");
+        assert_eq!(resp.status, AUTHOR_STATUS_PASS_ADD);
+        assert!(resp.args.contains(&"PaloAlto-Admin-Role=superuser".to_string()));
+    }
+
+    #[test]
+    fn vendor_service_denies_unmapped_group() {
+        let engine = PolicyEngine::from_json_str(PALOALTO_POLICY, None::<&str>).unwrap();
+        let req = AuthorizationRequest::builder(123)
+            .with_service("PaloAlto")
+            .with_user("bob".to_string());
+        let groups = vec!["helpdesk".to_string()];
+        let resp = authorize_vendor_service(&req, &engine, &groups, "PaloAlto", "10.0.100.52:49");
+        assert_eq!(resp.status, AUTHOR_STATUS_FAIL);
+        assert!(resp.args.is_empty());
+    }
+
+    #[test]
+    fn author_service_name_extracts_service() {
+        let req = AuthorizationRequest::builder(123).with_service("PaloAlto");
+        assert_eq!(author_service_name(&req).as_deref(), Some("PaloAlto"));
     }
 }
 

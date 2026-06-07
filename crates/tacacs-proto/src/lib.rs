@@ -496,7 +496,13 @@ fn validate_author_basic_fields(req: &AuthorizationRequest) -> Result<()> {
     Ok(())
 }
 
-fn validate_author_service_attr(req: &AuthorizationRequest) -> Result<String> {
+/// Validate the single `service` attribute, accepting either an RFC-known
+/// service or a caller-supplied `extra_services` name (a configured vendor
+/// service such as `PaloAlto`). Matching is case-insensitive.
+fn validate_author_service_attr_ext(
+    req: &AuthorizationRequest,
+    extra_services: &[String],
+) -> Result<String> {
     let attrs = req.attributes();
     let service_attrs: Vec<_> = attrs
         .iter()
@@ -511,11 +517,44 @@ fn validate_author_service_attr(req: &AuthorizationRequest) -> Result<String> {
         !service_val.is_empty(),
         "authorization service attribute must have a value"
     );
-    ensure!(
-        crate::header::is_known_service(service_val),
-        "authorization service attribute value unknown"
-    );
+    let known = crate::header::is_known_service(service_val)
+        || extra_services
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(service_val));
+    ensure!(known, "authorization service attribute value unknown");
     Ok(service_val.to_string())
+}
+
+/// Validate a configured vendor (non-RFC) service authorization request.
+///
+/// Vendor services such as `service=PaloAlto` are *attribute requests*, not
+/// command authorization: the NAS sends the service plus an optional
+/// vendor-defined `protocol` (e.g. `firewall`) and no `cmd`, and the server
+/// returns vendor AV-pairs. We therefore neither require a `cmd` nor constrain
+/// the `protocol` value to the RFC 8907 enumeration, but we still reject a
+/// malformed (duplicated or empty-valued) `protocol` attribute.
+fn validate_author_vendor_service(req: &AuthorizationRequest) -> Result<()> {
+    let attrs = req.attributes();
+    let protocol_count = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("protocol"))
+        .count();
+    ensure!(
+        protocol_count <= 1,
+        "authorization must include at most one protocol attribute"
+    );
+    if let Some(proto) = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("protocol"))
+        .and_then(|p| p.value.as_deref())
+    {
+        ensure!(
+            !proto.is_empty(),
+            "authorization protocol attribute must have a value"
+        );
+    }
+    assert!(protocol_count <= 1, "protocol attribute count invariant");
+    Ok(())
 }
 
 fn validate_author_shell_service(req: &AuthorizationRequest) -> Result<()> {
@@ -664,13 +703,32 @@ fn validate_author_priv_lvl_attr(req: &AuthorizationRequest) -> Result<()> {
 
 /// Validate an outgoing authorization request against basic RFC 8907 semantics.
 pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
+    validate_author_request_with_services(req, &[])
+}
+
+/// Validate an authorization request, additionally accepting the caller's
+/// configured vendor services (`extra_services`, e.g. `["PaloAlto"]`).
+///
+/// A service in `extra_services` that is not an RFC-known service is treated as
+/// a vendor *attribute request*: no `cmd` is required and the `protocol` value
+/// is not constrained to the RFC enumeration (see
+/// [`validate_author_vendor_service`]). RFC-known services keep their existing
+/// shell / non-shell validation.
+pub fn validate_author_request_with_services(
+    req: &AuthorizationRequest,
+    extra_services: &[String],
+) -> Result<()> {
     validate_author_basic_fields(req)?;
-    let service_val = validate_author_service_attr(req)?;
+    let service_val = validate_author_service_attr_ext(req, extra_services)?;
 
     if service_val.eq_ignore_ascii_case("shell") {
         validate_author_shell_service(req)?;
-    } else {
+    } else if crate::header::is_known_service(&service_val) {
         validate_author_nonshell_service(req)?;
+    } else {
+        // Service passed `validate_author_service_attr_ext` but is not RFC-known,
+        // so it must be a configured vendor service: validate it leniently.
+        validate_author_vendor_service(req)?;
     }
 
     validate_author_priv_lvl_attr(req)?;
@@ -1067,6 +1125,49 @@ mod tests {
             .add_arg("cmd=test".to_string());
 
         let result = validate_author_request(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_author_vendor_service_rejected_without_config() {
+        // service=PaloAlto is unknown unless supplied via extra_services.
+        let req = AuthorizationRequest::builder(123)
+            .with_service("PaloAlto")
+            .with_protocol("firewall");
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("service attribute value unknown")
+        );
+    }
+
+    #[test]
+    fn validate_author_vendor_service_accepted_with_config() {
+        // Real PAN-OS shape: service=PaloAlto, protocol=firewall, NO cmd.
+        let req = AuthorizationRequest::builder(123)
+            .with_service("PaloAlto")
+            .with_protocol("firewall");
+        let services = vec!["paloalto".to_string()];
+        assert!(validate_author_request_with_services(&req, &services).is_ok());
+    }
+
+    #[test]
+    fn validate_author_vendor_service_case_insensitive() {
+        let req = AuthorizationRequest::builder(123).with_service("paloalto");
+        let services = vec!["PaloAlto".to_string()];
+        assert!(validate_author_request_with_services(&req, &services).is_ok());
+    }
+
+    #[test]
+    fn validate_author_vendor_service_empty_protocol_fails() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("PaloAlto")
+            .add_arg("protocol=".to_string());
+        let services = vec!["paloalto".to_string()];
+        let result = validate_author_request_with_services(&req, &services);
         assert!(result.is_err());
     }
 

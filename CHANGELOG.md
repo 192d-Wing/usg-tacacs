@@ -5,6 +5,32 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.13] - 2026-06-07
+
+### Added
+
+- **Vendor-service authorization (Palo Alto admin-role assignment)**: the policy
+  now supports an `author_service_attributes` map keyed by service name (e.g.
+  `paloalto`) → `{users, groups, default}` → returned AV-pairs. When a NAS sends
+  a vendor authorization request (`service=PaloAlto`, `protocol=firewall`, no
+  `cmd`), the server resolves the caller's IdP/LDAP groups and returns the
+  mapped AV-pairs (e.g. `PaloAlto-Admin-Role=superuser`) as `PASS_ADD`; no match
+  returns `FAIL`. Resolution is user → first matching group → default.
+  - Proto: `validate_author_request_with_services()` accepts configured vendor
+    services as no-`cmd` attribute requests and does not constrain the vendor
+    `protocol` value to the RFC 8907 enumeration.
+  - Server: vendor services are routed to a dedicated authorization path ahead
+    of shell/command handling; both the RFC and semantic validators accept the
+    configured service names.
+  - This replaces the temporary `TEMP pan-os-debug` logging added in 0.81.12,
+    which has been removed.
+
+### Removed
+
+- **Temporary PAN-OS authZ attribute logging** introduced in 0.81.12 (its
+  purpose — identifying the firewall's request shape — is now served by the
+  vendor-service authorization feature).
+
 ## [0.81.12] - 2026-06-07
 
 ### Added
