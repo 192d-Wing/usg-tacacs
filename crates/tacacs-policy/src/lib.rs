@@ -875,12 +875,11 @@ impl PolicyEngine {
     /// Return the configured vendor service names (lowercased). Used to extend
     /// the RFC service allowlist so vendor authorization requests are accepted.
     pub fn custom_author_services(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.author_service_attributes.keys().cloned().collect();
+        let names: Vec<String> = self.author_service_attributes.keys().cloned().collect();
         assert!(
             names.len() == self.author_service_attributes.len(),
             "service name count must match map size"
         );
-        names.sort();
         names
     }
 

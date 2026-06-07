@@ -1592,6 +1592,26 @@ fn authorize_vendor_service(
     assert!(!service.is_empty(), "service must not be empty");
     assert!(!peer.is_empty(), "peer must not be empty");
     let ctx = authz_context(request);
+    // RFC validation does not require a non-empty user, but the policy resolver
+    // does; deny (rather than panic) a request that names no user.
+    if request.user.is_empty() {
+        let resp = authz_reason_response(
+            AUTHOR_STATUS_FAIL,
+            "authorization request missing user".to_string(),
+            "vendor-no-user",
+            None,
+        );
+        audit_event(
+            "authz_policy_deny",
+            peer,
+            &request.user,
+            request.header.session_id,
+            "fail",
+            "vendor-no-user",
+            &resp.data,
+        );
+        return resp;
+    }
     match policy.service_attributes_for_with_groups(service, &request.user, groups) {
         Some(attrs) => {
             let resp = AuthorizationResponse {
@@ -1934,7 +1954,11 @@ async fn execute_authorization_decision(
     // Configured vendor service (e.g. service=PaloAlto): return vendor AV-pairs
     // resolved from the user's IdP groups. Checked before shell/command because
     // a vendor request carries no `cmd` and would otherwise be misrouted.
+    // An RFC-known service name (shell/login/…) is never treated as a vendor
+    // service even if mis-configured in author_service_attributes, so a stray
+    // entry cannot hijack standard shell/command authorization.
     if let Some(service) = author_service_name(request)
+        && !usg_tacacs_proto::header::is_known_service(&service)
         && policy_guard.is_custom_author_service(&service)
     {
         return authorize_vendor_service(
@@ -4748,6 +4772,28 @@ mod acct_semantics_tests {
     fn author_service_name_extracts_service() {
         let req = AuthorizationRequest::builder(123).with_service("PaloAlto");
         assert_eq!(author_service_name(&req).as_deref(), Some("PaloAlto"));
+    }
+
+    #[test]
+    fn vendor_service_empty_user_denied_not_panicked() {
+        // RFC validation does not require a user; the vendor path must deny
+        // gracefully (not panic in the policy resolver) when user is empty.
+        let engine = PolicyEngine::from_json_str(PALOALTO_POLICY, None::<&str>).unwrap();
+        let req = AuthorizationRequest::builder(123).with_service("PaloAlto");
+        assert!(req.user.is_empty(), "precondition: empty user");
+        let resp = authorize_vendor_service(&req, &engine, &[], "PaloAlto", "10.0.100.52:49");
+        assert_eq!(resp.status, AUTHOR_STATUS_FAIL);
+        assert!(resp.args.is_empty());
+    }
+
+    #[test]
+    fn rfc_known_service_is_not_a_vendor_service() {
+        // Guard for the dispatch: shell/login/etc. are RFC-known, so even if
+        // mis-configured under author_service_attributes they are never routed
+        // to the vendor path (which is gated on !is_known_service).
+        assert!(usg_tacacs_proto::header::is_known_service("shell"));
+        assert!(usg_tacacs_proto::header::is_known_service("login"));
+        assert!(!usg_tacacs_proto::header::is_known_service("paloalto"));
     }
 }
 
