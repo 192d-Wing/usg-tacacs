@@ -19,6 +19,15 @@
       "priv-lvl=15"
     ]
   },
+  "author_service_attributes": {
+    "paloalto": {
+      "groups": {
+        "netops": [
+          "PaloAlto-Admin-Role=superuser"
+        ]
+      }
+    }
+  },
   "device_flow_exclude_users": [
     "svc-tenable",
     "svc-*"

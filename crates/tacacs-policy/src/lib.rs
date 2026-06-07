@@ -322,6 +322,39 @@ pub struct RuleConfig {
     pub schedule: Option<ScheduleConfig>,
 }
 
+/// Vendor-service authorization attribute mapping (e.g. `service=PaloAlto`).
+///
+/// A non-shell NAS such as a Palo Alto firewall sends an authorization request
+/// carrying `service=<vendor>` (and an optional vendor `protocol`) with no
+/// `cmd`. It expects the server to return vendor AV-pairs (e.g.
+/// `PaloAlto-Admin-Role=superuser`, `PaloAlto-Admin-Access-Domain=<name>`).
+///
+/// Resolution order mirrors `shell_start`/`shell_start_groups`: an exact
+/// username match wins; otherwise the first matching IdP/LDAP group (in the
+/// caller's group order) wins; otherwise `default` (if present) is returned.
+///
+/// # Example
+///
+/// ```json
+/// "author_service_attributes": {
+///   "paloalto": {
+///     "groups": { "netops": ["PaloAlto-Admin-Role=superuser"] }
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorServiceConfig {
+    /// Per-username AV-pair lists (case-insensitive key). Highest priority.
+    #[serde(default)]
+    pub users: HashMap<String, Vec<String>>,
+    /// Per-group AV-pair lists (case-insensitive key). First match wins.
+    #[serde(default)]
+    pub groups: HashMap<String, Vec<String>>,
+    /// Fallback AV-pairs when no user or group matches. `None` = deny.
+    #[serde(default)]
+    pub default: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyDocument {
     pub default_allow: bool,
@@ -331,6 +364,10 @@ pub struct PolicyDocument {
     /// the user has no entry in `shell_start`; first matching group wins.
     #[serde(default)]
     pub shell_start_groups: HashMap<String, Vec<String>>,
+    /// Vendor-service authorization attributes keyed by service name
+    /// (lowercased), e.g. `paloalto`. Drives non-shell attribute requests.
+    #[serde(default)]
+    pub author_service_attributes: HashMap<String, AuthorServiceConfig>,
     /// Usernames (or glob patterns with `*`) that bypass device flow and use
     /// password auth (ROPC/static). Case-insensitive. Use for service accounts
     /// that cannot complete browser authentication.
@@ -416,6 +453,9 @@ pub struct PolicyEngine {
     default_allow: bool,
     shell_start: HashMap<String, Vec<String>>,
     shell_start_groups: HashMap<String, Vec<String>>,
+    /// Compiled vendor-service attribute map: service name (lowercased) →
+    /// per-user/per-group/default AV-pair lists with lowercased lookup keys.
+    author_service_attributes: HashMap<String, AuthorServiceConfig>,
     device_flow_exclude_users: Vec<String>,
     /// Compiled NAD groups: name → list of CIDR ranges.
     nad_groups: HashMap<String, Vec<ParsedCidr>>,
@@ -535,6 +575,33 @@ fn compile_nad_group_map(
     Ok(map)
 }
 
+/// Lowercase the service-name keys and the nested user/group lookup keys of a
+/// vendor-service attribute map so resolution is case-insensitive. The AV-pair
+/// values themselves are preserved verbatim (vendor role names are case-sensitive
+/// on the device, e.g. `PaloAlto-Admin-Role=superuser`).
+fn compile_author_service_attributes(
+    map: HashMap<String, AuthorServiceConfig>,
+) -> HashMap<String, AuthorServiceConfig> {
+    let mut out = HashMap::with_capacity(map.len());
+    for (service, cfg) in map {
+        let lowered = AuthorServiceConfig {
+            users: cfg
+                .users
+                .into_iter()
+                .map(|(u, v)| (u.to_lowercase(), v))
+                .collect(),
+            groups: cfg
+                .groups
+                .into_iter()
+                .map(|(g, v)| (g.to_lowercase(), v))
+                .collect(),
+            default: cfg.default,
+        };
+        out.insert(service.to_lowercase(), lowered);
+    }
+    out
+}
+
 fn default_allow_raw_server_msg() -> bool {
     true
 }
@@ -579,6 +646,8 @@ impl PolicyEngine {
         let rules = compile_rules(document.rules)?;
         let nad_groups = compile_nad_group_map(document.nad_groups)?;
         let enable_groups = compile_enable_groups(document.enable_groups)?;
+        let author_service_attributes =
+            compile_author_service_attributes(document.author_service_attributes);
         Ok(Self {
             default_allow: document.default_allow,
             shell_start: document
@@ -591,6 +660,7 @@ impl PolicyEngine {
                 .into_iter()
                 .map(|(g, v)| (g.to_lowercase(), v))
                 .collect(),
+            author_service_attributes,
             device_flow_exclude_users: document
                 .device_flow_exclude_users
                 .into_iter()
@@ -783,6 +853,66 @@ impl PolicyEngine {
             }
         }
         false
+    }
+
+    /// Return true if `service` is a configured vendor authorization service
+    /// (e.g. `PaloAlto`). Matching is case-insensitive.
+    ///
+    /// Used by the server to (a) accept the service through RFC validation and
+    /// (b) route the request to the vendor-attribute authorization path.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Identifies vendor services eligible for attribute return |
+    pub fn is_custom_author_service(&self, service: &str) -> bool {
+        assert!(!service.is_empty(), "service must not be empty");
+        self.author_service_attributes
+            .contains_key(&service.to_lowercase())
+    }
+
+    /// Return the configured vendor service names (lowercased). Used to extend
+    /// the RFC service allowlist so vendor authorization requests are accepted.
+    pub fn custom_author_services(&self) -> Vec<String> {
+        let names: Vec<String> = self.author_service_attributes.keys().cloned().collect();
+        assert!(
+            names.len() == self.author_service_attributes.len(),
+            "service name count must match map size"
+        );
+        names
+    }
+
+    /// Resolve the vendor AV-pairs to return for a `service` authorization
+    /// request, by `user` then `groups` then the service `default`.
+    ///
+    /// Returns `None` when the service is unknown or no user/group/default
+    /// entry matches — the caller treats that as a denial.
+    ///
+    /// # NIST Controls
+    ///
+    /// | Control | Name | Implementation |
+    /// |---------|------|----------------|
+    /// | AC-3 | Access Enforcement | Returns vendor role/scope AV-pairs per identity |
+    /// | AC-6 | Least Privilege | Role granted is bounded by IdP group membership |
+    pub fn service_attributes_for_with_groups(
+        &self,
+        service: &str,
+        user: &str,
+        groups: &[String],
+    ) -> Option<Vec<String>> {
+        assert!(!service.is_empty(), "service must not be empty");
+        assert!(!user.is_empty(), "user must not be empty");
+        let cfg = self.author_service_attributes.get(&service.to_lowercase())?;
+        if let Some(attrs) = cfg.users.get(&user.to_lowercase()) {
+            return Some(attrs.clone());
+        }
+        for group in groups {
+            if let Some(attrs) = cfg.groups.get(&group.to_lowercase()) {
+                return Some(attrs.clone());
+            }
+        }
+        cfg.default.clone()
     }
 
     /// Return true if the username matches an entry in `device_flow_exclude_users`.
@@ -1059,6 +1189,7 @@ mod tests {
             default_allow: false,
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
+            author_service_attributes: HashMap::new(),
             device_flow_exclude_users: Vec::new(),
             nad_groups: HashMap::new(),
             enable_groups: HashMap::new(),
@@ -1315,6 +1446,94 @@ mod tests {
 
         let attrs = engine.shell_attributes_for("unknown");
         assert!(attrs.is_none());
+    }
+
+    // ============== Vendor Service Attribute Tests ==============
+
+    fn make_paloalto_doc() -> PolicyDocument {
+        let mut groups = HashMap::new();
+        groups.insert(
+            "netops".to_string(),
+            vec!["PaloAlto-Admin-Role=superuser".to_string()],
+        );
+        let mut users = HashMap::new();
+        users.insert(
+            "svc-pan".to_string(),
+            vec!["PaloAlto-Admin-Role=deviceadmin".to_string()],
+        );
+        let mut svc = HashMap::new();
+        svc.insert(
+            "paloalto".to_string(),
+            AuthorServiceConfig {
+                users,
+                groups,
+                default: None,
+            },
+        );
+        let mut doc = make_policy_doc(vec![]);
+        doc.author_service_attributes = svc;
+        doc
+    }
+
+    #[test]
+    fn vendor_service_is_recognized_case_insensitive() {
+        let engine = PolicyEngine::from_document(make_paloalto_doc()).unwrap();
+        assert!(engine.is_custom_author_service("paloalto"));
+        assert!(engine.is_custom_author_service("PaloAlto"));
+        assert!(!engine.is_custom_author_service("shell"));
+        assert_eq!(engine.custom_author_services(), vec!["paloalto".to_string()]);
+    }
+
+    #[test]
+    fn vendor_service_group_match_returns_role() {
+        let engine = PolicyEngine::from_document(make_paloalto_doc()).unwrap();
+        let groups = vec!["NetOps".to_string()];
+        let attrs = engine.service_attributes_for_with_groups("PaloAlto", "alice", &groups);
+        assert_eq!(
+            attrs,
+            Some(vec!["PaloAlto-Admin-Role=superuser".to_string()])
+        );
+    }
+
+    #[test]
+    fn vendor_service_user_overrides_group() {
+        let engine = PolicyEngine::from_document(make_paloalto_doc()).unwrap();
+        let groups = vec!["netops".to_string()];
+        let attrs = engine.service_attributes_for_with_groups("paloalto", "SVC-PAN", &groups);
+        assert_eq!(
+            attrs,
+            Some(vec!["PaloAlto-Admin-Role=deviceadmin".to_string()])
+        );
+    }
+
+    #[test]
+    fn vendor_service_no_match_returns_none() {
+        let engine = PolicyEngine::from_document(make_paloalto_doc()).unwrap();
+        let groups = vec!["helpdesk".to_string()];
+        let attrs = engine.service_attributes_for_with_groups("paloalto", "bob", &groups);
+        assert!(attrs.is_none());
+    }
+
+    #[test]
+    fn vendor_service_default_used_when_no_user_or_group() {
+        let mut doc = make_paloalto_doc();
+        if let Some(cfg) = doc.author_service_attributes.get_mut("paloalto") {
+            cfg.default = Some(vec!["PaloAlto-Admin-Role=superreader".to_string()]);
+        }
+        let engine = PolicyEngine::from_document(doc).unwrap();
+        let attrs = engine.service_attributes_for_with_groups("paloalto", "bob", &[]);
+        assert_eq!(
+            attrs,
+            Some(vec!["PaloAlto-Admin-Role=superreader".to_string()])
+        );
+    }
+
+    #[test]
+    fn unknown_vendor_service_returns_none() {
+        let engine = PolicyEngine::from_document(make_paloalto_doc()).unwrap();
+        let attrs = engine.service_attributes_for_with_groups("ciscoasa", "alice", &["netops".into()]);
+        assert!(attrs.is_none());
+        assert!(!engine.is_custom_author_service("ciscoasa"));
     }
 
     // ==================== Prompt Tests ====================
@@ -2182,6 +2401,7 @@ mod tests {
             default_allow: false,
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
+            author_service_attributes: HashMap::new(),
             device_flow_exclude_users: vec![],
             nad_groups: HashMap::new(),
             enable_groups: HashMap::new(),
@@ -2212,6 +2432,7 @@ mod tests {
             default_allow: false,
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
+            author_service_attributes: HashMap::new(),
             device_flow_exclude_users: vec![],
             nad_groups,
             enable_groups: HashMap::new(),
@@ -2334,6 +2555,7 @@ mod tests {
             default_allow: false,
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
+            author_service_attributes: HashMap::new(),
             device_flow_exclude_users: patterns.iter().map(|s| s.to_string()).collect(),
             nad_groups: HashMap::new(),
             enable_groups: HashMap::new(),
@@ -2429,6 +2651,7 @@ mod tests {
             default_allow: false,
             shell_start: HashMap::new(),
             shell_start_groups: HashMap::new(),
+            author_service_attributes: HashMap::new(),
             device_flow_exclude_users: vec![],
             nad_groups: HashMap::new(),
             enable_groups: enable,

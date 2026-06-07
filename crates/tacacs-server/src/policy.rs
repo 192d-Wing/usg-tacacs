@@ -101,6 +101,7 @@ mod tests {
             default_allow: true,
             shell_start: Default::default(),
             shell_start_groups: Default::default(),
+            author_service_attributes: Default::default(),
             device_flow_exclude_users: Default::default(),
             nad_groups: Default::default(),
             enable_groups: Default::default(),

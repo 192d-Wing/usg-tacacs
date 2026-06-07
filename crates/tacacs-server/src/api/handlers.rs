@@ -596,6 +596,7 @@ mod tests {
             rules: vec![],
             shell_start: std::collections::HashMap::new(),
             shell_start_groups: std::collections::HashMap::new(),
+            author_service_attributes: std::collections::HashMap::new(),
             device_flow_exclude_users: Vec::new(),
             nad_groups: std::collections::HashMap::new(),
             enable_groups: std::collections::HashMap::new(),
