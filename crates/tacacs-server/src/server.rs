@@ -1670,6 +1670,34 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
+    // TEMP(pan-os-debug): dump the raw authZ AV-pairs so we can see exactly what
+    // the NAD sent (e.g. service=PaloAlto, PaloAlto-Admin-Role, access domains)
+    // before building the vendor-service authorization mapping. The validation
+    // detail above does not include the offending values. Remove once the
+    // PAN-OS authorization mapping lands.
+    let attr_dump: Vec<String> = request
+        .attributes()
+        .iter()
+        .map(|a| match a.value.as_deref() {
+            Some(v) => format!("{}={}", a.name, v),
+            None => a.name.clone(),
+        })
+        .collect();
+    assert!(
+        attr_dump.len() == request.attributes().len(),
+        "attribute dump must cover every attribute"
+    );
+    warn!(
+        peer = %peer,
+        user = %request.user,
+        session = request.header.session_id,
+        authen_method = request.authen_method,
+        priv_lvl = request.priv_lvl,
+        authen_type = request.authen_type,
+        authen_service = request.authen_service,
+        attrs = %attr_dump.join(" | "),
+        "TEMP pan-os-debug: raw authZ request attributes"
+    );
     let response = authz_reason_response(
         AUTHOR_STATUS_ERROR,
         err.to_string(),

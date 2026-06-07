@@ -5,6 +5,18 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.12] - 2026-06-07
+
+### Added
+
+- **Temporary PAN-OS authZ attribute logging (debug)**: when an authorization
+  request fails RFC validation, the server now emits a `TEMP pan-os-debug` WARN
+  line dumping the raw AV-pairs (service, protocol, cmd, vendor attributes) plus
+  the authen_method/priv_lvl/authen_type/authen_service header fields. This
+  surfaces exactly what a Palo Alto firewall sends (e.g. `service=PaloAlto`) so
+  the vendor-service authorization mapping can be built against the real packet.
+  To be removed once PAN-OS admin-role/access-domain mapping lands.
+
 ## [0.81.11] - 2026-06-06
 
 ### Changed
