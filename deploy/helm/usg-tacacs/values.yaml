@@ -1,0 +1,271 @@
+# Default values for the usg-tacacs Helm chart.
+#
+# These defaults are SECURE BY DEFAULT and mirror the hardened k3s baseline:
+# restricted Pod Security, read-only rootfs, dropped capabilities, default-deny
+# NetworkPolicies, and resource limits. Override per-environment in a values
+# file (see values-prod-k3s.yaml for the live-cluster example).
+#
+# Secrets are NEVER templated by default. Create them out-of-band (sealed-secrets,
+# external-secrets, SOPS, or `kubectl create secret`). See secrets.create below
+# and KUBE_HARDENING.md for the rotation workflow.
+
+# -- Override the chart-derived name.
+nameOverride: ""
+fullnameOverride: "tacacs"
+
+# Common labels applied to every rendered object.
+commonLabels: {}
+commonAnnotations: {}
+
+namespace:
+  # If true, the chart renders the Namespace object. Set false when the namespace
+  # is managed externally (GitOps / cluster bootstrap) — Pod Security labels are
+  # then expected to be applied to the existing namespace.
+  create: true
+  name: tacacs
+  # Pod Security Admission: enforce the `restricted` standard at the namespace
+  # boundary so a mis-templated pod cannot run privileged/root even if a future
+  # edit drops a securityContext. NIST AC-6, CM-6, CM-7.
+  podSecurityStandards:
+    enforce: restricted
+    audit: restricted
+    warn: restricted
+    # Pin the standard version for reproducibility; "latest" tracks the API server.
+    version: latest
+
+image:
+  registry: ghcr.io
+  repository: 192d-wing/usg-tacacs-server
+  tag: "0.81.11"
+  # Optional digest. When set (sha256:...), it is appended as repo@digest and
+  # TAKES PRECEDENCE over tag — immutable, supply-chain-safe deploys (CM-14).
+  digest: ""
+  pullPolicy: Always
+  # Names of pre-created dockerconfigjson Secrets. Empty for public ghcr images.
+  pullSecrets: []
+
+replicaCount: 3
+
+# Server CLI flags. Anything not exposed structurally can be appended via extraArgs.
+config:
+  listen:
+    legacy: "[::]:49" # plaintext TACACS+ (MD5-obfuscated body)
+    tls: "[::]:300" # TLS/mTLS TACACS+ (RFC 9887)
+    http: "[::]:8080" # health (/live,/ready) + Prometheus /metrics
+  logFormat: json
+  tls:
+    # Paths inside the mounted `tls` secret volume.
+    cert: /etc/tacacs/tls/server.pem
+    key: /etc/tacacs/tls/server-key.pem
+    clientCa: /etc/tacacs/tls/ca.pem
+  policy:
+    file: /etc/tacacs/policy/policy.json
+    schema: /etc/tacacs/policy/policy.schema.json
+  audit:
+    # AU-9/AU-10: HMAC-sign every audit event. Key file lives in the tls secret.
+    hmacKeyFile: /etc/tacacs/tls/audit-hmac-key
+  lockout:
+    # AC-7 / SC-5 brute-force throttles.
+    usernameLimit: 5
+    ipLimit: 50
+  icam:
+    enabled: true
+    tokenEndpoint: "https://icam.oopl.dev.mil/realms/dcim/protocol/openid-connect/token"
+    clientId: "tacacs-server"
+    clientSecretFile: /run/secrets/icam/client-secret
+    caFile: /run/secrets/icam-ca/ca.pem
+    groupsClaim: groups
+    timeoutMs: 5000
+    deviceFlow: true
+  groupCache:
+    # Points at the in-cluster Redis Service (see redis.* below).
+    url: "redis://redis:6379"
+  # Free-form extra flags, e.g. ["--max-sessions", "4096"].
+  extraArgs: []
+
+# Pod-level securityContext (restricted PSS compliant).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level securityContext.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+    # NET_BIND_SERVICE is required to bind privileged ports 49/300. Remove if
+    # you front the listeners with a host port >= 1024 / proxy.
+    add: ["NET_BIND_SERVICE"]
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+    ephemeral-storage: "64Mi"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+    ephemeral-storage: "256Mi"
+
+# Probes hit the HTTP health server.
+probes:
+  startup:
+    failureThreshold: 30
+    periodSeconds: 2
+  liveness:
+    periodSeconds: 10
+  readiness:
+    periodSeconds: 10
+
+# Spread replicas across nodes (best-effort).
+podAntiAffinity:
+  enabled: true
+  type: preferred # preferred | required
+  topologyKey: kubernetes.io/hostname
+
+# Disruption budget so cluster operations cannot drain all replicas at once.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+  maxUnavailable: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  # The server needs no Kubernetes API access — never mount a token (AC-6).
+  automountServiceAccountToken: false
+
+# Names of the externally-managed Secrets the server mounts. Create them with
+# the keys listed in KUBE_HARDENING.md.
+secretNames:
+  tls: tacacs-tls # keys: server.pem, server-key.pem, ca.pem, secret, audit-hmac-key
+  icam: tacacs-icam # key: client-secret
+  icamCa: oopl-ca # key: ca.pem
+  groupCache: tacacs-group-cache # key: password
+
+# Optional: let the chart template the Secrets (NOT recommended outside dev/CI).
+# When create: true you MUST supply the data; values land in the release manifest.
+secrets:
+  create: false
+  tls: {} # { server.pem: "...", server-key.pem: "...", ca.pem: "...", secret: "...", audit-hmac-key: "..." }
+  icam: {} # { client-secret: "..." }
+  icamCa: {} # { ca.pem: "..." }
+  groupCache: {} # { password: "..." }
+
+# Policy ConfigMap. Provide inline or reference an existing ConfigMap.
+policy:
+  create: true
+  existingConfigMap: ""
+  # Inline JSON strings; the apply-policy.sh schema is bundled if schema unset.
+  json: |
+    {
+      "version": 1,
+      "default_action": "deny",
+      "rules": []
+    }
+  schema: ""
+
+# Anycast LoadBalancer for TACACS+ traffic.
+service:
+  type: LoadBalancer
+  externalTrafficPolicy: Local # AU-3: preserve real NAD source IP (no SNAT)
+  ipFamilyPolicy: PreferDualStack
+  ipFamilies: ["IPv4", "IPv6"]
+  annotations:
+    lbipam.cilium.io/ips: "10.10.10.55,2601:443:c200:575::55"
+  ports:
+    legacy: 49
+    tls: 300
+
+# Headless metrics Service for Prometheus endpoint discovery (cluster-internal).
+metricsService:
+  enabled: true
+  port: 8080
+
+networkPolicy:
+  enabled: true
+  # Drop everything not explicitly allowed below (SC-7 boundary protection).
+  defaultDeny: true
+  # Allow DNS egress to kube-dns (required for ICAM/Redis name resolution).
+  allowDnsEgress: true
+  dnsNamespace: kube-system
+  ingress:
+    # Source CIDRs permitted to reach :49 and :300 (NAD / management network).
+    # >>> REPLACE with your real device/management ranges before applying. <<<
+    nadCidrs:
+      - "10.0.100.0/24"
+      - "2601:443:c200:570::/64"
+    # Node CIDR for kubelet liveness/readiness probes (host-sourced).
+    nodeCidrs:
+      - "10.0.111.0/24"
+    # Namespace label allowed to scrape :8080 metrics.
+    metricsNamespace: monitoring
+  egress:
+    # Allow egress to the ICAM/Keycloak endpoint. Empty list = allow all egress
+    # to 443 (less strict). Provide explicit CIDRs to lock it down.
+    icamCidrs: []
+    icamPort: 443
+    # Extra egress rules appended verbatim (e.g. Loki, OTLP collector).
+    extra: []
+
+# In-cluster Redis group cache. Disable to use an external cache.
+redis:
+  enabled: true
+  image:
+    registry: registry1.dso.mil
+    repository: ironbank/opensource/redis/redis8
+    tag: "8.8.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+    pullSecrets:
+      - name: registry1-pull
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 997
+    runAsGroup: 997
+    fsGroup: 997
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  maxmemory: "128mb"
+  maxmemoryPolicy: "allkeys-lru"
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+      ephemeral-storage: "16Mi"
+    limits:
+      memory: "192Mi"
+      cpu: "500m"
+      ephemeral-storage: "64Mi"
+  serviceAccount:
+    automountServiceAccountToken: false
+
+# Namespace-level guardrails so a runaway/compromised workload cannot exhaust
+# the node (SC-5/SC-6). Disable if a cluster-wide quota policy already applies.
+resourceQuota:
+  enabled: true
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    pods: "12"
+
+limitRange:
+  enabled: true
+  default:
+    cpu: "500m"
+    memory: 256Mi
+  defaultRequest:
+    cpu: "50m"
+    memory: 64Mi

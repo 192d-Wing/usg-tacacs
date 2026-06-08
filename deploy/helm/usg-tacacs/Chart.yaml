@@ -1,0 +1,29 @@
+# NIST SP 800-53 Rev. 5: CM-2 (Baseline Configuration), CM-6 (Configuration
+# Settings), SA-15 (Development Process). Reusable Helm packaging of the
+# hardened usg-tacacs deployment so the same baseline can be applied to any
+# cluster from version-controlled values.
+apiVersion: v2
+name: usg-tacacs
+description: >-
+  Hardened TACACS+ server (RFC 8907 / RFC 9887) with optional Redis group
+  cache. Ships restricted Pod Security, default-deny NetworkPolicies,
+  PodDisruptionBudget, ServiceAccount with no token automount, and namespace
+  ResourceQuota/LimitRange.
+type: application
+# Chart version — bump on chart changes (independent of appVersion).
+version: 0.1.0
+# Application version — track the usg-tacacs server image tag.
+appVersion: "0.81.11"
+keywords:
+  - tacacs
+  - aaa
+  - network-authentication
+  - nist-800-53
+  - hardening
+home: https://github.com/192d-wing/usg-tacacs
+sources:
+  - https://github.com/192d-wing/usg-tacacs
+maintainers:
+  - name: usg-tacacs maintainers
+annotations:
+  category: Security

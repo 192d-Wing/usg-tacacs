@@ -1,0 +1,59 @@
+# Production overrides mirroring the live k3s (arm64) cluster.
+# Apply with:
+#   helm upgrade --install tacacs deploy/helm/usg-tacacs \
+#     -n tacacs --create-namespace -f deploy/helm/usg-tacacs/values-prod-k3s.yaml
+#
+# Secrets (tacacs-tls, tacacs-icam, oopl-ca, tacacs-group-cache) and the
+# registry1-pull image pull Secret must already exist — see KUBE_HARDENING.md.
+
+replicaCount: 3
+
+image:
+  tag: "0.81.11"
+  # Recommended: pin a digest for immutable deploys (overrides tag).
+  # digest: "sha256:<server-image-digest>"
+
+service:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  annotations:
+    lbipam.cilium.io/ips: "10.10.10.55,2601:443:c200:575::55"
+
+config:
+  icam:
+    enabled: true
+    tokenEndpoint: "https://icam.oopl.dev.mil/realms/dcim/protocol/openid-connect/token"
+    clientId: "tacacs-server"
+    deviceFlow: true
+  groupCache:
+    url: "redis://redis:6379"
+
+networkPolicy:
+  enabled: true
+  defaultDeny: true
+  ingress:
+    nadCidrs:
+      - "10.0.100.0/24"
+      - "2601:443:c200:570::/64"
+    nodeCidrs:
+      - "10.0.111.0/24"
+    metricsNamespace: monitoring
+  egress:
+    # Lock egress to the ICAM/Keycloak host(s) instead of 0.0.0.0/0.
+    icamCidrs:
+      - "10.10.10.54/32"
+    icamPort: 443
+
+redis:
+  enabled: true
+  image:
+    registry: registry1.dso.mil
+    repository: ironbank/opensource/redis/redis8
+    tag: "8.8.0"
+    pullSecrets:
+      - name: registry1-pull
+
+# Provide the real authorization policy here, or set
+# policy.existingConfigMap: tacacs-policy to reuse deploy/k3s/apply-policy.sh.
+policy:
+  existingConfigMap: tacacs-policy

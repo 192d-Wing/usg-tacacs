@@ -1,0 +1,20 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+# Keep a quorum of replicas serving during voluntary disruptions (node drains,
+# upgrades). Availability control for AAA — a network without auth is an outage.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}
+  namespace: {{ include "usg-tacacs.namespace" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "usg-tacacs.selectorLabels" . | nindent 6 }}
+{{- end }}

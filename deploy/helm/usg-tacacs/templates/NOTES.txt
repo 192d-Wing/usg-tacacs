@@ -1,0 +1,34 @@
+usg-tacacs {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}" in namespace "{{ include "usg-tacacs.namespace" . }}".
+
+Image:    {{ include "usg-tacacs.image" . }}
+Replicas: {{ .Values.replicaCount }}
+Redis:    {{ if .Values.redis.enabled }}enabled ({{ include "usg-tacacs.redisImage" . }}){{ else }}disabled (external cache){{ end }}
+
+REQUIRED before traffic flows — create these Secrets (NOT templated by default):
+
+  {{ .Values.secretNames.tls }}        keys: server.pem, server-key.pem, ca.pem, secret, audit-hmac-key
+{{- if .Values.config.icam.enabled }}
+  {{ .Values.secretNames.icam }}       key:  client-secret
+  {{ .Values.secretNames.icamCa }}          key:  ca.pem
+{{- end }}
+{{- if .Values.config.groupCache.url }}
+  {{ .Values.secretNames.groupCache }} key:  password
+{{- end }}
+
+See deploy/helm/usg-tacacs/README.md and KUBE_HARDENING.md for the secret
+creation + rotation workflow.
+
+Verify the hardening posture:
+
+  kubectl -n {{ include "usg-tacacs.namespace" . }} get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].securityContext.readOnlyRootFilesystem}{"\n"}{end}'
+  kubectl -n {{ include "usg-tacacs.namespace" . }} get networkpolicy
+
+{{- if .Values.networkPolicy.enabled }}
+
+NetworkPolicy is ENABLED. Confirm the ingress.nadCidrs in your values match your
+real NAD/management ranges, or devices will be denied at :49/:300.
+{{- else }}
+
+WARNING: networkPolicy.enabled=false — the TACACS+ ports are reachable from the
+whole cluster/LB. Enable it in production.
+{{- end }}

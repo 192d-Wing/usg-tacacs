@@ -1,0 +1,26 @@
+# TACACS+ LoadBalancer service. externalTrafficPolicy: Local preserves the real
+# NAD source IP (no SNAT) — required for per-NAD secret lookup and AU-3 audit.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}
+  namespace: {{ include "usg-tacacs.namespace" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if eq .Values.service.type "LoadBalancer" }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  {{- end }}
+  ipFamilyPolicy: {{ .Values.service.ipFamilyPolicy }}
+  ipFamilies:
+    {{- toYaml .Values.service.ipFamilies | nindent 4 }}
+  selector:
+    {{- include "usg-tacacs.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: legacy, port: {{ .Values.service.ports.legacy }}, targetPort: 49 }
+    - { name: tls, port: {{ .Values.service.ports.tls }}, targetPort: 300 }

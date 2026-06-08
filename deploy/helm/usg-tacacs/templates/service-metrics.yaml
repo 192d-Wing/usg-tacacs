@@ -1,0 +1,19 @@
+{{- if .Values.metricsService.enabled }}
+# Internal-only headless Service exposing :8080 (/metrics + health) for
+# Prometheus endpoint discovery. NOT on the anycast LoadBalancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}-metrics
+  namespace: {{ include "usg-tacacs.namespace" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+    monitoring: tacacs
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "usg-tacacs.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: http-metrics, port: {{ .Values.metricsService.port }}, targetPort: 8080 }
+{{- end }}

@@ -1,0 +1,18 @@
+{{- if and .Values.policy.create (not .Values.policy.existingConfigMap) }}
+# TACACS+ authorization policy + its JSON schema. SI-10 input validation: the
+# server validates policy.json against policy.schema.json on load and reload.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}-policy
+  namespace: {{ include "usg-tacacs.namespace" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+data:
+  policy.json: |
+{{ .Values.policy.json | indent 4 }}
+  {{- if .Values.policy.schema }}
+  policy.schema.json: |
+{{ .Values.policy.schema | indent 4 }}
+  {{- end }}
+{{- end }}

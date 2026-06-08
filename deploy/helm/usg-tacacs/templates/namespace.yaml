@@ -1,0 +1,22 @@
+{{- if .Values.namespace.create }}
+# NIST AC-6 / CM-6 / CM-7: enforce restricted Pod Security at the namespace
+# boundary so no pod here can run privileged, as root, or with host access.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "usg-tacacs.namespace" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+    {{- with .Values.namespace.podSecurityStandards }}
+    pod-security.kubernetes.io/enforce: {{ .enforce | quote }}
+    pod-security.kubernetes.io/enforce-version: {{ .version | quote }}
+    pod-security.kubernetes.io/audit: {{ .audit | quote }}
+    pod-security.kubernetes.io/audit-version: {{ .version | quote }}
+    pod-security.kubernetes.io/warn: {{ .warn | quote }}
+    pod-security.kubernetes.io/warn-version: {{ .version | quote }}
+    {{- end }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

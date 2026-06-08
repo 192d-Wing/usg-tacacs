@@ -1,0 +1,168 @@
+# TACACS+ server Deployment.
+#
+# NIST SP 800-53 Rev. 5: SC-8 (TLS), AC-3 (mTLS client CA), AC-6/CM-6/CM-7
+# (non-root, dropped capabilities, read-only rootfs, no token automount),
+# AC-7/SC-5 (lockout throttles), AU-9/AU-10 (HMAC-signed audit).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}
+  namespace: {{ include "usg-tacacs.namespace" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "usg-tacacs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "usg-tacacs.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll pods when the policy ConfigMap changes.
+        checksum/policy: {{ printf "%s-%s" .Values.policy.json .Values.policy.schema | sha256sum }}
+        {{- with .Values.commonAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "usg-tacacs.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.podAntiAffinity.type "required" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "usg-tacacs.selectorLabels" . | nindent 18 }}
+              topologyKey: {{ .Values.podAntiAffinity.topologyKey }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "usg-tacacs.selectorLabels" . | nindent 20 }}
+                topologyKey: {{ .Values.podAntiAffinity.topologyKey }}
+          {{- end }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: tacacs
+          image: {{ include "usg-tacacs.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--listen-legacy"
+            - {{ .Values.config.listen.legacy | quote }}
+            - "--listen-tls"
+            - {{ .Values.config.listen.tls | quote }}
+            - "--listen-http"
+            - {{ .Values.config.listen.http | quote }}
+            - "--log-format"
+            - {{ .Values.config.logFormat | quote }}
+            - "--tls-cert"
+            - {{ .Values.config.tls.cert | quote }}
+            - "--tls-key"
+            - {{ .Values.config.tls.key | quote }}
+            - "--client-ca"
+            - {{ .Values.config.tls.clientCa | quote }}
+            - "--policy"
+            - {{ .Values.config.policy.file | quote }}
+            - "--schema"
+            - {{ .Values.config.policy.schema | quote }}
+            - "--audit-hmac-key-file"
+            - {{ .Values.config.audit.hmacKeyFile | quote }}
+            - "--username-lockout-limit"
+            - {{ .Values.config.lockout.usernameLimit | quote }}
+            - "--ip-lockout-limit"
+            - {{ .Values.config.lockout.ipLimit | quote }}
+            {{- if .Values.config.icam.enabled }}
+            - "--icam-token-endpoint"
+            - {{ .Values.config.icam.tokenEndpoint | quote }}
+            - "--icam-client-id"
+            - {{ .Values.config.icam.clientId | quote }}
+            - "--icam-client-secret-file"
+            - {{ .Values.config.icam.clientSecretFile | quote }}
+            - "--icam-ca-file"
+            - {{ .Values.config.icam.caFile | quote }}
+            - "--icam-groups-claim"
+            - {{ .Values.config.icam.groupsClaim | quote }}
+            - "--icam-timeout-ms"
+            - {{ .Values.config.icam.timeoutMs | quote }}
+            {{- if .Values.config.icam.deviceFlow }}
+            - "--icam-device-flow"
+            {{- end }}
+            {{- end }}
+            {{- if .Values.config.groupCache.url }}
+            - "--group-cache-url"
+            - {{ .Values.config.groupCache.url | quote }}
+            {{- end }}
+            {{- range .Values.config.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: TACACS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretNames.tls }}
+                  key: secret
+            {{- if .Values.config.groupCache.url }}
+            - name: GROUP_CACHE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretNames.groupCache }}
+                  key: password
+            {{- end }}
+          ports:
+            - { name: legacy, containerPort: 49 }
+            - { name: tls, containerPort: 300 }
+            - { name: http, containerPort: 8080 }
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: /live, port: 8080 }
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+          livenessProbe:
+            httpGet: { path: /live, port: 8080 }
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet: { path: /ready, port: 8080 }
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          volumeMounts:
+            - { name: tls, mountPath: /etc/tacacs/tls, readOnly: true }
+            - { name: policy, mountPath: /etc/tacacs/policy, readOnly: true }
+            {{- if .Values.config.icam.enabled }}
+            - { name: icam, mountPath: /run/secrets/icam, readOnly: true }
+            - { name: icam-ca, mountPath: /run/secrets/icam-ca, readOnly: true }
+            {{- end }}
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.secretNames.tls }}
+        - name: policy
+          configMap:
+            name: {{ if .Values.policy.existingConfigMap }}{{ .Values.policy.existingConfigMap }}{{ else }}{{ include "usg-tacacs.fullname" . }}-policy{{ end }}
+        {{- if .Values.config.icam.enabled }}
+        - name: icam
+          secret:
+            secretName: {{ .Values.secretNames.icam }}
+        - name: icam-ca
+          secret:
+            secretName: {{ .Values.secretNames.icamCa }}
+        {{- end }}
+        - name: tmp
+          emptyDir: {}

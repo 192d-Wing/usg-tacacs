@@ -1,0 +1,120 @@
+{{- if .Values.redis.enabled }}
+{{- $ns := include "usg-tacacs.namespace" . }}
+# Redis group cache (Iron Bank hardened image). Pure in-memory: persistence is
+# disabled, so a restart re-populates from subsequent logins. Password-protected
+# and restricted to the tacacs pods via NetworkPolicy.
+# NIST AC-3, AC-4, SC-5, SC-7, IA-5.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: {{ $ns }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+    app: redis
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels:
+        {{- include "usg-tacacs.labels" . | nindent 8 }}
+        app: redis
+    spec:
+      automountServiceAccountToken: {{ .Values.redis.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.redis.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.redis.podSecurityContext | nindent 8 }}
+      containers:
+        - name: redis
+          image: {{ include "usg-tacacs.redisImage" . }}
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
+          args:
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)"
+            - "--save"
+            - ""
+            - "--appendonly"
+            - "no"
+            - "--maxmemory"
+            - {{ .Values.redis.maxmemory | quote }}
+            - "--maxmemory-policy"
+            - {{ .Values.redis.maxmemoryPolicy | quote }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretNames.groupCache }}
+                  key: password
+          ports:
+            - { name: redis, containerPort: 6379 }
+          securityContext:
+            {{- toYaml .Values.redis.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          livenessProbe:
+            tcpSocket: { port: 6379 }
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data, mountPath: /home/data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ $ns }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+    app: redis
+spec:
+  type: ClusterIP
+  selector: { app: redis }
+  ports:
+    - { name: redis, port: 6379, targetPort: 6379 }
+{{- if .Values.networkPolicy.enabled }}
+---
+# SC-7: only the tacacs server pods may reach Redis.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-allow-tacacs
+  namespace: {{ $ns }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app: redis }
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: tacacs
+      ports:
+        - { protocol: TCP, port: 6379 }
+  egress:
+    {{- if .Values.networkPolicy.allowDnsEgress }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    {{- end }}
+{{- end }}
+{{- end }}

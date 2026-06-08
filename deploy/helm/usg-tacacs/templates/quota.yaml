@@ -1,0 +1,33 @@
+{{- if .Values.resourceQuota.enabled }}
+# SC-5/SC-6: cap aggregate resource consumption in the namespace so a
+# compromised or runaway pod cannot starve the node.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}-quota
+  namespace: {{ include "usg-tacacs.namespace" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- toYaml .Values.resourceQuota.hard | nindent 4 }}
+{{- end }}
+{{- if .Values.limitRange.enabled }}
+---
+# Default requests/limits for any pod that omits them (defense in depth with the
+# quota — a quota with requests/limits requires every pod to declare them).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}-limits
+  namespace: {{ include "usg-tacacs.namespace" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        {{- toYaml .Values.limitRange.default | nindent 8 }}
+      defaultRequest:
+        {{- toYaml .Values.limitRange.defaultRequest | nindent 8 }}
+{{- end }}

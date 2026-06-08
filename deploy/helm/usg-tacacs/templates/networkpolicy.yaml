@@ -1,0 +1,112 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $ns := include "usg-tacacs.namespace" . }}
+{{- if .Values.networkPolicy.defaultDeny }}
+# SC-7 default-deny: drop all ingress and egress for tacacs pods, then re-allow
+# only the explicit flows below. A new/forgotten port stays closed by default.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}-default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "usg-tacacs.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+{{- end }}
+# SC-7 / AC-4: ingress allow-list for the TACACS+ pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "usg-tacacs.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # TACACS+ (legacy :49 and TLS :300) only from the NAD / management network.
+    - from:
+        {{- range .Values.networkPolicy.ingress.nadCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 49 }
+        - { protocol: TCP, port: 300 }
+    # Health/metrics :8080 — kubelet probes (node CIDR) + Prometheus (namespace).
+    - from:
+        {{- range .Values.networkPolicy.ingress.nodeCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingress.metricsNamespace }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+{{- if .Values.networkPolicy.defaultDeny }}
+---
+# Egress allow-list. Required because default-deny also blocks egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "usg-tacacs.fullname" . }}-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "usg-tacacs.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    {{- if .Values.networkPolicy.allowDnsEgress }}
+    # DNS resolution (ICAM endpoint, Redis service name).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    {{- end }}
+    {{- if .Values.redis.enabled }}
+    # Redis group cache (in-namespace).
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - { protocol: TCP, port: 6379 }
+    {{- end }}
+    {{- if .Values.config.icam.enabled }}
+    # ICAM / Keycloak token endpoint.
+    - to:
+        {{- if .Values.networkPolicy.egress.icamCidrs }}
+        {{- range .Values.networkPolicy.egress.icamCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- else }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.networkPolicy.egress.icamPort }} }
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}
