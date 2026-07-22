@@ -22,6 +22,7 @@ const MAX_EID_BYTES: usize = 128;
 const MAX_NAD_BYTES: usize = 253;
 const MIN_VERIFIER_KEY_BYTES: usize = 32;
 const MAX_VERIFIER_KEY_BYTES: usize = 64;
+const MAX_OPAQUE_TOKEN_INPUT_BYTES: usize = 16_384;
 
 /// Stable input-validation failure without echoing rejected values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +114,19 @@ impl PasswordVerifier {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.0)
+    }
+
+    pub fn from_hex(value: &str) -> Result<Self, ValidationError> {
+        let decoded =
+            hex::decode(value).map_err(|_| ValidationError::new("invalid_verifier_encoding"))?;
+        let bytes = decoded
+            .try_into()
+            .map_err(|_| ValidationError::new("invalid_verifier_length"))?;
+        Ok(Self(bytes))
+    }
 }
 
 impl Drop for PasswordVerifier {
@@ -170,6 +184,18 @@ impl VerifierKey {
         let message = verifier_message(eid, nad, password);
         let key = hmac::Key::new(hmac::HMAC_SHA256, self.bytes.as_slice());
         hmac::verify(&key, message.as_slice(), expected.as_bytes()).is_ok()
+    }
+
+    pub fn opaque_token(&self, label: &str, input: &[u8]) -> Result<String, ValidationError> {
+        if label.is_empty() || input.is_empty() || input.len() > MAX_OPAQUE_TOKEN_INPUT_BYTES {
+            return Err(ValidationError::new("invalid_token_input"));
+        }
+        let key = hmac::Key::new(hmac::HMAC_SHA256, self.bytes.as_slice());
+        let mut context = hmac::Context::with_key(&key);
+        context.update(label.as_bytes());
+        context.update(&[0]);
+        context.update(input);
+        Ok(hex::encode(context.sign().as_ref()))
     }
 }
 
