@@ -189,7 +189,10 @@ jobs:
         # Accepted/mitigated advisories documented in audit.toml:
         #   RUSTSEC-2023-0071 (rsa Marvin) - no upstream fix; EST path disabled
         #   RUSTSEC-2025-0134 (rustls-pemfile unmaintained) - transitive
-      - run: cargo audit --deny warnings --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0134
+      # Vulnerabilities fail by default; explicitly fail on unsound advisories.
+      # Yanked-only warnings remain visible without blocking when no compatible
+      # replacement exists (see audit.toml for the spin 0.9.8 constraint).
+      - run: cargo audit --deny unsound --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0134
 
   cargo-deny:
     name: Dependency Check
