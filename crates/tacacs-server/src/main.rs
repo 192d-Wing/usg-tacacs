@@ -75,7 +75,8 @@
 use crate::ascii::AsciiConfig;
 use crate::auth::LdapConfig;
 use crate::config::{
-    Args, LogFormat, StaticCreds, build_est_config, credentials_map, resolve_icam_client_secret,
+    Args, LogFormat, StaticCreds, build_est_config, credentials_map, read_secret_file,
+    resolve_icam_client_secret,
 };
 use crate::http::{ServerState, serve_http};
 use crate::icam::{IcamConfig, icam_build_client};
@@ -119,6 +120,7 @@ struct AppState {
     ip_limiter: Arc<crate::ip_limiter::IpRateLimiter>,
     /// HMAC-SHA256 key for audit event signing (`None` = disabled).
     audit_hmac_key: Option<Arc<Vec<u8>>>,
+    jit_lease_store: Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
     legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
     conn_limiter: ConnLimiter,
     session_registry: Arc<SessionRegistry>,
@@ -606,6 +608,9 @@ fn setup_management_api(
         .context("--api-listen is required when --api-enabled is set")?;
     let rbac_config = load_rbac_config(args)?;
     let api_tls_acceptor = build_api_tls_acceptor(args)?;
+    if state.jit_lease_store.is_some() && api_tls_acceptor.is_none() {
+        bail!("JIT lease management requires TLS 1.3 mutual authentication");
+    }
 
     let runtime_config = crate::api::RuntimeConfig {
         listen_tls: args.listen_tls,
@@ -619,6 +624,7 @@ fn setup_management_api(
     let api_policy_path = state.policy_path.display().to_string();
     let api_schema_path = args.schema.clone();
     let api_registry = state.session_registry.clone();
+    let jit_lease_store = state.jit_lease_store.clone();
 
     handles.push(tokio::spawn(async move {
         if let Err(err) = crate::api::serve_api(
@@ -631,6 +637,7 @@ fn setup_management_api(
             reload_tx,
             api_registry,
             runtime_config,
+            jit_lease_store,
         )
         .await
         {
@@ -931,6 +938,10 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
     let device_flow_config = build_device_flow_config(args, icam_config.as_deref())?;
     let audit_hmac_key = resolve_audit_hmac_key(args).map_err(anyhow::Error::msg)?;
     setup_group_cache(args).await?;
+    let jit_lease_store = setup_jit_lease_store(args).await?;
+    if jit_lease_store.is_some() && audit_hmac_key.is_none() {
+        bail!("JIT lease management requires AUDIT_HMAC_KEY_FILE for signed audit records");
+    }
     let username_limiter = crate::username_limiter::UsernameRateLimiter::new(
         args.username_lockout_window_secs,
         args.username_lockout_limit,
@@ -959,6 +970,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         username_limiter,
         ip_limiter,
         audit_hmac_key,
+        jit_lease_store,
         legacy_nad_secrets: Arc::new(
             args.legacy_nad_secret
                 .iter()
@@ -971,6 +983,57 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         est_config,
         policy_path,
     })
+}
+
+/// Configure the authoritative JIT store from file-backed secrets.
+///
+/// The feature is disabled unless `JIT_LEASE_STORE_URL` is set. Production
+/// activation is deliberately strict: the API, mTLS material, Redis password,
+/// and verifier key must all be present or startup fails.
+async fn setup_jit_lease_store(
+    args: &Args,
+) -> Result<Option<Arc<crate::jit_lease_store::JitLeaseStore>>> {
+    let Ok(url) = std::env::var("JIT_LEASE_STORE_URL") else {
+        return Ok(None);
+    };
+    if !args.api_enabled
+        || args.api_tls_cert.is_none()
+        || args.api_tls_key.is_none()
+        || args.api_client_ca.is_none()
+    {
+        bail!("JIT lease store requires the mTLS Management API to be fully configured");
+    }
+    aws_lc_rs::try_fips_mode()
+        .map_err(|error| anyhow::anyhow!("AWS-LC FIPS self-test failed: {error}"))?;
+    let password_path = std::env::var("JIT_LEASE_STORE_PASSWORD_FILE")
+        .context("JIT_LEASE_STORE_PASSWORD_FILE is required")?;
+    let verifier_path = std::env::var("JIT_LEASE_VERIFIER_KEY_FILE")
+        .context("JIT_LEASE_VERIFIER_KEY_FILE is required")?;
+    let password = zeroize::Zeroizing::new(
+        read_secret_file(&PathBuf::from(password_path))
+            .context("reading JIT lease store password")?,
+    );
+    let key_hex = zeroize::Zeroizing::new(
+        read_secret_file(&PathBuf::from(verifier_path))
+            .context("reading JIT lease verifier key")?,
+    );
+    let key_bytes =
+        hex::decode(key_hex.as_bytes()).context("JIT lease verifier key must be hex")?;
+    let verifier_key = Arc::new(
+        crate::jit_lease::VerifierKey::new(zeroize::Zeroizing::new(key_bytes))
+            .map_err(|error| anyhow::anyhow!(error))?,
+    );
+    let prefix = std::env::var("JIT_LEASE_KEY_PREFIX").unwrap_or_else(|_| "tacacs:jit".to_owned());
+    let store = crate::jit_lease_store::JitLeaseStore::connect(
+        &url,
+        Some(password.as_str()),
+        &prefix,
+        verifier_key,
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("initializing JIT lease store: {error}"))?;
+    info!("authoritative JIT lease store enabled");
+    Ok(Some(Arc::new(store)))
 }
 
 /// Run all server tasks and await completion.
@@ -1046,6 +1109,8 @@ mod http;
 mod icam;
 mod icam_device;
 mod ip_limiter;
+mod jit_lease;
+mod jit_lease_store;
 mod metrics;
 mod policy;
 mod server;

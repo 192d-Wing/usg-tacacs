@@ -171,7 +171,8 @@ pub async fn init_group_cache(
         .into_connection_info()
         .map_err(|e| anyhow::anyhow!("invalid group cache URL: {e}"))?;
     if let Some(pw) = password {
-        info.redis.password = Some(pw.to_string());
+        let redis_settings = info.redis_settings().clone().set_password(pw);
+        info = info.set_redis_settings(redis_settings);
     }
     let client =
         redis::Client::open(info).map_err(|e| anyhow::anyhow!("group cache client: {e}"))?;

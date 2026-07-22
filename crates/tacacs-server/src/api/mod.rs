@@ -61,6 +61,7 @@ mod rbac;
 pub use handlers::{RuntimeConfig, build_api_router};
 pub use rbac::{RbacConfig, TlsClientIdentity};
 
+use crate::jit_lease_store::JitLeaseStore;
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
 use axum::body::Body;
@@ -192,6 +193,7 @@ pub async fn serve_api(
     reload_tx: mpsc::Sender<PolicyReloadRequest>,
     registry: Arc<SessionRegistry>,
     config: RuntimeConfig,
+    jit_lease_store: Option<Arc<JitLeaseStore>>,
 ) -> anyhow::Result<()> {
     let app = build_api_router(
         rbac,
@@ -201,6 +203,7 @@ pub async fn serve_api(
         reload_tx,
         registry,
         config,
+        jit_lease_store,
     );
     let listener = TcpListener::bind(addr).await?;
 

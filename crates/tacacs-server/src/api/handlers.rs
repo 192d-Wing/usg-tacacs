@@ -50,15 +50,20 @@
 //!   with user identity, endpoint, and authorization result.
 
 use super::models::*;
+use super::rbac::TlsClientIdentity;
 use super::rbac::{RbacConfig, require_permission};
+use crate::jit_lease::{CanonicalEid, LeaseTtl, NadIdentity};
+use crate::jit_lease_store::{
+    CreateLeaseInput, CreateLeaseOutcome, JitLeaseStore, LeaseMetadata, StoreError,
+};
 use crate::metrics::metrics;
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{DefaultBodyLimit, Extension, Path, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -70,6 +75,7 @@ use std::time::SystemTime;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{info, warn};
 use usg_tacacs_policy::PolicyEngine;
+use uuid::Uuid;
 
 /// Runtime configuration snapshot for API display.
 ///
@@ -121,6 +127,8 @@ pub struct ApiState {
     pub registry: Arc<SessionRegistry>,
     /// Runtime configuration snapshot
     pub config: RuntimeConfig,
+    /// Authoritative JIT lease store; absent when the feature is disabled.
+    pub jit_lease_store: Option<Arc<JitLeaseStore>>,
 }
 
 /// Build the API router with all endpoints.
@@ -140,6 +148,7 @@ pub struct ApiState {
 ///
 /// Anonymous users are denied access to all endpoints.
 // NASA-RULE4-EXEMPT: route registration requires one .merge()+.route_layer() block per permission
+#[allow(clippy::too_many_arguments)]
 pub fn build_api_router(
     rbac: RbacConfig,
     policy: Arc<RwLock<PolicyEngine>>,
@@ -148,6 +157,7 @@ pub fn build_api_router(
     reload_tx: mpsc::Sender<PolicyReloadRequest>,
     registry: Arc<SessionRegistry>,
     config: RuntimeConfig,
+    jit_lease_store: Option<Arc<JitLeaseStore>>,
 ) -> Router {
     let state = Arc::new(ApiState {
         rbac: rbac.clone(),
@@ -158,6 +168,7 @@ pub fn build_api_router(
         reload_tx,
         registry,
         config,
+        jit_lease_store,
     });
 
     Router::new()
@@ -218,7 +229,338 @@ pub fn build_api_router(
                     "read:metrics",
                 ))),
         )
+        .merge(
+            Router::new()
+                .route("/api/v1/jit-leases", post(create_jit_lease))
+                .route("/api/v1/jit-leases/{lease_id}", delete(revoke_jit_lease))
+                .route_layer(DefaultBodyLimit::max(16 * 1024))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    "write:jit-leases",
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/jit-leases/{lease_id}", get(get_jit_lease))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    "read:jit-leases",
+                ))),
+        )
         .with_state(state)
+}
+
+async fn create_jit_lease(
+    State(state): State<Arc<ApiState>>,
+    Extension(identity): Extension<TlsClientIdentity>,
+    headers: HeaderMap,
+    Json(request): Json<CreateJitLeaseRequest>,
+) -> Response {
+    let correlation_id = match required_header(&headers, "x-correlation-id", validate_correlation) {
+        Some(value) => value,
+        None => return invalid_header_problem(),
+    };
+    let idempotency_key = match required_header(&headers, "idempotency-key", validate_idempotency) {
+        Some(value) => value,
+        None => return invalid_header_problem(),
+    };
+    let Some(store) = state.jit_lease_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "store_unavailable",
+            correlation_id,
+        );
+    };
+    let input = match create_input(request, idempotency_key) {
+        Ok(input) => input,
+        Err(error) => return store_problem(error, correlation_id),
+    };
+    let (audit_eid, audit_nad) = create_audit_target(&input);
+    match store.create(input).await {
+        Ok(outcome) => {
+            let (status, metadata) = match outcome {
+                CreateLeaseOutcome::Created(value) => (StatusCode::CREATED, value),
+                CreateLeaseOutcome::Replay(value) => (StatusCode::OK, value),
+            };
+            crate::server::audit_event(
+                "jit_lease_create",
+                "management-api",
+                &identity.cn,
+                0,
+                "success",
+                "authorized",
+                &format!(
+                    "correlation_id={correlation_id},eid={audit_eid},nad={audit_nad},lease_id={}",
+                    metadata.lease_id
+                ),
+            );
+            lease_response(status, metadata)
+        }
+        Err(error) => {
+            crate::server::audit_event(
+                "jit_lease_create",
+                "management-api",
+                &identity.cn,
+                0,
+                "denied",
+                error.to_string().as_str(),
+                &format!("correlation_id={correlation_id},eid={audit_eid},nad={audit_nad}"),
+            );
+            store_problem(error, correlation_id)
+        }
+    }
+}
+
+fn create_audit_target(input: &CreateLeaseInput) -> (String, String) {
+    (
+        input.eid.as_str().to_owned(),
+        input.nad_identity.as_str().to_owned(),
+    )
+}
+
+async fn get_jit_lease(
+    State(state): State<Arc<ApiState>>,
+    Extension(identity): Extension<TlsClientIdentity>,
+    Path(lease_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = match required_header(&headers, "x-correlation-id", validate_correlation) {
+        Some(value) => value,
+        None => return invalid_header_problem(),
+    };
+    let Some(store) = state.jit_lease_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "store_unavailable",
+            correlation_id,
+        );
+    };
+    match store.get(lease_id).await {
+        Ok(Some(metadata)) => {
+            audit_lease_api(
+                "jit_lease_read",
+                &identity.cn,
+                "success",
+                "authorized",
+                &correlation_id,
+                lease_id,
+            );
+            lease_response(StatusCode::OK, metadata)
+        }
+        Ok(None) => {
+            audit_lease_api(
+                "jit_lease_read",
+                &identity.cn,
+                "denied",
+                "lease_not_found",
+                &correlation_id,
+                lease_id,
+            );
+            problem(StatusCode::NOT_FOUND, "lease_not_found", correlation_id)
+        }
+        Err(error) => {
+            audit_lease_api(
+                "jit_lease_read",
+                &identity.cn,
+                "error",
+                error.to_string().as_str(),
+                &correlation_id,
+                lease_id,
+            );
+            store_problem(error, correlation_id)
+        }
+    }
+}
+
+async fn revoke_jit_lease(
+    State(state): State<Arc<ApiState>>,
+    Extension(identity): Extension<TlsClientIdentity>,
+    Path(lease_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = match required_header(&headers, "x-correlation-id", validate_correlation) {
+        Some(value) => value,
+        None => return invalid_header_problem(),
+    };
+    let Some(store) = state.jit_lease_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "store_unavailable",
+            correlation_id,
+        );
+    };
+    match store.revoke(lease_id).await {
+        Ok(()) | Err(StoreError::NotFound) => {
+            crate::server::audit_event(
+                "jit_lease_revoke",
+                "management-api",
+                &identity.cn,
+                0,
+                "success",
+                "revoked",
+                &format!("correlation_id={correlation_id},lease_id={lease_id}"),
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(error) => {
+            audit_lease_api(
+                "jit_lease_revoke",
+                &identity.cn,
+                "error",
+                error.to_string().as_str(),
+                &correlation_id,
+                lease_id,
+            );
+            store_problem(error, correlation_id)
+        }
+    }
+}
+
+fn audit_lease_api(
+    event: &str,
+    actor: &str,
+    status: &str,
+    reason: &str,
+    correlation_id: &str,
+    lease_id: Uuid,
+) {
+    crate::server::audit_event(
+        event,
+        "management-api",
+        actor,
+        0,
+        status,
+        reason,
+        &format!("correlation_id={correlation_id},lease_id={lease_id}"),
+    );
+}
+
+fn create_input(
+    request: CreateJitLeaseRequest,
+    idempotency_key: String,
+) -> Result<CreateLeaseInput, StoreError> {
+    if !(24..=128).contains(&request.password.len()) {
+        return Err(StoreError::InvalidInput("invalid_password_length"));
+    }
+    Ok(CreateLeaseInput {
+        eid: CanonicalEid::parse(&request.eid)?,
+        icam_subject: request.icam_subject,
+        nad_identity: NadIdentity::parse(&request.nad_identity)?,
+        authorization_groups: request.authorization_groups,
+        ttl: LeaseTtl::new(request.ttl_seconds)?,
+        idempotency_key,
+        password: request.password,
+    })
+}
+
+fn required_header(
+    headers: &HeaderMap,
+    name: &'static str,
+    validator: fn(&str) -> bool,
+) -> Option<String> {
+    let value = headers.get(name).and_then(|value| value.to_str().ok());
+    value.filter(|value| validator(value)).map(str::to_owned)
+}
+
+fn invalid_header_problem() -> Response {
+    problem(
+        StatusCode::BAD_REQUEST,
+        "invalid_header",
+        "invalid-correlation".to_owned(),
+    )
+}
+
+fn validate_correlation(value: &str) -> bool {
+    (16..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn validate_idempotency(value: &str) -> bool {
+    (16..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn lease_response(status: StatusCode, metadata: LeaseMetadata) -> Response {
+    let lease_id = metadata.lease_id;
+    let response = JitLeaseResponse {
+        lease_id: lease_id.to_string(),
+        eid: metadata.eid.as_str().to_owned(),
+        icam_subject: metadata.icam_subject,
+        nad_identity: metadata.nad_identity.as_str().to_owned(),
+        authorization_groups: metadata.authorization_groups,
+        issued_at: format_timestamp(metadata.issued_at),
+        expires_at: format_timestamp(metadata.expires_at),
+        status: "active".to_owned(),
+    };
+    let mut result = (status, Json(response)).into_response();
+    if status == StatusCode::CREATED {
+        let value = format!("/api/v1/jit-leases/{lease_id}");
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            result.headers_mut().insert(header::LOCATION, value);
+        }
+    }
+    result
+}
+
+fn format_timestamp(value: u64) -> String {
+    i64::try_from(value)
+        .ok()
+        .and_then(|value| time::OffsetDateTime::from_unix_timestamp(value).ok())
+        .and_then(|value| {
+            value
+                .format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_owned())
+}
+
+fn store_problem(error: StoreError, correlation_id: String) -> Response {
+    match error {
+        StoreError::Unavailable => problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "store_unavailable",
+            correlation_id,
+        ),
+        StoreError::Conflict => problem(
+            StatusCode::CONFLICT,
+            "active_lease_conflict",
+            correlation_id,
+        ),
+        StoreError::NotFound => problem(StatusCode::NOT_FOUND, "lease_not_found", correlation_id),
+        StoreError::CorruptRecord => problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "store_unavailable",
+            correlation_id,
+        ),
+        StoreError::InvalidInput(code) => {
+            problem(StatusCode::UNPROCESSABLE_ENTITY, code, correlation_id)
+        }
+    }
+}
+
+fn problem(status: StatusCode, code: &'static str, correlation_id: String) -> Response {
+    let body = ProblemResponse {
+        problem_type: "about:blank",
+        title: status.canonical_reason().unwrap_or("Request failed"),
+        status: status.as_u16(),
+        code,
+        correlation_id,
+    };
+    let mut response = (status, Json(body)).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/problem+json"),
+    );
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+    }
+    response
 }
 
 /// GET /api/v1/status - Server health and statistics.
@@ -644,6 +986,7 @@ mod tests {
             reload_tx,
             registry.clone(),
             make_test_config(),
+            None,
         );
         (router, reload_rx, registry)
     }
@@ -1148,6 +1491,7 @@ mod tests {
             reload_tx,
             registry.clone(),
             make_test_config(),
+            None,
         );
 
         // Register a session

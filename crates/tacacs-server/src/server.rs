@@ -502,7 +502,7 @@ fn compute_audit_hmac(key: &[u8], fields: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-fn audit_event(
+pub(crate) fn audit_event(
     event: &str,
     peer: &str,
     user: &str,
