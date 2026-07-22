@@ -54,6 +54,50 @@
 //! - **Reference:** [CM-3](../../../../docs/NIST-CONTROLS-MAPPING.md#cm-3-configuration-change-control)
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
+
+/// A create request whose password buffer is erased when the handler returns.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateJitLeaseRequest {
+    pub eid: String,
+    pub icam_subject: String,
+    pub nad_identity: String,
+    #[serde(deserialize_with = "deserialize_secret")]
+    pub password: Zeroizing<Vec<u8>>,
+    pub ttl_seconds: u64,
+    pub authorization_groups: Vec<String>,
+}
+
+fn deserialize_secret<'de, D>(deserializer: D) -> Result<Zeroizing<Vec<u8>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(Zeroizing::new(value.into_bytes()))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JitLeaseResponse {
+    pub lease_id: String,
+    pub eid: String,
+    pub icam_subject: String,
+    pub nad_identity: String,
+    pub authorization_groups: Vec<String>,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProblemResponse {
+    #[serde(rename = "type")]
+    pub problem_type: &'static str,
+    pub title: &'static str,
+    pub status: u16,
+    pub code: &'static str,
+    pub correlation_id: String,
+}
 
 /// Server status response.
 #[derive(Debug, Serialize, Deserialize)]

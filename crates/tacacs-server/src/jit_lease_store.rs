@@ -421,12 +421,16 @@ fn validate_groups(groups: &[String]) -> Result<(), StoreError> {
     if groups.len() > MAX_GROUPS {
         return Err(StoreError::InvalidInput("too_many_authorization_groups"));
     }
+    let mut unique = std::collections::HashSet::with_capacity(groups.len());
     for group in groups {
         let valid = !group.is_empty()
             && group.len() <= MAX_GROUP_BYTES
             && group.bytes().all(valid_group_byte);
         if !valid {
             return Err(StoreError::InvalidInput("invalid_authorization_group"));
+        }
+        if !unique.insert(group) {
+            return Err(StoreError::InvalidInput("duplicate_authorization_group"));
         }
     }
     Ok(())

@@ -42,6 +42,7 @@ redis = { version = "1.4", default-features = false, features = [
     "script",
 ] }
 uuid.workspace = true
+time.workspace = true
 
 # HTTP server for metrics and health endpoints
 axum.workspace = true
