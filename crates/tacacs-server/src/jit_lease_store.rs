@@ -398,7 +398,8 @@ fn build_connection_info(
         .into_connection_info()
         .map_err(|_| StoreError::InvalidInput("invalid_jit_store_url"))?;
     if let Some(value) = password {
-        info = info.set_password(value);
+        let redis_settings = info.redis_settings().clone().set_password(value);
+        info = info.set_redis_settings(redis_settings);
     }
     Ok(info)
 }
