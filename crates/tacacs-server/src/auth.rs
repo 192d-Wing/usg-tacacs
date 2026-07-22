@@ -79,6 +79,76 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_PASS, AuthSessionState, AuthenReply,
 };
 
+/// Authoritative source that made an authentication decision.
+///
+/// This value is returned by the authenticator rather than inferred from which
+/// backends happen to be configured. That distinction is security-critical when
+/// mutually exclusive JIT authentication is enabled for selected NADs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentitySource {
+    /// No backend authenticated the request.
+    None,
+    /// A locally configured static credential authenticated the request.
+    Local,
+    /// LDAP authenticated the request.
+    Ldap,
+    /// ICAM authenticated the request.
+    Icam,
+    /// A JITPW credential lease authenticated the request.
+    Jit,
+}
+
+impl IdentitySource {
+    /// Stable, non-secret value used in audit records.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Local => "local",
+            Self::Ldap => "ldap",
+            Self::Icam => "icam",
+            Self::Jit => "jit",
+        }
+    }
+}
+
+/// Result of an authentication backend decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticationResult {
+    /// Whether the authenticator accepted the supplied credentials.
+    pub authenticated: bool,
+    /// Backend that accepted the credentials, or [`IdentitySource::None`].
+    pub source: IdentitySource,
+    /// Authorization groups asserted by the authenticating identity provider.
+    pub groups: Vec<String>,
+    /// JIT lease identifier when the JIT backend authenticated the request.
+    pub lease_id: Option<String>,
+}
+
+impl AuthenticationResult {
+    /// Build a rejected result without leaking which lookup failed.
+    pub fn rejected() -> Self {
+        Self {
+            authenticated: false,
+            source: IdentitySource::None,
+            groups: Vec::new(),
+            lease_id: None,
+        }
+    }
+
+    /// Build a successful non-JIT result.
+    pub fn accepted(source: IdentitySource, groups: Vec<String>) -> Self {
+        if source == IdentitySource::None {
+            return Self::rejected();
+        }
+        Self {
+            authenticated: true,
+            source,
+            groups,
+            lease_id: None,
+        }
+    }
+}
+
 /// Escape special characters in LDAP filter values per RFC 4515.
 ///
 /// # NIST Controls
@@ -480,12 +550,25 @@ pub async fn verify_password_sources(
     creds: &StaticCreds,
     ldap: Option<&Arc<LdapConfig>>,
 ) -> bool {
+    verify_password_sources_result(username, password, creds, ldap)
+        .await
+        .authenticated
+}
+
+/// Verify static and LDAP credentials and report the backend that accepted them.
+#[tracing::instrument(skip(password, creds, ldap), fields(has_ldap = ldap.is_some()))]
+pub async fn verify_password_sources_result(
+    username: Option<&str>,
+    password: &[u8],
+    creds: &StaticCreds,
+    ldap: Option<&Arc<LdapConfig>>,
+) -> AuthenticationResult {
     // Prefer raw-byte match against static credentials.
     if let Some(user) = username
         && verify_pap_bytes(user, password, creds).await
     {
         tracing::debug!("authenticated via static credentials");
-        return true;
+        return AuthenticationResult::accepted(IdentitySource::Local, Vec::new());
     }
     // Try LDAP if enabled and username/password are UTF-8.
     if let (Some(user), Some(ldap_cfg)) = (username, ldap)
@@ -494,10 +577,10 @@ pub async fn verify_password_sources(
         let result = ldap_cfg.authenticate(user, pass_str).await;
         if result {
             tracing::debug!("authenticated via LDAP");
+            return AuthenticationResult::accepted(IdentitySource::Ldap, Vec::new());
         }
-        return result;
     }
-    false
+    AuthenticationResult::rejected()
 }
 
 /// Compute CHAP response for challenge-response authentication.
@@ -1157,6 +1240,36 @@ mod tests {
         let creds = make_creds();
         let result = verify_password_sources(Some("admin"), b"secret123", &creds, None).await;
         assert!(result);
+    }
+
+    #[tokio::test]
+    async fn verify_password_result_reports_actual_static_source() {
+        let creds = make_creds();
+        let result =
+            verify_password_sources_result(Some("admin"), b"secret123", &creds, None).await;
+        assert!(result.authenticated);
+        assert_eq!(result.source, IdentitySource::Local);
+        assert!(result.groups.is_empty());
+        assert!(result.lease_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_result_has_no_attributed_source() {
+        let creds = make_creds();
+        let result = verify_password_sources_result(Some("admin"), b"wrong", &creds, None).await;
+        assert!(!result.authenticated);
+        assert_eq!(result.source, IdentitySource::None);
+        assert_eq!(result.source.as_str(), "none");
+        assert!(result.groups.is_empty());
+        assert!(result.lease_id.is_none());
+    }
+
+    #[test]
+    fn identity_source_audit_labels_are_stable() {
+        assert_eq!(IdentitySource::Local.as_str(), "local");
+        assert_eq!(IdentitySource::Ldap.as_str(), "ldap");
+        assert_eq!(IdentitySource::Icam.as_str(), "icam");
+        assert_eq!(IdentitySource::Jit.as_str(), "jit");
     }
 
     #[tokio::test]
