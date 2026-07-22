@@ -903,7 +903,9 @@ impl PolicyEngine {
     ) -> Option<Vec<String>> {
         assert!(!service.is_empty(), "service must not be empty");
         assert!(!user.is_empty(), "user must not be empty");
-        let cfg = self.author_service_attributes.get(&service.to_lowercase())?;
+        let cfg = self
+            .author_service_attributes
+            .get(&service.to_lowercase())?;
         if let Some(attrs) = cfg.users.get(&user.to_lowercase()) {
             return Some(attrs.clone());
         }
@@ -1481,7 +1483,10 @@ mod tests {
         assert!(engine.is_custom_author_service("paloalto"));
         assert!(engine.is_custom_author_service("PaloAlto"));
         assert!(!engine.is_custom_author_service("shell"));
-        assert_eq!(engine.custom_author_services(), vec!["paloalto".to_string()]);
+        assert_eq!(
+            engine.custom_author_services(),
+            vec!["paloalto".to_string()]
+        );
     }
 
     #[test]
@@ -1531,7 +1536,8 @@ mod tests {
     #[test]
     fn unknown_vendor_service_returns_none() {
         let engine = PolicyEngine::from_document(make_paloalto_doc()).unwrap();
-        let attrs = engine.service_attributes_for_with_groups("ciscoasa", "alice", &["netops".into()]);
+        let attrs =
+            engine.service_attributes_for_with_groups("ciscoasa", "alice", &["netops".into()]);
         assert!(attrs.is_none());
         assert!(!engine.is_custom_author_service("ciscoasa"));
     }

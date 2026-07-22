@@ -1961,13 +1961,7 @@ async fn execute_authorization_decision(
         && !usg_tacacs_proto::header::is_known_service(&service)
         && policy_guard.is_custom_author_service(&service)
     {
-        return authorize_vendor_service(
-            request,
-            &policy_guard,
-            &effective_groups,
-            &service,
-            peer,
-        );
+        return authorize_vendor_service(request, &policy_guard, &effective_groups, &service, peer);
     }
 
     if request.is_shell_start() {
@@ -4753,7 +4747,10 @@ mod acct_semantics_tests {
         let groups = vec!["netops".to_string()];
         let resp = authorize_vendor_service(&req, &engine, &groups, "PaloAlto", "10.0.100.52:49");
         assert_eq!(resp.status, AUTHOR_STATUS_PASS_ADD);
-        assert!(resp.args.contains(&"PaloAlto-Admin-Role=superuser".to_string()));
+        assert!(
+            resp.args
+                .contains(&"PaloAlto-Admin-Role=superuser".to_string())
+        );
     }
 
     #[test]
