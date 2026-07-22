@@ -1046,6 +1046,7 @@ mod http;
 mod icam;
 mod icam_device;
 mod ip_limiter;
+mod jit_lease;
 mod metrics;
 mod policy;
 mod server;

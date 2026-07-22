@@ -58,6 +58,8 @@ openssl = "0.10"
 argon2 = "0.5"
 sha2 = "0.11"
 hmac = "0.13"
+aws-lc-rs = { version = "1.17", features = ["fips"] }
+zeroize = "1.8"
 
 # EST client for zero-touch certificate provisioning
 usg-est-client = { git = "https://gitlab.com/192d-wing/usg-est-client.git", features = [
