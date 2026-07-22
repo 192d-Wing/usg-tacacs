@@ -144,6 +144,45 @@ fn normalize_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
+#[cfg(test)]
+mod jit_nad_identity_tests {
+    use super::*;
+
+    #[test]
+    fn selects_exact_managed_certificate_identity() {
+        let names = vec![
+            "unmanaged.example.mil".to_owned(),
+            "router-01.example.mil".to_owned(),
+        ];
+        let managed = HashSet::from(["router-01.example.mil".to_owned()]);
+        let selected = select_managed_nad_identity(&names, &managed)
+            .expect("valid managed identity")
+            .expect("matching identity");
+        assert_eq!(selected.as_str(), "router-01.example.mil");
+    }
+
+    #[test]
+    fn does_not_enable_jit_for_unmanaged_certificate() {
+        let names = vec!["router-02.example.mil".to_owned()];
+        let managed = HashSet::from(["router-01.example.mil".to_owned()]);
+        let selected = select_managed_nad_identity(&names, &managed).expect("valid identity set");
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn rejects_certificate_with_multiple_managed_identities() {
+        let names = vec![
+            "router-01.example.mil".to_owned(),
+            "router-02.example.mil".to_owned(),
+        ];
+        let managed = HashSet::from([
+            "router-01.example.mil".to_owned(),
+            "router-02.example.mil".to_owned(),
+        ]);
+        assert!(select_managed_nad_identity(&names, &managed).is_err());
+    }
+}
+
 /// Per-IP connection rate limiter.
 ///
 /// # NIST Controls
@@ -456,25 +495,32 @@ fn enforce_client_cert_policy(
 }
 
 fn auth_ctx_with_nad_identity(base: AuthContext, cert_names: &[String]) -> Result<AuthContext> {
+    let jit_nad_identity = select_managed_nad_identity(cert_names, &base.jit_managed_nads)?;
+    Ok(AuthContext {
+        jit_nad_identity,
+        ..base
+    })
+}
+
+fn select_managed_nad_identity(
+    cert_names: &[String],
+    managed_nads: &HashSet<String>,
+) -> Result<Option<NadIdentity>> {
     let mut matches = cert_names
         .iter()
-        .filter(|name| base.jit_managed_nads.contains(name.as_str()))
+        .filter(|name| managed_nads.contains(name.as_str()))
         .collect::<HashSet<_>>();
     if matches.len() > 1 {
         return Err(anyhow::anyhow!(
             "client certificate matches multiple managed NAD identities"
         ));
     }
-    let jit_nad_identity = matches
+    matches
         .drain()
         .next()
         .map(|name| NadIdentity::parse(name))
         .transpose()
-        .map_err(|error| anyhow::anyhow!(error))?;
-    Ok(AuthContext {
-        jit_nad_identity,
-        ..base
-    })
+        .map_err(|error| anyhow::anyhow!(error))
 }
 
 /// Process-global HMAC key set once at startup; `None` = signing disabled.
