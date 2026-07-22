@@ -274,8 +274,7 @@ async fn create_jit_lease(
         Ok(input) => input,
         Err(error) => return store_problem(error, correlation_id),
     };
-    let audit_eid = input.eid.as_str().to_owned();
-    let audit_nad = input.nad_identity.as_str().to_owned();
+    let (audit_eid, audit_nad) = create_audit_target(&input);
     match store.create(input).await {
         Ok(outcome) => {
             let (status, metadata) = match outcome {
@@ -309,6 +308,13 @@ async fn create_jit_lease(
             store_problem(error, correlation_id)
         }
     }
+}
+
+fn create_audit_target(input: &CreateLeaseInput) -> (String, String) {
+    (
+        input.eid.as_str().to_owned(),
+        input.nad_identity.as_str().to_owned(),
+    )
 }
 
 async fn get_jit_lease(

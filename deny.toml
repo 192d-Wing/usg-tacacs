@@ -19,6 +19,8 @@ allow = [
     "OpenSSL",
     "CDLA-Permissive-2.0",
     "MIT-0",
+    # xxhash-rust (Redis connection-manager internals); permissive Boost license.
+    "BSL-1.0",
 ]
 
 [bans]

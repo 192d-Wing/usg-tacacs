@@ -398,7 +398,7 @@ fn build_connection_info(
         .into_connection_info()
         .map_err(|_| StoreError::InvalidInput("invalid_jit_store_url"))?;
     if let Some(value) = password {
-        info.redis.password = Some(value.to_owned());
+        info = info.set_password(value);
     }
     Ok(info)
 }
