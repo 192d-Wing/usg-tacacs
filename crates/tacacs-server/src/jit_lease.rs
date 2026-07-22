@@ -111,10 +111,6 @@ impl PasswordVerifier {
         Self(bytes)
     }
 
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
@@ -171,6 +167,8 @@ impl VerifierKey {
         Ok(PasswordVerifier::from_bytes(bytes))
     }
 
+    // Used when the TACACS authentication enforcement stage is connected.
+    #[allow(dead_code)]
     pub fn verify(
         &self,
         eid: &CanonicalEid,
@@ -183,7 +181,7 @@ impl VerifierKey {
         }
         let message = verifier_message(eid, nad, password);
         let key = hmac::Key::new(hmac::HMAC_SHA256, self.bytes.as_slice());
-        hmac::verify(&key, message.as_slice(), expected.as_bytes()).is_ok()
+        hmac::verify(&key, message.as_slice(), &expected.0).is_ok()
     }
 
     pub fn opaque_token(&self, label: &str, input: &[u8]) -> Result<String, ValidationError> {

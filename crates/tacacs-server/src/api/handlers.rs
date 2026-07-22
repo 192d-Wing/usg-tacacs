@@ -148,6 +148,7 @@ pub struct ApiState {
 ///
 /// Anonymous users are denied access to all endpoints.
 // NASA-RULE4-EXEMPT: route registration requires one .merge()+.route_layer() block per permission
+#[allow(clippy::too_many_arguments)]
 pub fn build_api_router(
     rbac: RbacConfig,
     policy: Arc<RwLock<PolicyEngine>>,
@@ -256,12 +257,12 @@ async fn create_jit_lease(
     Json(request): Json<CreateJitLeaseRequest>,
 ) -> Response {
     let correlation_id = match required_header(&headers, "x-correlation-id", validate_correlation) {
-        Ok(value) => value,
-        Err(response) => return response,
+        Some(value) => value,
+        None => return invalid_header_problem(),
     };
     let idempotency_key = match required_header(&headers, "idempotency-key", validate_idempotency) {
-        Ok(value) => value,
-        Err(response) => return response,
+        Some(value) => value,
+        None => return invalid_header_problem(),
     };
     let Some(store) = state.jit_lease_store.as_ref() else {
         return problem(
@@ -324,8 +325,8 @@ async fn get_jit_lease(
     headers: HeaderMap,
 ) -> Response {
     let correlation_id = match required_header(&headers, "x-correlation-id", validate_correlation) {
-        Ok(value) => value,
-        Err(response) => return response,
+        Some(value) => value,
+        None => return invalid_header_problem(),
     };
     let Some(store) = state.jit_lease_store.as_ref() else {
         return problem(
@@ -378,8 +379,8 @@ async fn revoke_jit_lease(
     headers: HeaderMap,
 ) -> Response {
     let correlation_id = match required_header(&headers, "x-correlation-id", validate_correlation) {
-        Ok(value) => value,
-        Err(response) => return response,
+        Some(value) => value,
+        None => return invalid_header_problem(),
     };
     let Some(store) = state.jit_lease_store.as_ref() else {
         return problem(
@@ -456,16 +457,17 @@ fn required_header(
     headers: &HeaderMap,
     name: &'static str,
     validator: fn(&str) -> bool,
-) -> Result<String, Response> {
+) -> Option<String> {
     let value = headers.get(name).and_then(|value| value.to_str().ok());
-    match value.filter(|value| validator(value)) {
-        Some(value) => Ok(value.to_owned()),
-        None => Err(problem(
-            StatusCode::BAD_REQUEST,
-            "invalid_header",
-            "invalid-correlation".to_owned(),
-        )),
-    }
+    value.filter(|value| validator(value)).map(str::to_owned)
+}
+
+fn invalid_header_problem() -> Response {
+    problem(
+        StatusCode::BAD_REQUEST,
+        "invalid_header",
+        "invalid-correlation".to_owned(),
+    )
 }
 
 fn validate_correlation(value: &str) -> bool {
