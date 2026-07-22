@@ -92,23 +92,6 @@ pub enum IdentitySource {
     Local,
     /// LDAP authenticated the request.
     Ldap,
-    /// ICAM authenticated the request.
-    Icam,
-    /// A JITPW credential lease authenticated the request.
-    Jit,
-}
-
-impl IdentitySource {
-    /// Stable, non-secret value used in audit records.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Local => "local",
-            Self::Ldap => "ldap",
-            Self::Icam => "icam",
-            Self::Jit => "jit",
-        }
-    }
 }
 
 /// Result of an authentication backend decision.
@@ -1242,34 +1225,29 @@ mod tests {
         assert!(result);
     }
 
-    #[tokio::test]
-    async fn verify_password_result_reports_actual_static_source() {
-        let creds = make_creds();
-        let result =
-            verify_password_sources_result(Some("admin"), b"secret123", &creds, None).await;
+    #[test]
+    fn accepted_result_reports_actual_source() {
+        let result = AuthenticationResult::accepted(IdentitySource::Local, Vec::new());
         assert!(result.authenticated);
         assert_eq!(result.source, IdentitySource::Local);
         assert!(result.groups.is_empty());
         assert!(result.lease_id.is_none());
     }
 
-    #[tokio::test]
-    async fn rejected_result_has_no_attributed_source() {
-        let creds = make_creds();
-        let result = verify_password_sources_result(Some("admin"), b"wrong", &creds, None).await;
+    #[test]
+    fn rejected_result_has_no_attributed_source() {
+        let result = AuthenticationResult::rejected();
         assert!(!result.authenticated);
         assert_eq!(result.source, IdentitySource::None);
-        assert_eq!(result.source.as_str(), "none");
         assert!(result.groups.is_empty());
         assert!(result.lease_id.is_none());
     }
 
     #[test]
-    fn identity_source_audit_labels_are_stable() {
-        assert_eq!(IdentitySource::Local.as_str(), "local");
-        assert_eq!(IdentitySource::Ldap.as_str(), "ldap");
-        assert_eq!(IdentitySource::Icam.as_str(), "icam");
-        assert_eq!(IdentitySource::Jit.as_str(), "jit");
+    fn none_cannot_be_accepted_as_an_identity_source() {
+        let result = AuthenticationResult::accepted(IdentitySource::None, Vec::new());
+        assert!(!result.authenticated);
+        assert_eq!(result.source, IdentitySource::None);
     }
 
     #[tokio::test]
