@@ -16,6 +16,7 @@ nav = [
     { "Operations" = "operations.md" },
     { "Container Deployment" = "container.md" },
     { "Management API" = "admin/management-api.md" },
+    { "JIT Password Leases" = "admin/jit-leases.md" },
     { "Reverse Proxy mTLS" = "admin/reverse-proxy-mtls.md" },
     { "EST Provisioning" = "est-provisioning.md" },
   ]},
