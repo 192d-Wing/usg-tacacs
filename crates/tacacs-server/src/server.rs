@@ -1582,6 +1582,78 @@ fn author_service_name(req: &AuthorizationRequest) -> Option<String> {
 /// | AC-3 | Access Enforcement | Returns vendor role/scope per identity |
 /// | AC-6 | Least Privilege | Role granted is bounded by IdP group membership |
 /// | AU-12 | Audit Generation | Logs allow/deny decision |
+fn audit_vendor_authz(
+    request: &AuthorizationRequest,
+    peer: &str,
+    response: &AuthorizationResponse,
+    allowed: bool,
+) {
+    assert!(!peer.is_empty(), "peer must not be empty");
+    assert!(!response.data.is_empty(), "audit data must not be empty");
+    let (event, status, reason) = if allowed {
+        ("authz_policy_allow", "pass", "policy-vendor")
+    } else if request.user.is_empty() {
+        ("authz_policy_deny", "fail", "vendor-no-user")
+    } else {
+        ("authz_policy_deny", "fail", "vendor-no-mapping")
+    };
+    audit_event(
+        event,
+        peer,
+        &request.user,
+        request.header.session_id,
+        status,
+        reason,
+        &response.data,
+    );
+}
+
+fn vendor_no_user_response(request: &AuthorizationRequest, peer: &str) -> AuthorizationResponse {
+    assert!(request.user.is_empty(), "user must be empty");
+    assert!(!peer.is_empty(), "peer must not be empty");
+    let response = authz_reason_response(
+        AUTHOR_STATUS_FAIL,
+        "authorization request missing user".to_string(),
+        "vendor-no-user",
+        None,
+    );
+    audit_vendor_authz(request, peer, &response, false);
+    response
+}
+
+fn vendor_mapping_response(
+    request: &AuthorizationRequest,
+    service: &str,
+    context: &str,
+    attributes: Option<Vec<String>>,
+    peer: &str,
+) -> AuthorizationResponse {
+    assert!(!request.user.is_empty(), "user must not be empty");
+    assert!(!service.is_empty(), "service must not be empty");
+    let (response, allowed) = match attributes {
+        Some(args) => (
+            AuthorizationResponse {
+                status: AUTHOR_STATUS_PASS_ADD,
+                server_msg: String::new(),
+                data: format!("reason=policy-vendor;service={service};ctx={context}"),
+                args,
+            },
+            true,
+        ),
+        None => (
+            authz_reason_response(
+                AUTHOR_STATUS_FAIL,
+                format!("no {service} role mapping for user"),
+                "vendor-no-mapping",
+                None,
+            ),
+            false,
+        ),
+    };
+    audit_vendor_authz(request, peer, &response, allowed);
+    response
+}
+
 fn authorize_vendor_service(
     request: &AuthorizationRequest,
     policy: &PolicyEngine,
@@ -1591,65 +1663,14 @@ fn authorize_vendor_service(
 ) -> AuthorizationResponse {
     assert!(!service.is_empty(), "service must not be empty");
     assert!(!peer.is_empty(), "peer must not be empty");
-    let ctx = authz_context(request);
     // RFC validation does not require a non-empty user, but the policy resolver
     // does; deny (rather than panic) a request that names no user.
     if request.user.is_empty() {
-        let resp = authz_reason_response(
-            AUTHOR_STATUS_FAIL,
-            "authorization request missing user".to_string(),
-            "vendor-no-user",
-            None,
-        );
-        audit_event(
-            "authz_policy_deny",
-            peer,
-            &request.user,
-            request.header.session_id,
-            "fail",
-            "vendor-no-user",
-            &resp.data,
-        );
-        return resp;
+        return vendor_no_user_response(request, peer);
     }
-    match policy.service_attributes_for_with_groups(service, &request.user, groups) {
-        Some(attrs) => {
-            let resp = AuthorizationResponse {
-                status: AUTHOR_STATUS_PASS_ADD,
-                server_msg: String::new(),
-                data: format!("reason=policy-vendor;service={service};ctx={ctx}"),
-                args: attrs,
-            };
-            audit_event(
-                "authz_policy_allow",
-                peer,
-                &request.user,
-                request.header.session_id,
-                "pass",
-                "policy-vendor",
-                &resp.data,
-            );
-            resp
-        }
-        None => {
-            let resp = authz_reason_response(
-                AUTHOR_STATUS_FAIL,
-                format!("no {service} role mapping for user"),
-                "vendor-no-mapping",
-                None,
-            );
-            audit_event(
-                "authz_policy_deny",
-                peer,
-                &request.user,
-                request.header.session_id,
-                "fail",
-                "vendor-no-mapping",
-                &resp.data,
-            );
-            resp
-        }
-    }
+    let attributes = policy.service_attributes_for_with_groups(service, &request.user, groups);
+    let context = authz_context(request);
+    vendor_mapping_response(request, service, &context, attributes, peer)
 }
 
 /// Authorize shell start command.
@@ -1961,13 +1982,7 @@ async fn execute_authorization_decision(
         && !usg_tacacs_proto::header::is_known_service(&service)
         && policy_guard.is_custom_author_service(&service)
     {
-        return authorize_vendor_service(
-            request,
-            &policy_guard,
-            &effective_groups,
-            &service,
-            peer,
-        );
+        return authorize_vendor_service(request, &policy_guard, &effective_groups, &service, peer);
     }
 
     if request.is_shell_start() {
@@ -4753,7 +4768,10 @@ mod acct_semantics_tests {
         let groups = vec!["netops".to_string()];
         let resp = authorize_vendor_service(&req, &engine, &groups, "PaloAlto", "10.0.100.52:49");
         assert_eq!(resp.status, AUTHOR_STATUS_PASS_ADD);
-        assert!(resp.args.contains(&"PaloAlto-Admin-Role=superuser".to_string()));
+        assert!(
+            resp.args
+                .contains(&"PaloAlto-Admin-Role=superuser".to_string())
+        );
     }
 
     #[test]

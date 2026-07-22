@@ -23,3 +23,10 @@ ignore = [
 # Note: cargo-audit does not auto-read this project-local file; CI passes these
 # same IDs via `cargo audit --ignore` (see .github/workflows/ci.yml). This file
 # is the human-readable record of why each is accepted.
+
+# `spin` 0.9.8 is yanked but has no known RustSec vulnerability. It is selected
+# by lazy_static's `spin_no_std` feature through num-bigint-dig, rsa, and the
+# pinned usg-est-client dependency. There is no non-yanked release satisfying
+# lazy_static's `^0.9` requirement. CI reports this warning while continuing to
+# deny vulnerabilities and unsound advisories. Remove this accommodation when
+# the EST dependency chain no longer enables lazy_static/spin_no_std.
