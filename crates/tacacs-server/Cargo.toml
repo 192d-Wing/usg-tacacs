@@ -50,6 +50,10 @@ hyper = { version = "1.4", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tower = "0.5"
+utoipa-swagger-ui = { version = "9.0.2", default-features = false, features = [
+    "axum",
+    "vendored",
+] }
 
 # Prometheus metrics
 prometheus = "0.14"

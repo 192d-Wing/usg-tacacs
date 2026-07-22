@@ -75,6 +75,7 @@ use std::time::SystemTime;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{info, warn};
 use usg_tacacs_policy::PolicyEngine;
+use utoipa_swagger_ui::{Config as SwaggerConfig, SwaggerUi};
 use uuid::Uuid;
 
 /// Runtime configuration snapshot for API display.
@@ -247,7 +248,27 @@ pub fn build_api_router(
                     "read:jit-leases",
                 ))),
         )
+        .merge(
+            Router::new()
+                .merge(
+                    SwaggerUi::new("/api/docs/jit")
+                        .config(SwaggerConfig::new(["/api/docs/jit/openapi.yaml"])),
+                )
+                .route("/api/docs/jit/openapi.yaml", get(get_jit_openapi))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    "read:jit-leases",
+                ))),
+        )
         .with_state(state)
+}
+
+/// Return the version-controlled JIT lease OpenAPI 3.1.1 contract.
+async fn get_jit_openapi() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/yaml; charset=utf-8")],
+        include_str!("../../../../docs/api/jit-lease.openapi.yaml"),
+    )
 }
 
 async fn create_jit_lease(
@@ -1048,6 +1069,67 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/status")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn jit_openapi_requires_read_permission() {
+        let app = make_test_router(make_test_rbac());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/docs/jit/openapi.yaml")
+                    .header("X-User-CN", "CN=viewer.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn jit_openapi_serves_versioned_contract() {
+        use http_body_util::BodyExt;
+
+        let app = make_test_router(make_test_rbac());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/docs/jit/openapi.yaml")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/yaml; charset=utf-8"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.starts_with(b"openapi: 3.1.1"));
+    }
+
+    #[tokio::test]
+    async fn jit_swagger_ui_is_available_to_authorized_admin() {
+        let app = make_test_router(make_test_rbac());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/docs/jit/")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
