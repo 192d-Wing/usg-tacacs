@@ -750,6 +750,8 @@ fn check_and_update_attempts(
 }
 
 #[allow(clippy::too_many_arguments)]
+// Retain the non-JIT entry point for existing callers and focused unit tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn handle_ascii_continue(
     cont_user_msg: &[u8],
     cont_data: &[u8],

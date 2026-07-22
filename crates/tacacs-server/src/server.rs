@@ -3012,6 +3012,7 @@ fn build_ascii_password_prompt(policy_prompt: Option<&[u8]>, service: Option<u8>
 ///
 /// When ICAM is configured, credentials are forwarded exclusively to ICAM.
 /// On ICAM success, `icam_groups_out` is populated with the JWT groups claim.
+#[allow(clippy::too_many_arguments)]
 async fn verify_ascii_credentials_all_sources(
     username: Option<&str>,
     username_raw: Option<&Vec<u8>>,
