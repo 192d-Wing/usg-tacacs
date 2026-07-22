@@ -61,6 +61,7 @@
 use crate::auth::{LdapConfig, verify_pap_bytes, verify_pap_bytes_username};
 use crate::icam::icam_groups_from_jwt;
 use crate::icam_device::{DeviceFlowConfig, DevicePollResult, icam_device_poll_token};
+use crate::jit_lease_store::JitNadAuthenticator;
 use openssl::rand::rand_bytes;
 use std::sync::Arc;
 use std::time::Duration;
@@ -304,7 +305,22 @@ async fn verify_password_all_sources(
     ldap: Option<&Arc<LdapConfig>>,
     icam: Option<&crate::icam::IcamConfig>,
     icam_groups_out: &mut Vec<String>,
+    jit: Option<&JitNadAuthenticator>,
 ) -> bool {
+    if let (Some(authenticator), Some(user)) = (jit, state.username.as_deref()) {
+        return match authenticator.authenticate(user, password).await {
+            Ok(result) => {
+                if let Some(metadata) = result.metadata {
+                    *icam_groups_out = metadata.authorization_groups;
+                }
+                result.authenticated
+            }
+            Err(error) => {
+                tracing::error!(error = %error, "JIT lease authentication failed closed");
+                false
+            }
+        };
+    }
     // ICAM-delegated authentication: forward credentials to OIDC exclusively.
     if let (Some(icam_cfg), Some(user)) = (icam, state.username.as_deref())
         && let Ok(pwd) = std::str::from_utf8(password)
@@ -385,6 +401,7 @@ async fn handle_password_phase(
     icam: Option<&crate::icam::IcamConfig>,
     icam_groups_out: &mut Vec<String>,
     pwd_prompt: Vec<u8>,
+    jit: Option<&JitNadAuthenticator>,
 ) -> AuthenReply {
     state.ascii_pass_attempts = state.ascii_pass_attempts.saturating_add(1);
 
@@ -408,6 +425,7 @@ async fn handle_password_phase(
         ldap,
         icam,
         icam_groups_out,
+        jit,
     )
     .await;
 
@@ -745,6 +763,38 @@ pub async fn handle_ascii_continue(
     device_flow: Option<&DeviceFlowConfig>,
     icam_groups_out: &mut Vec<String>,
 ) -> AuthenReply {
+    handle_ascii_continue_jit(
+        cont_user_msg,
+        cont_data,
+        cont_flags,
+        state,
+        policy,
+        credentials,
+        config,
+        ldap,
+        icam,
+        device_flow,
+        icam_groups_out,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_ascii_continue_jit(
+    cont_user_msg: &[u8],
+    cont_data: &[u8],
+    cont_flags: u8,
+    state: &mut AuthSessionState,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    credentials: &crate::config::StaticCreds,
+    config: &AsciiConfig,
+    ldap: Option<&Arc<LdapConfig>>,
+    icam: Option<&crate::icam::IcamConfig>,
+    device_flow: Option<&DeviceFlowConfig>,
+    icam_groups_out: &mut Vec<String>,
+    jit: Option<&JitNadAuthenticator>,
+) -> AuthenReply {
     let (uname_prompt, pwd_prompt) = build_prompts_from_state(policy, state).await;
 
     if cont_flags & AUTHEN_CONT_ABORT != 0 {
@@ -787,6 +837,7 @@ pub async fn handle_ascii_continue(
             icam,
             icam_groups_out,
             pwd_prompt,
+            jit,
         )
         .await
     } else {

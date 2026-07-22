@@ -121,6 +121,7 @@ struct AppState {
     /// HMAC-SHA256 key for audit event signing (`None` = disabled).
     audit_hmac_key: Option<Arc<Vec<u8>>>,
     jit_lease_store: Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
+    jit_managed_nads: Arc<std::collections::HashSet<String>>,
     legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
     conn_limiter: ConnLimiter,
     session_registry: Arc<SessionRegistry>,
@@ -484,6 +485,9 @@ fn build_tls_contexts(
         username_limiter: state.username_limiter.clone(),
         ip_limiter: state.ip_limiter.clone(),
         audit_hmac_key: state.audit_hmac_key.clone(),
+        jit_lease_store: state.jit_lease_store.clone(),
+        jit_managed_nads: state.jit_managed_nads.clone(),
+        jit_nad_identity: None,
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let tls_identity = TlsIdentityConfig {
@@ -566,6 +570,9 @@ fn setup_legacy_listener(
         username_limiter: state.username_limiter.clone(),
         ip_limiter: state.ip_limiter.clone(),
         audit_hmac_key: state.audit_hmac_key.clone(),
+        jit_lease_store: state.jit_lease_store.clone(),
+        jit_managed_nads: state.jit_managed_nads.clone(),
+        jit_nad_identity: None,
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let nad_secrets = state.legacy_nad_secrets.clone();
@@ -939,6 +946,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
     let audit_hmac_key = resolve_audit_hmac_key(args).map_err(anyhow::Error::msg)?;
     setup_group_cache(args).await?;
     let jit_lease_store = setup_jit_lease_store(args).await?;
+    let jit_managed_nads = resolve_jit_managed_nads(jit_lease_store.is_some())?;
     if jit_lease_store.is_some() && audit_hmac_key.is_none() {
         bail!("JIT lease management requires AUDIT_HMAC_KEY_FILE for signed audit records");
     }
@@ -971,6 +979,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         ip_limiter,
         audit_hmac_key,
         jit_lease_store,
+        jit_managed_nads,
         legacy_nad_secrets: Arc::new(
             args.legacy_nad_secret
                 .iter()
@@ -983,6 +992,27 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         est_config,
         policy_path,
     })
+}
+
+fn resolve_jit_managed_nads(enabled: bool) -> Result<Arc<std::collections::HashSet<String>>> {
+    if !enabled {
+        return Ok(Arc::new(std::collections::HashSet::new()));
+    }
+    let raw = std::env::var("JIT_MANAGED_NADS").context("JIT_MANAGED_NADS is required")?;
+    let mut identities = std::collections::HashSet::new();
+    for value in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let identity =
+            crate::jit_lease::NadIdentity::parse(value).map_err(|error| anyhow::anyhow!(error))?;
+        identities.insert(identity.as_str().to_owned());
+    }
+    if identities.is_empty() {
+        bail!("JIT_MANAGED_NADS must contain at least one NAD certificate identity");
+    }
+    Ok(Arc::new(identities))
 }
 
 /// Configure the authoritative JIT store from file-backed secrets.

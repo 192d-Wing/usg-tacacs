@@ -46,8 +46,6 @@ redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[4])
 redis.call('SET', KEYS[3], ARGV[1] .. ':' .. ARGV[2], 'EX', ARGV[4])
 return {0, ARGV[1]}
 "#;
-// Used when the TACACS authentication enforcement stage is connected.
-#[allow(dead_code)]
 const LOOKUP_SCRIPT: &str = r#"
 local lease_id = redis.call('GET', KEYS[1])
 if not lease_id then return nil end
@@ -126,10 +124,38 @@ pub enum CreateLeaseOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct LeaseAuthentication {
     pub authenticated: bool,
     pub metadata: Option<LeaseMetadata>,
+}
+
+#[derive(Clone)]
+pub struct JitNadAuthenticator {
+    store: Arc<JitLeaseStore>,
+    nad_identity: NadIdentity,
+}
+
+impl JitNadAuthenticator {
+    pub fn new(store: Arc<JitLeaseStore>, nad_identity: NadIdentity) -> Self {
+        Self {
+            store,
+            nad_identity,
+        }
+    }
+
+    pub async fn authenticate(
+        &self,
+        username: &str,
+        password: &[u8],
+    ) -> Result<LeaseAuthentication, StoreError> {
+        let eid = match CanonicalEid::parse(username) {
+            Ok(eid) => eid,
+            Err(_) => return Ok(rejected_authentication()),
+        };
+        self.store
+            .authenticate(&eid, &self.nad_identity, password)
+            .await
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -217,8 +243,6 @@ impl JitLeaseStore {
         Ok(())
     }
 
-    // Used when the TACACS authentication enforcement stage is connected.
-    #[allow(dead_code)]
     pub async fn authenticate(
         &self,
         eid: &CanonicalEid,
@@ -285,7 +309,6 @@ impl JitLeaseStore {
         })
     }
 
-    #[allow(dead_code)]
     fn verify_record(
         &self,
         record: StoredLease,
@@ -331,7 +354,6 @@ impl JitLeaseStore {
         format!("{}:lease:{lease_id}", self.key_prefix)
     }
 
-    #[allow(dead_code)]
     fn lookup_key(&self, eid: &CanonicalEid, nad: &NadIdentity) -> Result<String, StoreError> {
         Ok(format!(
             "{}:lookup:{}",
@@ -486,7 +508,6 @@ fn fips_uuid() -> Result<Uuid, StoreError> {
     Ok(Uuid::from_bytes(bytes))
 }
 
-#[allow(dead_code)]
 fn rejected_authentication() -> LeaseAuthentication {
     LeaseAuthentication {
         authenticated: false,
