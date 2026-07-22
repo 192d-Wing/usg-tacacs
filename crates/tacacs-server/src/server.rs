@@ -3020,7 +3020,22 @@ async fn verify_ascii_credentials_all_sources(
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
     icam_groups_out: &mut Vec<String>,
+    jit: Option<&JitNadAuthenticator>,
 ) -> bool {
+    if let (Some(authenticator), Some(user)) = (jit, username) {
+        return match authenticator.authenticate(user, password_data).await {
+            Ok(authentication) => {
+                if let Some(metadata) = authentication.metadata {
+                    *icam_groups_out = metadata.authorization_groups;
+                }
+                authentication.authenticated
+            }
+            Err(error) => {
+                warn!(error = %error, "JIT lease authentication failed closed");
+                false
+            }
+        };
+    }
     if let (Some(icam_cfg), Some(user)) = (icam.as_ref(), username)
         && let Ok(pwd) = std::str::from_utf8(password_data)
     {
@@ -4035,7 +4050,6 @@ where
                 ldap,
                 secret,
                 peer,
-                jit,
             )
             .await
         }
@@ -4057,6 +4071,7 @@ where
                 ascii_cfg,
                 secret,
                 peer,
+                jit,
             )
             .await
         }
@@ -4210,7 +4225,6 @@ where
             deadline,
             packet_read_timeout_secs,
             peer,
-            jit,
         )
         .await?
         else {
@@ -4234,6 +4248,7 @@ where
             ascii_cfg,
             secret,
             peer,
+            jit,
         )
         .await;
         if matches!(ctrl, Ok(LoopControl::Break) | Err(_)) {
