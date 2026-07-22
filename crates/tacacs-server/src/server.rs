@@ -75,7 +75,7 @@
 //!   and authorization decisions are logged via tracing.
 
 use crate::ascii::{
-    AsciiConfig, calc_ascii_backoff_capped, field_for_policy, handle_ascii_continue,
+    AsciiConfig, calc_ascii_backoff_capped, field_for_policy, handle_ascii_continue_jit,
     username_for_policy,
 };
 use crate::auth::{
@@ -85,6 +85,8 @@ use crate::auth::{
 use crate::config::StaticCreds;
 use crate::icam::{IcamAuthResult, IcamConfig, icam_authenticate};
 use crate::icam_device::{DeviceFlowConfig, icam_device_auth_start, icam_device_format_prompt};
+use crate::jit_lease::NadIdentity;
+use crate::jit_lease_store::{JitLeaseStore, JitNadAuthenticator};
 use crate::policy::enforce_server_msg;
 use crate::session::{SingleConnectState, TaskIdTracker};
 use crate::session_registry::SessionRegistry;
@@ -95,7 +97,7 @@ use openssl::nid::Nid;
 use openssl::rand::rand_bytes;
 use openssl::x509::X509;
 use sha2::Sha256;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -139,6 +141,45 @@ fn normalize_ip(ip: IpAddr) -> IpAddr {
             .map(IpAddr::V4)
             .unwrap_or(IpAddr::V6(v6)),
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod jit_nad_identity_tests {
+    use super::*;
+
+    #[test]
+    fn selects_exact_managed_certificate_identity() {
+        let names = vec![
+            "unmanaged.example.mil".to_owned(),
+            "router-01.example.mil".to_owned(),
+        ];
+        let managed = HashSet::from(["router-01.example.mil".to_owned()]);
+        let selected = select_managed_nad_identity(&names, &managed)
+            .expect("valid managed identity")
+            .expect("matching identity");
+        assert_eq!(selected.as_str(), "router-01.example.mil");
+    }
+
+    #[test]
+    fn does_not_enable_jit_for_unmanaged_certificate() {
+        let names = vec!["router-02.example.mil".to_owned()];
+        let managed = HashSet::from(["router-01.example.mil".to_owned()]);
+        let selected = select_managed_nad_identity(&names, &managed).expect("valid identity set");
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn rejects_certificate_with_multiple_managed_identities() {
+        let names = vec![
+            "router-01.example.mil".to_owned(),
+            "router-02.example.mil".to_owned(),
+        ];
+        let managed = HashSet::from([
+            "router-01.example.mil".to_owned(),
+            "router-02.example.mil".to_owned(),
+        ]);
+        assert!(select_managed_nad_identity(&names, &managed).is_err());
     }
 }
 
@@ -305,6 +346,12 @@ pub(crate) struct AuthContext {
     pub ip_limiter: Arc<crate::ip_limiter::IpRateLimiter>,
     /// HMAC-SHA256 key for audit event signing; `None` disables signing (AU-9).
     pub audit_hmac_key: Option<Arc<Vec<u8>>>,
+    /// Authoritative JIT lease store, enabled only for explicitly managed NADs.
+    pub jit_lease_store: Option<Arc<JitLeaseStore>>,
+    /// Certificate identities that must use JIT authentication exclusively.
+    pub jit_managed_nads: Arc<HashSet<String>>,
+    /// Trusted NAD identity selected from the authenticated client certificate.
+    pub jit_nad_identity: Option<NadIdentity>,
 }
 
 /// TLS-specific configuration for client certificate validation.
@@ -438,15 +485,42 @@ fn enforce_client_cert_policy(
     peer: &SocketAddr,
     allowed_cn: &[String],
     allowed_san: &[String],
-) -> Result<()> {
-    // NIST IA-3: Skip if no allowlists configured (allow all valid certs)
-    if allowed_cn.is_empty() && allowed_san.is_empty() {
-        return Ok(());
-    }
-
+) -> Result<Vec<String>> {
     let x509 = extract_cert_from_tls_stream(stream, peer)?;
     let names = extract_cert_names(&x509);
-    check_cert_names_allowed(&names, allowed_cn, allowed_san)
+    if !allowed_cn.is_empty() || !allowed_san.is_empty() {
+        check_cert_names_allowed(&names, allowed_cn, allowed_san)?;
+    }
+    Ok(names)
+}
+
+fn auth_ctx_with_nad_identity(base: AuthContext, cert_names: &[String]) -> Result<AuthContext> {
+    let jit_nad_identity = select_managed_nad_identity(cert_names, &base.jit_managed_nads)?;
+    Ok(AuthContext {
+        jit_nad_identity,
+        ..base
+    })
+}
+
+fn select_managed_nad_identity(
+    cert_names: &[String],
+    managed_nads: &HashSet<String>,
+) -> Result<Option<NadIdentity>> {
+    let mut matches = cert_names
+        .iter()
+        .filter(|name| managed_nads.contains(name.as_str()))
+        .collect::<HashSet<_>>();
+    if matches.len() > 1 {
+        return Err(anyhow::anyhow!(
+            "client certificate matches multiple managed NAD identities"
+        ));
+    }
+    matches
+        .drain()
+        .next()
+        .map(|name| NadIdentity::parse(name))
+        .transpose()
+        .map_err(|error| anyhow::anyhow!(error))
 }
 
 /// Process-global HMAC key set once at startup; `None` = signing disabled.
@@ -1175,15 +1249,26 @@ pub async fn serve_tls(
             };
             match conn_acceptor.accept(socket).await {
                 Ok(stream) => {
-                    if let Err(err) = enforce_client_cert_policy(
+                    let cert_names = match enforce_client_cert_policy(
                         &stream,
                         &peer_addr,
                         &conn_tls_identity.allowed_cn,
                         &conn_tls_identity.allowed_san,
                     ) {
-                        warn!(error = %err, peer = %peer_addr, "TLS client cert rejected");
-                        return;
-                    }
+                        Ok(names) => names,
+                        Err(err) => {
+                            warn!(error = %err, peer = %peer_addr, "TLS client cert rejected");
+                            return;
+                        }
+                    };
+                    let conn_auth_ctx = match auth_ctx_with_nad_identity(conn_auth_ctx, &cert_names)
+                    {
+                        Ok(context) => context,
+                        Err(err) => {
+                            warn!(error = %err, peer = %peer_addr, "ambiguous JIT NAD identity");
+                            return;
+                        }
+                    };
                     if let Err(err) = handle_connection(
                         stream,
                         peer_addr,
@@ -1237,6 +1322,9 @@ fn auth_ctx_with_secret(base: AuthContext, secret: Option<Arc<Vec<u8>>>) -> Auth
         username_limiter: base.username_limiter.clone(),
         ip_limiter: base.ip_limiter.clone(),
         audit_hmac_key: base.audit_hmac_key.clone(),
+        jit_lease_store: base.jit_lease_store.clone(),
+        jit_managed_nads: base.jit_managed_nads.clone(),
+        jit_nad_identity: base.jit_nad_identity.clone(),
     }
 }
 
@@ -2746,6 +2834,7 @@ async fn handle_authen_start_pap(
     icam: &Option<Arc<IcamConfig>>,
     icam_groups_out: &mut Vec<String>,
     peer: &str,
+    jit: Option<&JitNadAuthenticator>,
 ) -> Result<AuthenReply> {
     state.authen_type = Some(AUTHEN_TYPE_PAP);
     let password = match start.parsed_data() {
@@ -2761,6 +2850,25 @@ async fn handle_authen_start_pap(
             });
         }
     };
+
+    if let Some(authenticator) = jit {
+        let result = authenticator
+            .authenticate(&start.user, password.as_bytes())
+            .await;
+        let ok = match result {
+            Ok(authentication) => {
+                if let Some(metadata) = authentication.metadata {
+                    *icam_groups_out = metadata.authorization_groups;
+                }
+                authentication.authenticated
+            }
+            Err(error) => {
+                warn!(error = %error, peer = %peer, "JIT lease authentication failed closed");
+                false
+            }
+        };
+        return Ok(build_pap_auth_result(ok, start.service, start.action, policy).await);
+    }
 
     // ICAM-delegated authentication: forward credentials to OIDC token endpoint.
     // When ICAM is configured it is the exclusive source; no fallback to local creds.
@@ -2904,6 +3012,7 @@ fn build_ascii_password_prompt(policy_prompt: Option<&[u8]>, service: Option<u8>
 ///
 /// When ICAM is configured, credentials are forwarded exclusively to ICAM.
 /// On ICAM success, `icam_groups_out` is populated with the JWT groups claim.
+#[allow(clippy::too_many_arguments)]
 async fn verify_ascii_credentials_all_sources(
     username: Option<&str>,
     username_raw: Option<&Vec<u8>>,
@@ -2912,7 +3021,22 @@ async fn verify_ascii_credentials_all_sources(
     ldap: &Option<Arc<LdapConfig>>,
     icam: &Option<Arc<IcamConfig>>,
     icam_groups_out: &mut Vec<String>,
+    jit: Option<&JitNadAuthenticator>,
 ) -> bool {
+    if let (Some(authenticator), Some(user)) = (jit, username) {
+        return match authenticator.authenticate(user, password_data).await {
+            Ok(authentication) => {
+                if let Some(metadata) = authentication.metadata {
+                    *icam_groups_out = metadata.authorization_groups;
+                }
+                authentication.authenticated
+            }
+            Err(error) => {
+                warn!(error = %error, "JIT lease authentication failed closed");
+                false
+            }
+        };
+    }
     if let (Some(icam_cfg), Some(user)) = (icam.as_ref(), username)
         && let Ok(pwd) = std::str::from_utf8(password_data)
     {
@@ -3020,6 +3144,7 @@ async fn handle_authen_start_ascii(
     device_flow: &Option<Arc<DeviceFlowConfig>>,
     icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
+    jit: Option<&JitNadAuthenticator>,
 ) -> AuthenReply {
     state.authen_type = Some(AUTHEN_TYPE_ASCII);
     state.service = Some(start.service);
@@ -3050,6 +3175,7 @@ async fn handle_authen_start_ascii(
             ldap,
             icam,
             icam_groups_out,
+            jit,
         )
         .await;
         if !ok
@@ -3574,6 +3700,7 @@ async fn process_authen_start_packet(
     icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
     peer: &str,
+    jit: Option<&JitNadAuthenticator>,
 ) -> Result<AuthenReply, LoopControl> {
     match start.authen_type {
         AUTHEN_TYPE_ASCII => Ok(handle_authen_start_ascii(
@@ -3586,6 +3713,7 @@ async fn process_authen_start_packet(
             device_flow,
             icam_groups_out,
             ascii_cfg,
+            jit,
         )
         .await),
         AUTHEN_TYPE_PAP => handle_authen_start_pap(
@@ -3597,6 +3725,7 @@ async fn process_authen_start_packet(
             icam,
             icam_groups_out,
             peer,
+            jit,
         )
         .await
         .map_err(|_| LoopControl::Break),
@@ -3625,10 +3754,11 @@ async fn process_authen_continue_packet(
     device_flow: &Option<Arc<DeviceFlowConfig>>,
     icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
+    jit: Option<&JitNadAuthenticator>,
 ) -> AuthenReply {
     match state.authen_type {
         Some(AUTHEN_TYPE_ASCII) => {
-            handle_ascii_continue(
+            handle_ascii_continue_jit(
                 cont.user_msg.as_slice(),
                 cont.data.as_slice(),
                 cont.flags,
@@ -3640,6 +3770,7 @@ async fn process_authen_continue_packet(
                 icam.as_deref(),
                 device_flow.as_deref(),
                 icam_groups_out,
+                jit,
             )
             .await
         }
@@ -3727,6 +3858,7 @@ async fn process_authen_packet(
     icam_groups_out: &mut Vec<String>,
     ascii_cfg: &AsciiConfig,
     peer: &str,
+    jit: Option<&JitNadAuthenticator>,
 ) -> Result<AuthenReply, LoopControl> {
     match packet {
         AuthenPacket::Start(start) => {
@@ -3741,6 +3873,7 @@ async fn process_authen_packet(
                 icam_groups_out,
                 ascii_cfg,
                 peer,
+                jit,
             )
             .await
         }
@@ -3755,6 +3888,7 @@ async fn process_authen_packet(
                 device_flow,
                 icam_groups_out,
                 ascii_cfg,
+                jit,
             )
             .await;
             Ok(reply)
@@ -3781,6 +3915,7 @@ async fn handle_authentication_packet<S>(
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
+    jit: Option<&JitNadAuthenticator>,
 ) -> Result<LoopControl>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -3800,7 +3935,11 @@ where
             None => return Ok(LoopControl::Break),
         };
     let mut icam_groups: Vec<String> = Vec::new();
-    let identity_source = resolve_identity_source(icam, ldap);
+    let identity_source = if jit.is_some() {
+        "jit"
+    } else {
+        resolve_identity_source(icam, ldap)
+    };
     let reply = match process_authen_packet(
         &packet,
         state,
@@ -3812,6 +3951,7 @@ where
         &mut icam_groups,
         ascii_cfg,
         peer,
+        jit,
     )
     .await
     {
@@ -3896,6 +4036,7 @@ async fn dispatch_packet_to_handler<S>(
     ascii_cfg: &AsciiConfig,
     secret: Option<&[u8]>,
     peer: &str,
+    jit: Option<&JitNadAuthenticator>,
 ) -> Result<LoopControl>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -3931,6 +4072,7 @@ where
                 ascii_cfg,
                 secret,
                 peer,
+                jit,
             )
             .await
         }
@@ -4069,6 +4211,7 @@ async fn connection_loop<S>(
     single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
     packet_read_timeout_secs: u64,
+    jit: Option<&JitNadAuthenticator>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -4106,6 +4249,7 @@ where
             ascii_cfg,
             secret,
             peer,
+            jit,
         )
         .await;
         if matches!(ctrl, Ok(LoopControl::Break) | Err(_)) {
@@ -4152,6 +4296,13 @@ where
     let ldap = &auth_ctx.ldap;
     let icam = &auth_ctx.icam;
     let device_flow = &auth_ctx.device_flow;
+    let jit = match (
+        auth_ctx.jit_lease_store.clone(),
+        auth_ctx.jit_nad_identity.clone(),
+    ) {
+        (Some(store), Some(nad_identity)) => Some(JitNadAuthenticator::new(store, nad_identity)),
+        _ => None,
+    };
     let username_limiter = auth_ctx.username_limiter.clone();
     let ip_limiter = auth_ctx.ip_limiter.clone();
     // Audit HMAC key is initialized once at startup in run_server (AU-9), not
@@ -4186,6 +4337,7 @@ where
         single_connect_idle_secs,
         single_connect_keepalive_secs,
         packet_read_timeout_secs,
+        jit.as_ref(),
     )
     .await?;
 

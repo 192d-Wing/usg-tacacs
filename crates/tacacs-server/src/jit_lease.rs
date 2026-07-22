@@ -167,8 +167,6 @@ impl VerifierKey {
         Ok(PasswordVerifier::from_bytes(bytes))
     }
 
-    // Used when the TACACS authentication enforcement stage is connected.
-    #[allow(dead_code)]
     pub fn verify(
         &self,
         eid: &CanonicalEid,
