@@ -614,7 +614,8 @@ mod tests {
     use crate::config::StaticCreds;
     use crate::ip_limiter::IpRateLimiter;
     use crate::server::{
-        AuthContext, ConnLimiter, ConnectionConfig, TlsIdentityConfig, serve_tls, tls_acceptor,
+        AuthContext, ConnLimiter, ConnectionConfig, TlsIdentityConfig, serve_legacy, serve_tls,
+        tls_acceptor,
     };
     use crate::session_registry::SessionRegistry;
     use crate::username_limiter::UsernameRateLimiter;
@@ -625,9 +626,14 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::net::{Ipv4Addr, SocketAddr};
     use tempfile::TempDir;
+    use tokio::net::{TcpSocket, TcpStream};
     use tokio::sync::RwLock;
     use usg_tacacs_client_tls::{AuthenResult, TacacsClient, TlsClientConfig};
     use usg_tacacs_policy::{PolicyDocument, PolicyEngine};
+    use usg_tacacs_proto::{
+        AUTHEN_ACTION_LOGIN, AUTHEN_STATUS_PASS, AUTHEN_TYPE_PAP, AuthenStart, read_authen_reply,
+        write_authen_start,
+    };
 
     fn test_store(pool: PgPool) -> JitLeaseStore {
         let key = VerifierKey::new(Zeroizing::new(vec![0x5a; 32])).unwrap();
@@ -747,6 +753,35 @@ mod tests {
             },
             packet_read_timeout_secs: 5,
         }
+    }
+
+    async fn legacy_pap(
+        address: SocketAddr,
+        source: Ipv4Addr,
+        secret: &[u8],
+        password: &[u8],
+    ) -> Option<u8> {
+        let socket = TcpSocket::new_v4().unwrap();
+        socket.bind(SocketAddr::from((source, 0))).unwrap();
+        let mut stream: TcpStream = socket.connect(address).await.ok()?;
+        let request = AuthenStart::builder(73, AUTHEN_ACTION_LOGIN, 0, AUTHEN_TYPE_PAP, 1)
+            .with_user(
+                b"john.e.willman3.mil".to_vec(),
+                "john.e.willman3.mil".to_owned(),
+            )
+            .with_data(password.to_vec());
+        write_authen_start(&mut stream, &request, secret)
+            .await
+            .ok()?;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            read_authen_reply(&mut stream, Some(secret)),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+        .map(|reply| reply.status)
     }
 
     #[test]
@@ -899,6 +934,111 @@ mod tests {
                 .unwrap(),
             AuthenResult::Fail { .. }
         ));
+        server.abort();
+    }
+
+    #[sqlx::test]
+    async fn jit_e2e_legacy_source_secret_expiry_and_forbidden_fallback(pool: PgPool) {
+        let store = test_store(pool);
+        let created = store
+            .create(test_input("legacy-e2e-key-01", 0x41))
+            .await
+            .unwrap();
+        let lease = match created {
+            CreateLeaseOutcome::Created(value) => value,
+            CreateLeaseOutcome::Replay(_) => panic!("first request must create a lease"),
+        };
+        let secret = Arc::new(b"router-a-unique-shared-secret".to_vec());
+        let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let server = tokio::spawn(serve_legacy(
+            address,
+            test_auth_context(store.clone()),
+            test_connection_config(),
+            Arc::new(HashMap::from([(
+                Ipv4Addr::LOCALHOST.into(),
+                secret.clone(),
+            )])),
+            Arc::new(HashMap::from([(
+                Ipv4Addr::LOCALHOST.into(),
+                NadIdentity::parse("router-a.example.mil").unwrap(),
+            )])),
+            Arc::new(SessionRegistry::new()),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(
+            legacy_pap(address, Ipv4Addr::LOCALHOST, secret.as_slice(), &[0x41; 32]).await,
+            Some(AUTHEN_STATUS_PASS)
+        );
+        assert_eq!(
+            legacy_pap(
+                address,
+                Ipv4Addr::LOCALHOST,
+                b"incorrect-unique-shared-secret",
+                &[0x41; 32]
+            )
+            .await,
+            None
+        );
+        assert_eq!(
+            legacy_pap(
+                address,
+                Ipv4Addr::new(127, 0, 0, 2),
+                secret.as_slice(),
+                &[0x41; 32]
+            )
+            .await,
+            None
+        );
+        store.revoke(lease.lease_id).await.unwrap();
+        assert_ne!(
+            legacy_pap(address, Ipv4Addr::LOCALHOST, secret.as_slice(), &[0x41; 32]).await,
+            Some(AUTHEN_STATUS_PASS)
+        );
+        server.abort();
+
+        let expired = store
+            .create(test_input("legacy-e2e-key-02", 0x41))
+            .await
+            .unwrap();
+        let expired_id = match expired {
+            CreateLeaseOutcome::Created(value) => value.lease_id,
+            CreateLeaseOutcome::Replay(_) => panic!("new key must create a lease"),
+        };
+        sqlx::query(
+            "UPDATE jitpw.jit_leases SET issued_at = clock_timestamp() - interval '2 minutes', \
+             expires_at = clock_timestamp() - interval '1 minute' WHERE lease_id = $1",
+        )
+        .bind(expired_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let server = tokio::spawn(serve_legacy(
+            address,
+            test_auth_context(store),
+            test_connection_config(),
+            Arc::new(HashMap::from([(
+                Ipv4Addr::LOCALHOST.into(),
+                secret.clone(),
+            )])),
+            Arc::new(HashMap::from([(
+                Ipv4Addr::LOCALHOST.into(),
+                NadIdentity::parse("router-a.example.mil").unwrap(),
+            )])),
+            Arc::new(SessionRegistry::new()),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_ne!(
+            legacy_pap(address, Ipv4Addr::LOCALHOST, secret.as_slice(), &[0x41; 32]).await,
+            Some(AUTHEN_STATUS_PASS),
+            "expired JIT lease must not use matching static credentials"
+        );
         server.abort();
     }
 

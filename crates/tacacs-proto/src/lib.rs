@@ -278,6 +278,58 @@ where
     writer.flush().await.context("flushing authen reply")
 }
 
+/// Write a client authentication START packet using the legacy RFC 8907 body
+/// transform. This API intentionally requires a shared secret; RFC 9887
+/// clients should send the clear body inside their authenticated TLS stream.
+pub async fn write_authen_start<W>(
+    writer: &mut W,
+    request: &AuthenStart,
+    secret: &[u8],
+) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    validate_authen_start(request)?;
+    ensure!(
+        secret.len() >= MIN_SECRET_LEN,
+        "shared secret too short; minimum {MIN_SECRET_LEN} bytes required"
+    );
+    for (name, value) in [
+        ("user", request.user_raw.as_slice()),
+        ("port", request.port_raw.as_slice()),
+        ("rem_addr", request.rem_addr_raw.as_slice()),
+        ("data", request.data.as_slice()),
+    ] {
+        ensure!(value.len() <= u8::MAX as usize, "{name} exceeds 255 bytes");
+    }
+    let mut body = Vec::with_capacity(
+        8 + request.user_raw.len()
+            + request.port_raw.len()
+            + request.rem_addr_raw.len()
+            + request.data.len(),
+    );
+    body.extend_from_slice(&[
+        request.action,
+        request.priv_lvl,
+        request.authen_type,
+        request.service,
+        request.user_raw.len() as u8,
+        request.port_raw.len() as u8,
+        request.rem_addr_raw.len() as u8,
+        request.data.len() as u8,
+    ]);
+    body.extend_from_slice(&request.user_raw);
+    body.extend_from_slice(&request.port_raw);
+    body.extend_from_slice(&request.rem_addr_raw);
+    body.extend_from_slice(&request.data);
+    let mut header = request.header.clone();
+    header.length = body.len() as u32;
+    crypto::apply_body_crypto(&header, &mut body, Some(secret))?;
+    header::write_header(writer, &header).await?;
+    writer.write_all(&body).await?;
+    writer.flush().await.context("flushing authen start")
+}
+
 pub async fn write_accounting_response<W>(
     writer: &mut W,
     request_header: &Header,
