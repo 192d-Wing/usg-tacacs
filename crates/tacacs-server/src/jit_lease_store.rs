@@ -610,6 +610,30 @@ fn rejected_authentication() -> LeaseAuthentication {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ascii::AsciiConfig;
+    use crate::config::StaticCreds;
+    use crate::ip_limiter::IpRateLimiter;
+    use crate::server::{
+        AuthContext, ConnLimiter, ConnectionConfig, TlsIdentityConfig, serve_legacy, serve_tls,
+        tls_acceptor,
+    };
+    use crate::session_registry::SessionRegistry;
+    use crate::username_limiter::UsernameRateLimiter;
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+        KeyUsagePurpose,
+    };
+    use std::collections::{HashMap, HashSet};
+    use std::net::{Ipv4Addr, SocketAddr};
+    use tempfile::TempDir;
+    use tokio::net::{TcpSocket, TcpStream};
+    use tokio::sync::RwLock;
+    use usg_tacacs_client_tls::{AuthenResult, TacacsClient, TlsClientConfig};
+    use usg_tacacs_policy::{PolicyDocument, PolicyEngine};
+    use usg_tacacs_proto::{
+        AUTHEN_ACTION_LOGIN, AUTHEN_STATUS_PASS, AUTHEN_TYPE_PAP, AuthenStart, read_authen_reply,
+        write_authen_start,
+    };
 
     fn test_store(pool: PgPool) -> JitLeaseStore {
         let key = VerifierKey::new(Zeroizing::new(vec![0x5a; 32])).unwrap();
@@ -629,6 +653,135 @@ mod tests {
             idempotency_key: idempotency_key.to_owned(),
             password: Zeroizing::new(vec![password_byte; 32]),
         }
+    }
+
+    fn test_policy() -> PolicyEngine {
+        PolicyEngine::from_document(PolicyDocument {
+            default_allow: true,
+            shell_start: HashMap::new(),
+            shell_start_groups: HashMap::new(),
+            author_service_attributes: HashMap::new(),
+            device_flow_exclude_users: Vec::new(),
+            nad_groups: HashMap::new(),
+            enable_groups: HashMap::new(),
+            ascii_prompts: None,
+            ascii_user_prompts: HashMap::new(),
+            ascii_password_prompts: HashMap::new(),
+            ascii_port_prompts: HashMap::new(),
+            ascii_remaddr_prompts: HashMap::new(),
+            allow_raw_server_msg: false,
+            raw_server_msg_allow_prefixes: Vec::new(),
+            raw_server_msg_deny_prefixes: Vec::new(),
+            raw_server_msg_user_overrides: HashMap::new(),
+            ascii_messages: None,
+            rules: Vec::new(),
+        })
+        .unwrap()
+    }
+
+    fn write_signed_cert(
+        directory: &TempDir,
+        stem: &str,
+        dns_name: &str,
+        issuer: &Issuer<'_, KeyPair>,
+        usage: ExtendedKeyUsagePurpose,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec![dns_name.to_owned()]).unwrap();
+        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        params.extended_key_usages.push(usage);
+        let cert = params.signed_by(&key, issuer).unwrap();
+        let cert_path = directory.path().join(format!("{stem}.pem"));
+        let key_path = directory.path().join(format!("{stem}-key.pem"));
+        std::fs::write(&cert_path, cert.pem()).unwrap();
+        std::fs::write(&key_path, key.serialize_pem()).unwrap();
+        (cert_path, key_path)
+    }
+
+    fn test_issuer(directory: &TempDir) -> (Issuer<'static, KeyPair>, std::path::PathBuf) {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages.extend([
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ]);
+        let cert = params.self_signed(&key).unwrap();
+        let path = directory.path().join("ca.pem");
+        std::fs::write(&path, cert.pem()).unwrap();
+        (Issuer::new(params, key), path)
+    }
+
+    fn test_auth_context(store: JitLeaseStore) -> AuthContext {
+        let mut static_creds = StaticCreds::default();
+        static_creds.plain.insert(
+            "john.e.willman3.mil".to_owned(),
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+        );
+        AuthContext {
+            policy: Arc::new(RwLock::new(test_policy())),
+            secret: Some(Arc::new(b"unused-tls-secret".to_vec())),
+            credentials: Arc::new(static_creds),
+            ldap: None,
+            icam: None,
+            device_flow: None,
+            username_limiter: UsernameRateLimiter::new(60, 0, 60),
+            ip_limiter: IpRateLimiter::new(60, 0, 60),
+            audit_hmac_key: None,
+            jit_lease_store: Some(Arc::new(store)),
+            jit_managed_nads: Arc::new(HashSet::from([
+                "router-a.example.mil".to_owned(),
+                "router-b.example.mil".to_owned(),
+            ])),
+            jit_nad_identity: None,
+        }
+    }
+
+    fn test_connection_config() -> ConnectionConfig {
+        ConnectionConfig {
+            single_connect_idle_secs: 5,
+            single_connect_keepalive_secs: 5,
+            conn_limiter: ConnLimiter::new(10),
+            ascii: AsciiConfig {
+                attempt_limit: 3,
+                user_attempt_limit: 3,
+                pass_attempt_limit: 3,
+                backoff_ms: 0,
+                backoff_max_ms: 0,
+                lockout_limit: 0,
+            },
+            packet_read_timeout_secs: 5,
+        }
+    }
+
+    async fn legacy_pap(
+        address: SocketAddr,
+        source: Ipv4Addr,
+        secret: &[u8],
+        password: &[u8],
+    ) -> Option<u8> {
+        let socket = TcpSocket::new_v4().unwrap();
+        socket.bind(SocketAddr::from((source, 0))).unwrap();
+        let mut stream: TcpStream = socket.connect(address).await.ok()?;
+        let request = AuthenStart::builder(73, AUTHEN_ACTION_LOGIN, 0, AUTHEN_TYPE_PAP, 1)
+            .with_user(
+                b"john.e.willman3.mil".to_vec(),
+                "john.e.willman3.mil".to_owned(),
+            )
+            .with_data(password.to_vec());
+        write_authen_start(&mut stream, &request, secret)
+            .await
+            .ok()?;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            read_authen_reply(&mut stream, Some(secret)),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+        .map(|reply| reply.status)
     }
 
     #[test]
@@ -669,6 +822,225 @@ mod tests {
         let id = fips_uuid().unwrap();
         assert_eq!(id.get_version_num(), 4);
         assert_eq!(id.get_variant(), uuid::Variant::RFC4122);
+    }
+
+    #[sqlx::test]
+    async fn jit_e2e_tls_nad_binding_revocation_and_forbidden_fallback(pool: PgPool) {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let store = test_store(pool);
+        let created = store
+            .create(test_input("tls-e2e-key-0001", 0x41))
+            .await
+            .unwrap();
+        let lease = match created {
+            CreateLeaseOutcome::Created(value) => value,
+            CreateLeaseOutcome::Replay(_) => panic!("first request must create a lease"),
+        };
+
+        let directory = TempDir::new().unwrap();
+        let (issuer, ca_path) = test_issuer(&directory);
+        let (server_cert, server_key) = write_signed_cert(
+            &directory,
+            "server",
+            "localhost",
+            &issuer,
+            ExtendedKeyUsagePurpose::ServerAuth,
+        );
+        let (router_a_cert, router_a_key) = write_signed_cert(
+            &directory,
+            "router-a",
+            "router-a.example.mil",
+            &issuer,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+        let (router_b_cert, router_b_key) = write_signed_cert(
+            &directory,
+            "router-b",
+            "router-b.example.mil",
+            &issuer,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+
+        let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address: SocketAddr = reservation.local_addr().unwrap();
+        drop(reservation);
+        let acceptor = tls_acceptor(&server_cert, &server_key, &ca_path, &[]).unwrap();
+        let server = tokio::spawn(serve_tls(
+            address,
+            Arc::new(RwLock::new(acceptor)),
+            test_auth_context(store.clone()),
+            test_connection_config(),
+            TlsIdentityConfig {
+                allowed_cn: Vec::new(),
+                allowed_san: vec![
+                    "router-a.example.mil".to_owned(),
+                    "router-b.example.mil".to_owned(),
+                ],
+            },
+            Arc::new(SessionRegistry::new()),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let client_config = |cert: &std::path::Path, key: &std::path::Path| {
+            TlsClientConfig::builder()
+                .with_server_ca(&ca_path)
+                .unwrap()
+                .with_client_cert(cert, key)
+                .unwrap()
+                .build()
+                .unwrap()
+        };
+        let mut router_a = TacacsClient::connect(
+            &address.to_string(),
+            "localhost",
+            client_config(&router_a_cert, &router_a_key),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            router_a
+                .authenticate_pap("john.e.willman3.mil", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                .await
+                .unwrap(),
+            AuthenResult::Pass { .. }
+        ));
+
+        let mut router_b = TacacsClient::connect(
+            &address.to_string(),
+            "localhost",
+            client_config(&router_b_cert, &router_b_key),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            router_b
+                .authenticate_pap("john.e.willman3.mil", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                .await
+                .unwrap(),
+            AuthenResult::Fail { .. }
+        ));
+
+        store.revoke(lease.lease_id).await.unwrap();
+        let mut router_a = TacacsClient::connect(
+            &address.to_string(),
+            "localhost",
+            client_config(&router_a_cert, &router_a_key),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            router_a
+                .authenticate_pap("john.e.willman3.mil", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                .await
+                .unwrap(),
+            AuthenResult::Fail { .. }
+        ));
+        server.abort();
+    }
+
+    #[sqlx::test]
+    async fn jit_e2e_legacy_source_secret_expiry_and_forbidden_fallback(pool: PgPool) {
+        let store = test_store(pool);
+        let created = store
+            .create(test_input("legacy-e2e-key-01", 0x41))
+            .await
+            .unwrap();
+        let lease = match created {
+            CreateLeaseOutcome::Created(value) => value,
+            CreateLeaseOutcome::Replay(_) => panic!("first request must create a lease"),
+        };
+        let secret = Arc::new(b"router-a-unique-shared-secret".to_vec());
+        let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let server = tokio::spawn(serve_legacy(
+            address,
+            test_auth_context(store.clone()),
+            test_connection_config(),
+            Arc::new(HashMap::from([(
+                Ipv4Addr::LOCALHOST.into(),
+                secret.clone(),
+            )])),
+            Arc::new(HashMap::from([(
+                Ipv4Addr::LOCALHOST.into(),
+                NadIdentity::parse("router-a.example.mil").unwrap(),
+            )])),
+            Arc::new(SessionRegistry::new()),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(
+            legacy_pap(address, Ipv4Addr::LOCALHOST, secret.as_slice(), &[0x41; 32]).await,
+            Some(AUTHEN_STATUS_PASS)
+        );
+        assert_eq!(
+            legacy_pap(
+                address,
+                Ipv4Addr::LOCALHOST,
+                b"incorrect-unique-shared-secret",
+                &[0x41; 32]
+            )
+            .await,
+            None
+        );
+        assert_eq!(
+            legacy_pap(
+                address,
+                Ipv4Addr::new(127, 0, 0, 2),
+                secret.as_slice(),
+                &[0x41; 32]
+            )
+            .await,
+            None
+        );
+        store.revoke(lease.lease_id).await.unwrap();
+        assert_ne!(
+            legacy_pap(address, Ipv4Addr::LOCALHOST, secret.as_slice(), &[0x41; 32]).await,
+            Some(AUTHEN_STATUS_PASS)
+        );
+        server.abort();
+
+        let expired = store
+            .create(test_input("legacy-e2e-key-02", 0x41))
+            .await
+            .unwrap();
+        let expired_id = match expired {
+            CreateLeaseOutcome::Created(value) => value.lease_id,
+            CreateLeaseOutcome::Replay(_) => panic!("new key must create a lease"),
+        };
+        sqlx::query(
+            "UPDATE jitpw.jit_leases SET issued_at = clock_timestamp() - interval '2 minutes', \
+             expires_at = clock_timestamp() - interval '1 minute' WHERE lease_id = $1",
+        )
+        .bind(expired_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let server = tokio::spawn(serve_legacy(
+            address,
+            test_auth_context(store),
+            test_connection_config(),
+            Arc::new(HashMap::from([(
+                Ipv4Addr::LOCALHOST.into(),
+                secret.clone(),
+            )])),
+            Arc::new(HashMap::from([(
+                Ipv4Addr::LOCALHOST.into(),
+                NadIdentity::parse("router-a.example.mil").unwrap(),
+            )])),
+            Arc::new(SessionRegistry::new()),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_ne!(
+            legacy_pap(address, Ipv4Addr::LOCALHOST, secret.as_slice(), &[0x41; 32]).await,
+            Some(AUTHEN_STATUS_PASS),
+            "expired JIT lease must not use matching static credentials"
+        );
+        server.abort();
     }
 
     #[sqlx::test]
