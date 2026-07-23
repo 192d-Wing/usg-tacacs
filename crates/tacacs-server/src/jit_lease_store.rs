@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Fail-closed Redis authority for JITPW credential leases.
+//! Fail-closed PostgreSQL authority for JITPW credential leases.
 //!
 //! Unlike the best-effort group cache, every storage error is propagated to the
 //! caller. Authentication and management handlers must treat errors as denial.
@@ -17,12 +17,14 @@
 use crate::jit_lease::{
     CanonicalEid, LeaseTtl, NadIdentity, PasswordVerifier, ValidationError, VerifierKey,
 };
-use redis::Script;
-use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::fmt;
+use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -31,32 +33,6 @@ const MAX_GROUP_BYTES: usize = 128;
 const MAX_SUBJECT_BYTES: usize = 256;
 const MIN_IDEMPOTENCY_BYTES: usize = 16;
 const MAX_IDEMPOTENCY_BYTES: usize = 128;
-const CREATE_SCRIPT: &str = r#"
-local prior = redis.call('GET', KEYS[3])
-if prior then
-  local prior_id = string.sub(prior, 1, 36)
-  local prior_fingerprint = string.sub(prior, 38)
-  if prior_fingerprint == ARGV[2] then return {1, prior_id} end
-  return {3, ''}
-end
-local active = redis.call('GET', KEYS[2])
-if active then return {2, active} end
-redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[4])
-redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[4])
-redis.call('SET', KEYS[3], ARGV[1] .. ':' .. ARGV[2], 'EX', ARGV[4])
-return {0, ARGV[1]}
-"#;
-const LOOKUP_SCRIPT: &str = r#"
-local lease_id = redis.call('GET', KEYS[1])
-if not lease_id then return nil end
-return redis.call('GET', ARGV[1] .. lease_id)
-"#;
-const REVOKE_SCRIPT: &str = r#"
-local record = redis.call('GET', KEYS[1])
-if not record then return 0 end
-redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
-return 1
-"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
@@ -158,86 +134,125 @@ impl JitNadAuthenticator {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 struct StoredLease {
     metadata: LeaseMetadata,
-    verifier_hex: String,
+    verifier: Vec<u8>,
     lookup_token: String,
     idempotency_token: String,
+    request_fingerprint: String,
 }
 
 #[derive(Clone)]
 pub struct JitLeaseStore {
-    connection: ConnectionManager,
+    pool: PgPool,
     verifier_key: Arc<VerifierKey>,
-    key_prefix: String,
 }
 
 impl JitLeaseStore {
     pub async fn connect(
         url: &str,
         password: Option<&str>,
-        key_prefix: &str,
+        ca_file: &Path,
         verifier_key: Arc<VerifierKey>,
     ) -> Result<Self, StoreError> {
-        validate_store_config(url, key_prefix)?;
-        let connection_info = build_connection_info(url, password)?;
-        let client = redis::Client::open(connection_info).map_err(|_| StoreError::Unavailable)?;
-        let connection = ConnectionManager::new(client)
+        validate_store_config(url)?;
+        let mut options = PgConnectOptions::from_str(url)
+            .map_err(|_| StoreError::InvalidInput("invalid_jit_store_url"))?;
+        if let Some(value) = password {
+            options = options.password(value);
+        }
+        options = options
+            .ssl_mode(PgSslMode::VerifyFull)
+            .ssl_root_cert(ca_file)
+            .application_name("usg-tacacs-jit")
+            .options([
+                ("statement_timeout", "3s"),
+                ("lock_timeout", "2s"),
+                ("idle_in_transaction_session_timeout", "5s"),
+            ]);
+        let pool = PgPoolOptions::new()
+            .max_connections(16)
+            .min_connections(1)
+            .acquire_timeout(Duration::from_secs(3))
+            .idle_timeout(Duration::from_secs(300))
+            .max_lifetime(Duration::from_secs(1_800))
+            .connect_with(options)
             .await
             .map_err(|_| StoreError::Unavailable)?;
-        Ok(Self {
-            connection,
-            verifier_key,
-            key_prefix: key_prefix.to_owned(),
-        })
+        sqlx::query("SELECT lease_id FROM jitpw.jit_leases LIMIT 0")
+            .execute(&pool)
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        Ok(Self { pool, verifier_key })
     }
 
     pub async fn create(&self, input: CreateLeaseInput) -> Result<CreateLeaseOutcome, StoreError> {
         validate_create_input(&input)?;
-        let record = self.build_record(&input)?;
-        let serialized = serde_json::to_string(&record).map_err(|_| StoreError::CorruptRecord)?;
-        let keys = self.record_keys(&record);
-        let fingerprint = self.request_fingerprint(&record, input.ttl)?;
-        let mut connection = self.connection.clone();
-        let response: (i64, String) = Script::new(CREATE_SCRIPT)
-            .key(&keys.lease)
-            .key(&keys.lookup)
-            .key(&keys.idempotency)
-            .arg(record.metadata.lease_id.to_string())
-            .arg(fingerprint)
-            .arg(serialized)
-            .arg(input.ttl.seconds())
-            .invoke_async(&mut connection)
-            .await
-            .map_err(|_| StoreError::Unavailable)?;
-        self.create_outcome(response, record.metadata).await
+        let mut record = self.build_record(&input)?;
+        record.request_fingerprint = self.request_fingerprint(&record, input.ttl)?;
+        let mut transaction = self.pool.begin().await.map_err(store_unavailable)?;
+        advisory_lock(&mut transaction, &record.lookup_token).await?;
+        advisory_lock(&mut transaction, &record.idempotency_token).await?;
+
+        if let Some(prior) =
+            fetch_by_idempotency(&mut transaction, &record.idempotency_token).await?
+        {
+            if prior.request_fingerprint != record.request_fingerprint {
+                return Err(StoreError::Conflict);
+            }
+            transaction.commit().await.map_err(store_unavailable)?;
+            return Ok(CreateLeaseOutcome::Replay(current_metadata(
+                prior.metadata,
+            )?));
+        }
+
+        sqlx::query(
+            "UPDATE jitpw.jit_leases SET status = 'expired', updated_at = clock_timestamp() \
+             WHERE lookup_token = $1 AND status = 'active' AND expires_at <= clock_timestamp()",
+        )
+        .bind(&record.lookup_token)
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_unavailable)?;
+
+        let active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM jitpw.jit_leases \
+             WHERE lookup_token = $1 AND status = 'active')",
+        )
+        .bind(&record.lookup_token)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(store_unavailable)?;
+        if active {
+            return Err(StoreError::Conflict);
+        }
+
+        insert_record(&mut transaction, &record).await?;
+        transaction.commit().await.map_err(store_unavailable)?;
+        Ok(CreateLeaseOutcome::Created(record.metadata))
     }
 
     pub async fn get(&self, lease_id: Uuid) -> Result<Option<LeaseMetadata>, StoreError> {
-        let mut connection = self.connection.clone();
-        let payload: Option<String> = redis::cmd("GET")
-            .arg(self.lease_key(lease_id))
-            .query_async(&mut connection)
-            .await
-            .map_err(|_| StoreError::Unavailable)?;
-        payload
-            .map(|value| decode_record(&value).map(|record| record.metadata))
-            .transpose()
+        fetch_by_id(&self.pool, lease_id).await.and_then(|record| {
+            record
+                .map(|value| current_metadata(value.metadata))
+                .transpose()
+        })
     }
 
     pub async fn revoke(&self, lease_id: Uuid) -> Result<(), StoreError> {
-        let record = self.get_record(lease_id).await?;
-        let keys = self.record_keys(&record);
-        let mut connection = self.connection.clone();
-        let removed: i64 = Script::new(REVOKE_SCRIPT)
-            .key(keys.lease)
-            .key(keys.lookup)
-            .key(keys.idempotency)
-            .invoke_async(&mut connection)
+        let result = sqlx::query(
+            "UPDATE jitpw.jit_leases SET \
+             status = CASE WHEN expires_at <= clock_timestamp() THEN 'expired' ELSE 'revoked' END, \
+             revoked_at = CASE WHEN expires_at <= clock_timestamp() THEN NULL ELSE COALESCE(revoked_at, clock_timestamp()) END, \
+             updated_at = clock_timestamp() WHERE lease_id = $1",
+        )
+            .bind(lease_id)
+            .execute(&self.pool)
             .await
-            .map_err(|_| StoreError::Unavailable)?;
-        if removed == 0 {
+            .map_err(store_unavailable)?;
+        if result.rows_affected() == 0 {
             return Err(StoreError::NotFound);
         }
         Ok(())
@@ -249,36 +264,12 @@ impl JitLeaseStore {
         nad: &NadIdentity,
         password: &[u8],
     ) -> Result<LeaseAuthentication, StoreError> {
-        let lookup = self.lookup_key(eid, nad)?;
-        let mut connection = self.connection.clone();
-        let payload: Option<String> = Script::new(LOOKUP_SCRIPT)
-            .key(lookup)
-            .arg(format!("{}:lease:", self.key_prefix))
-            .invoke_async(&mut connection)
-            .await
-            .map_err(|_| StoreError::Unavailable)?;
-        let Some(payload) = payload else {
+        let lookup = self.lookup_token(eid, nad)?;
+        let record = fetch_by_lookup(&self.pool, &lookup).await?;
+        let Some(record) = record else {
             return Ok(rejected_authentication());
         };
-        let record = decode_record(&payload)?;
         self.verify_record(record, eid, nad, password)
-    }
-
-    async fn create_outcome(
-        &self,
-        response: (i64, String),
-        created: LeaseMetadata,
-    ) -> Result<CreateLeaseOutcome, StoreError> {
-        match response.0 {
-            0 => Ok(CreateLeaseOutcome::Created(created)),
-            1 => {
-                let id = Uuid::parse_str(&response.1).map_err(|_| StoreError::CorruptRecord)?;
-                let metadata = self.get(id).await?.ok_or(StoreError::CorruptRecord)?;
-                Ok(CreateLeaseOutcome::Replay(metadata))
-            }
-            2 | 3 => Err(StoreError::Conflict),
-            _ => Err(StoreError::CorruptRecord),
-        }
     }
 
     fn build_record(&self, input: &CreateLeaseInput) -> Result<StoredLease, StoreError> {
@@ -303,9 +294,10 @@ impl JitLeaseStore {
                 expires_at,
                 status: LeaseStatus::Active,
             },
-            verifier_hex: verifier.to_hex(),
+            verifier: verifier.to_bytes().to_vec(),
             lookup_token,
             idempotency_token,
+            request_fingerprint: String::new(),
         })
     }
 
@@ -323,43 +315,18 @@ impl JitLeaseStore {
         if &record.metadata.eid != eid || &record.metadata.nad_identity != nad {
             return Ok(rejected_authentication());
         }
-        let verifier = PasswordVerifier::from_hex(&record.verifier_hex)?;
+        let verifier_bytes: [u8; 32] = record
+            .verifier
+            .as_slice()
+            .try_into()
+            .map_err(|_| StoreError::CorruptRecord)?;
+        let verifier = PasswordVerifier::from_bytes(verifier_bytes);
         let authenticated = self.verifier_key.verify(eid, nad, password, &verifier);
         let metadata = authenticated.then_some(record.metadata);
         Ok(LeaseAuthentication {
             authenticated,
             metadata,
         })
-    }
-
-    async fn get_record(&self, lease_id: Uuid) -> Result<StoredLease, StoreError> {
-        let mut connection = self.connection.clone();
-        let payload: Option<String> = redis::cmd("GET")
-            .arg(self.lease_key(lease_id))
-            .query_async(&mut connection)
-            .await
-            .map_err(|_| StoreError::Unavailable)?;
-        decode_record(&payload.ok_or(StoreError::NotFound)?)
-    }
-
-    fn record_keys(&self, record: &StoredLease) -> RecordKeys {
-        RecordKeys {
-            lease: self.lease_key(record.metadata.lease_id),
-            lookup: format!("{}:lookup:{}", self.key_prefix, record.lookup_token),
-            idempotency: format!("{}:idem:{}", self.key_prefix, record.idempotency_token),
-        }
-    }
-
-    fn lease_key(&self, lease_id: Uuid) -> String {
-        format!("{}:lease:{lease_id}", self.key_prefix)
-    }
-
-    fn lookup_key(&self, eid: &CanonicalEid, nad: &NadIdentity) -> Result<String, StoreError> {
-        Ok(format!(
-            "{}:lookup:{}",
-            self.key_prefix,
-            self.lookup_token(eid, nad)?
-        ))
     }
 
     fn lookup_token(&self, eid: &CanonicalEid, nad: &NadIdentity) -> Result<String, StoreError> {
@@ -384,12 +351,165 @@ impl JitLeaseStore {
             nad_identity: &record.metadata.nad_identity,
             authorization_groups: &record.metadata.authorization_groups,
             ttl_seconds: ttl.seconds(),
-            verifier_hex: &record.verifier_hex,
+            verifier: &record.verifier,
         };
         let serialized =
             serde_json::to_vec(&stable_request).map_err(|_| StoreError::CorruptRecord)?;
         Ok(self.verifier_key.opaque_token("request", &serialized)?)
     }
+}
+
+const RECORD_COLUMNS: &str = "lease_id, eid, icam_subject, nad_identity, \
+    authorization_groups, verifier, lookup_token, idempotency_token, \
+    request_fingerprint, status, EXTRACT(EPOCH FROM issued_at)::bigint AS issued_at, \
+    EXTRACT(EPOCH FROM expires_at)::bigint AS expires_at";
+
+async fn advisory_lock(
+    transaction: &mut Transaction<'_, Postgres>,
+    token: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(token)
+        .execute(&mut **transaction)
+        .await
+        .map_err(store_unavailable)?;
+    Ok(())
+}
+
+async fn insert_record(
+    transaction: &mut Transaction<'_, Postgres>,
+    record: &StoredLease,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO jitpw.jit_leases (lease_id, eid, icam_subject, nad_identity, \
+         authorization_groups, verifier, lookup_token, idempotency_token, \
+         request_fingerprint, status, issued_at, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', \
+         to_timestamp($10), to_timestamp($11))",
+    )
+    .bind(record.metadata.lease_id)
+    .bind(record.metadata.eid.as_str())
+    .bind(&record.metadata.icam_subject)
+    .bind(record.metadata.nad_identity.as_str())
+    .bind(sqlx::types::Json(&record.metadata.authorization_groups))
+    .bind(&record.verifier)
+    .bind(&record.lookup_token)
+    .bind(&record.idempotency_token)
+    .bind(&record.request_fingerprint)
+    .bind(record.metadata.issued_at as i64)
+    .bind(record.metadata.expires_at as i64)
+    .execute(&mut **transaction)
+    .await
+    .map_err(store_unavailable)?;
+    Ok(())
+}
+
+async fn fetch_by_id(pool: &PgPool, lease_id: Uuid) -> Result<Option<StoredLease>, StoreError> {
+    let query = format!("SELECT {RECORD_COLUMNS} FROM jitpw.jit_leases WHERE lease_id = $1");
+    let row = sqlx::query(&query)
+        .bind(lease_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(store_unavailable)?;
+    row.map(decode_row).transpose()
+}
+
+async fn fetch_by_lookup(
+    pool: &PgPool,
+    lookup_token: &str,
+) -> Result<Option<StoredLease>, StoreError> {
+    let query = format!(
+        "SELECT {RECORD_COLUMNS} FROM jitpw.jit_leases \
+         WHERE lookup_token = $1 AND status = 'active'"
+    );
+    let row = sqlx::query(&query)
+        .bind(lookup_token)
+        .fetch_optional(pool)
+        .await
+        .map_err(store_unavailable)?;
+    row.map(decode_row).transpose()
+}
+
+async fn fetch_by_idempotency(
+    transaction: &mut Transaction<'_, Postgres>,
+    idempotency_token: &str,
+) -> Result<Option<StoredLease>, StoreError> {
+    let query =
+        format!("SELECT {RECORD_COLUMNS} FROM jitpw.jit_leases WHERE idempotency_token = $1");
+    let row = sqlx::query(&query)
+        .bind(idempotency_token)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(store_unavailable)?;
+    row.map(decode_row).transpose()
+}
+
+fn decode_row(row: sqlx::postgres::PgRow) -> Result<StoredLease, StoreError> {
+    let eid_value: String = row.try_get("eid").map_err(corrupt_row)?;
+    let nad_value: String = row.try_get("nad_identity").map_err(corrupt_row)?;
+    let status_value: String = row.try_get("status").map_err(corrupt_row)?;
+    let groups: sqlx::types::Json<Vec<String>> =
+        row.try_get("authorization_groups").map_err(corrupt_row)?;
+    validate_subject(
+        row.try_get::<&str, _>("icam_subject")
+            .map_err(corrupt_row)?,
+    )?;
+    validate_groups(&groups.0)?;
+    let verifier: Vec<u8> = row.try_get("verifier").map_err(corrupt_row)?;
+    let lookup_token: String = row.try_get("lookup_token").map_err(corrupt_row)?;
+    let idempotency_token: String = row.try_get("idempotency_token").map_err(corrupt_row)?;
+    let request_fingerprint: String = row.try_get("request_fingerprint").map_err(corrupt_row)?;
+    if verifier.len() != 32
+        || !valid_opaque_token(&lookup_token)
+        || !valid_opaque_token(&idempotency_token)
+        || !valid_opaque_token(&request_fingerprint)
+    {
+        return Err(StoreError::CorruptRecord);
+    }
+    Ok(StoredLease {
+        metadata: LeaseMetadata {
+            lease_id: row.try_get("lease_id").map_err(corrupt_row)?,
+            eid: CanonicalEid::parse(&eid_value)?,
+            icam_subject: row.try_get("icam_subject").map_err(corrupt_row)?,
+            nad_identity: NadIdentity::parse(&nad_value)?,
+            authorization_groups: groups.0,
+            issued_at: database_time(row.try_get("issued_at").map_err(corrupt_row)?)?,
+            expires_at: database_time(row.try_get("expires_at").map_err(corrupt_row)?)?,
+            status: match status_value.as_str() {
+                "active" => LeaseStatus::Active,
+                "revoked" => LeaseStatus::Revoked,
+                "expired" => LeaseStatus::Expired,
+                _ => return Err(StoreError::CorruptRecord),
+            },
+        },
+        verifier,
+        lookup_token,
+        idempotency_token,
+        request_fingerprint,
+    })
+}
+
+fn database_time(value: i64) -> Result<u64, StoreError> {
+    value.try_into().map_err(|_| StoreError::CorruptRecord)
+}
+
+fn current_metadata(mut metadata: LeaseMetadata) -> Result<LeaseMetadata, StoreError> {
+    if metadata.status == LeaseStatus::Active && metadata.expires_at <= unix_time()? {
+        metadata.status = LeaseStatus::Expired;
+    }
+    Ok(metadata)
+}
+
+fn store_unavailable(_: sqlx::Error) -> StoreError {
+    StoreError::Unavailable
+}
+
+fn corrupt_row(_: sqlx::Error) -> StoreError {
+    StoreError::CorruptRecord
+}
+
+fn valid_opaque_token(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Serialize)]
@@ -399,38 +519,19 @@ struct LeaseRequestFingerprint<'a> {
     nad_identity: &'a NadIdentity,
     authorization_groups: &'a [String],
     ttl_seconds: u64,
-    verifier_hex: &'a str,
+    verifier: &'a [u8],
 }
 
-struct RecordKeys {
-    lease: String,
-    lookup: String,
-    idempotency: String,
-}
-
-fn validate_store_config(url: &str, key_prefix: &str) -> Result<(), StoreError> {
-    if !url.starts_with("rediss://") {
-        return Err(StoreError::InvalidInput("jit_store_requires_tls"));
+fn validate_store_config(url: &str) -> Result<(), StoreError> {
+    let parsed =
+        url::Url::parse(url).map_err(|_| StoreError::InvalidInput("invalid_jit_store_url"))?;
+    if !matches!(parsed.scheme(), "postgresql" | "postgres") || parsed.host_str().is_none() {
+        return Err(StoreError::InvalidInput("invalid_jit_store_url"));
     }
-    if key_prefix.is_empty() || key_prefix.len() > 64 || !key_prefix.is_ascii() {
-        return Err(StoreError::InvalidInput("invalid_jit_store_prefix"));
+    if parsed.password().is_some() {
+        return Err(StoreError::InvalidInput("jit_store_password_in_url"));
     }
     Ok(())
-}
-
-fn build_connection_info(
-    url: &str,
-    password: Option<&str>,
-) -> Result<redis::ConnectionInfo, StoreError> {
-    use redis::IntoConnectionInfo;
-    let mut info = url
-        .into_connection_info()
-        .map_err(|_| StoreError::InvalidInput("invalid_jit_store_url"))?;
-    if let Some(value) = password {
-        let redis_settings = info.redis_settings().clone().set_password(value);
-        info = info.set_redis_settings(redis_settings);
-    }
-    Ok(info)
 }
 
 fn validate_create_input(input: &CreateLeaseInput) -> Result<(), StoreError> {
@@ -481,15 +582,6 @@ fn validate_idempotency_key(value: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn decode_record(payload: &str) -> Result<StoredLease, StoreError> {
-    let record: StoredLease =
-        serde_json::from_str(payload).map_err(|_| StoreError::CorruptRecord)?;
-    PasswordVerifier::from_hex(&record.verifier_hex)?;
-    validate_subject(&record.metadata.icam_subject)?;
-    validate_groups(&record.metadata.authorization_groups)?;
-    Ok(record)
-}
-
 fn unix_time() -> Result<u64, StoreError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -519,12 +611,36 @@ fn rejected_authentication() -> LeaseAuthentication {
 mod tests {
     use super::*;
 
+    fn test_store(pool: PgPool) -> JitLeaseStore {
+        let key = VerifierKey::new(Zeroizing::new(vec![0x5a; 32])).unwrap();
+        JitLeaseStore {
+            pool,
+            verifier_key: Arc::new(key),
+        }
+    }
+
+    fn test_input(idempotency_key: &str, password_byte: u8) -> CreateLeaseInput {
+        CreateLeaseInput {
+            eid: CanonicalEid::parse("john.e.willman3.mil").unwrap(),
+            icam_subject: "icam-subject-123".to_owned(),
+            nad_identity: NadIdentity::parse("router-a.example.mil").unwrap(),
+            authorization_groups: vec!["network:admins".to_owned()],
+            ttl: LeaseTtl::new(900).unwrap(),
+            idempotency_key: idempotency_key.to_owned(),
+            password: Zeroizing::new(vec![password_byte; 32]),
+        }
+    }
+
     #[test]
     fn store_requires_tls_url() {
-        assert!(validate_store_config("rediss://redis.example.mil:6379", "jitpw").is_ok());
+        assert!(validate_store_config("postgresql://tacacs@db.example.mil/tacacs").is_ok());
         assert_eq!(
-            validate_store_config("redis://redis.example.mil:6379", "jitpw").unwrap_err(),
-            StoreError::InvalidInput("jit_store_requires_tls")
+            validate_store_config("postgresql://tacacs:secret@db.example.mil/tacacs").unwrap_err(),
+            StoreError::InvalidInput("jit_store_password_in_url")
+        );
+        assert_eq!(
+            validate_store_config("rediss://redis.example.mil:6379").unwrap_err(),
+            StoreError::InvalidInput("invalid_jit_store_url")
         );
     }
 
@@ -533,6 +649,13 @@ mod tests {
         assert!(validate_idempotency_key("1234567890abcdef").is_ok());
         assert!(validate_idempotency_key("short").is_err());
         assert!(validate_idempotency_key("1234567890abcde!").is_err());
+    }
+
+    #[test]
+    fn opaque_database_tokens_require_sha256_hex() {
+        assert!(valid_opaque_token(&"a5".repeat(32)));
+        assert!(!valid_opaque_token(&"a5".repeat(31)));
+        assert!(!valid_opaque_token(&format!("{}!", "a5".repeat(31))));
     }
 
     #[test]
@@ -546,5 +669,101 @@ mod tests {
         let id = fips_uuid().unwrap();
         assert_eq!(id.get_version_num(), 4);
         assert_eq!(id.get_variant(), uuid::Variant::RFC4122);
+    }
+
+    #[sqlx::test]
+    async fn postgres_lease_lifecycle(pool: PgPool) {
+        let store = test_store(pool);
+        let created = store
+            .create(test_input("lifecycle-key-001", 0x41))
+            .await
+            .unwrap();
+        let metadata = match created {
+            CreateLeaseOutcome::Created(value) => value,
+            CreateLeaseOutcome::Replay(_) => panic!("first request must create a lease"),
+        };
+
+        let authenticated = store
+            .authenticate(
+                &CanonicalEid::parse("john.e.willman3.mil").unwrap(),
+                &NadIdentity::parse("router-a.example.mil").unwrap(),
+                &[0x41; 32],
+            )
+            .await
+            .unwrap();
+        assert!(authenticated.authenticated);
+
+        store.revoke(metadata.lease_id).await.unwrap();
+        store.revoke(metadata.lease_id).await.unwrap();
+        let rejected = store
+            .authenticate(
+                &CanonicalEid::parse("john.e.willman3.mil").unwrap(),
+                &NadIdentity::parse("router-a.example.mil").unwrap(),
+                &[0x41; 32],
+            )
+            .await
+            .unwrap();
+        assert!(!rejected.authenticated);
+        assert_eq!(
+            store.get(metadata.lease_id).await.unwrap().unwrap().status,
+            LeaseStatus::Revoked
+        );
+    }
+
+    #[sqlx::test]
+    async fn postgres_idempotency_replays_only_identical_request(pool: PgPool) {
+        let store = test_store(pool);
+        let first = store
+            .create(test_input("idempotency-key-001", 0x41))
+            .await
+            .unwrap();
+        let replay = store
+            .create(test_input("idempotency-key-001", 0x41))
+            .await
+            .unwrap();
+        assert!(matches!(first, CreateLeaseOutcome::Created(_)));
+        assert!(matches!(replay, CreateLeaseOutcome::Replay(_)));
+        assert_eq!(
+            store
+                .create(test_input("idempotency-key-001", 0x42))
+                .await
+                .unwrap_err(),
+            StoreError::Conflict
+        );
+    }
+
+    #[sqlx::test]
+    async fn postgres_concurrent_issuance_allows_one_active_lease(pool: PgPool) {
+        let first_store = test_store(pool.clone());
+        let second_store = test_store(pool);
+        let (first, second) = tokio::join!(
+            first_store.create(test_input("concurrent-key-001", 0x41)),
+            second_store.create(test_input("concurrent-key-002", 0x42))
+        );
+        let outcomes = [first, second];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|result| matches!(result, Ok(CreateLeaseOutcome::Created(_))))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|result| matches!(result, Err(StoreError::Conflict)))
+                .count(),
+            1
+        );
+    }
+
+    #[sqlx::test]
+    async fn postgres_store_outage_fails_closed(pool: PgPool) {
+        let store = test_store(pool.clone());
+        pool.close().await;
+        assert_eq!(
+            store.get(fips_uuid().unwrap()).await.unwrap_err(),
+            StoreError::Unavailable
+        );
     }
 }

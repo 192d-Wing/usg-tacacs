@@ -111,17 +111,8 @@ impl PasswordVerifier {
         Self(bytes)
     }
 
-    pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
-    }
-
-    pub fn from_hex(value: &str) -> Result<Self, ValidationError> {
-        let decoded =
-            hex::decode(value).map_err(|_| ValidationError::new("invalid_verifier_encoding"))?;
-        let bytes = decoded
-            .try_into()
-            .map_err(|_| ValidationError::new("invalid_verifier_length"))?;
-        Ok(Self(bytes))
+    pub const fn to_bytes(&self) -> [u8; 32] {
+        self.0
     }
 }
 
