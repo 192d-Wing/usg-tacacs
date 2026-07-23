@@ -35,7 +35,6 @@ CREATE TABLE jitpw.jit_leases (
         (status = 'revoked' AND revoked_at IS NOT NULL)
         OR (status <> 'revoked' AND revoked_at IS NULL)
     ),
-    UNIQUE (lookup_token),
     UNIQUE (idempotency_token)
 );
 
@@ -47,8 +46,11 @@ CREATE INDEX jit_leases_expiry
     ON jitpw.jit_leases (expires_at)
     WHERE status = 'active';
 
+CREATE INDEX jit_leases_active_lookup
+    ON jitpw.jit_leases (lookup_token)
+    WHERE status = 'active';
+
 COMMENT ON TABLE jitpw.jit_leases IS
     'Device-bound JITPW verifier leases; plaintext passwords and verifier keys are prohibited.';
 COMMENT ON COLUMN jitpw.jit_leases.verifier IS
     'HMAC-SHA-256 verifier bound to canonical EID, NAD identity, and password.';
-

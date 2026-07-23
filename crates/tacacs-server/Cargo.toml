@@ -41,6 +41,7 @@ redis = { version = "1.4", default-features = false, features = [
     "connection-manager",
     "script",
 ] }
+sqlx.workspace = true
 uuid.workspace = true
 time.workspace = true
 

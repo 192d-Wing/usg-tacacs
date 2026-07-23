@@ -1018,7 +1018,7 @@ fn resolve_jit_managed_nads(enabled: bool) -> Result<Arc<std::collections::HashS
 /// Configure the authoritative JIT store from file-backed secrets.
 ///
 /// The feature is disabled unless `JIT_LEASE_STORE_URL` is set. Production
-/// activation is deliberately strict: the API, mTLS material, Redis password,
+/// activation is deliberately strict: the API, mTLS material, PostgreSQL password,
 /// and verifier key must all be present or startup fails.
 async fn setup_jit_lease_store(
     args: &Args,
@@ -1053,15 +1053,10 @@ async fn setup_jit_lease_store(
         crate::jit_lease::VerifierKey::new(zeroize::Zeroizing::new(key_bytes))
             .map_err(|error| anyhow::anyhow!(error))?,
     );
-    let prefix = std::env::var("JIT_LEASE_KEY_PREFIX").unwrap_or_else(|_| "tacacs:jit".to_owned());
-    let store = crate::jit_lease_store::JitLeaseStore::connect(
-        &url,
-        Some(password.as_str()),
-        &prefix,
-        verifier_key,
-    )
-    .await
-    .map_err(|error| anyhow::anyhow!("initializing JIT lease store: {error}"))?;
+    let store =
+        crate::jit_lease_store::JitLeaseStore::connect(&url, Some(password.as_str()), verifier_key)
+            .await
+            .map_err(|error| anyhow::anyhow!("initializing JIT lease store: {error}"))?;
     info!("authoritative JIT lease store enabled");
     Ok(Some(Arc::new(store)))
 }
