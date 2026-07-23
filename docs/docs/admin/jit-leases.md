@@ -5,8 +5,8 @@ icon: lucide/key-round
 # JIT password leases
 
 USG TACACS can authenticate managed network devices against short-lived JITPW
-password leases. The lease API is part of the mTLS management listener; Redis
-is the authoritative lease store shared with the authentication path.
+password leases. The lease API is part of the mTLS management listener;
+PostgreSQL is the authoritative lease store shared with the authentication path.
 
 The feature is disabled unless `JIT_LEASE_STORE_URL` is set. When enabled, the
 server fails startup unless all required secrets, managed NAD identities, API
@@ -16,7 +16,9 @@ mTLS, and signed audit logging are configured.
 
 - JITPW sends a password verifier and non-secret authorization metadata. The
   cleartext password is never returned by the API or included in audit events.
-- TACACS derives the NAD identity from its validated TLS client certificate.
+- TACACS derives the NAD identity from a validated client certificate for
+  TACACS-over-TLS or from an explicit source-IP mapping plus a unique per-NAD
+  shared secret for legacy TACACS+.
 - A NAD listed in `JIT_MANAGED_NADS` uses only the JIT lease authenticator.
   LDAP, ICAM, and static-credential fallback are prohibited for that NAD.
 - EIDs are canonical lowercase values, for example
@@ -28,15 +30,17 @@ mTLS, and signed audit logging are configured.
 
 ## Prerequisites
 
-1. Configure TACACS-over-TLS for every managed NAD and issue each NAD a unique
-   certificate identity.
+1. Prefer TACACS-over-TLS and issue each capable NAD a unique certificate
+   identity. For a legacy NAD, configure a unique TACACS shared secret, an exact
+   source-IP-to-NAD mapping, anti-spoofing controls, and a protected management
+   network or IPsec transport.
 2. Configure the management API for TLS 1.3 and require client certificates.
-3. Provision a dedicated Redis database reachable with `rediss://` and a
-   least-privilege Redis account. Do not share its key prefix with unrelated
-   applications.
+3. Provision a dedicated PostgreSQL database reachable with certificate-
+   validated TLS. Apply migrations with a deployment role and give the TACACS
+   runtime role only the required data access.
 4. Provision three independent secrets through mounted files:
 
-   - Redis password
+   - PostgreSQL password
    - JIT lease verifier key
    - audit HMAC key
 
@@ -49,11 +53,12 @@ Set the following environment variables on every TACACS replica:
 
 | Variable | Required | Purpose |
 |---|---:|---|
-| `JIT_LEASE_STORE_URL` | yes | Redis TLS URL, such as `rediss://redis.example.mil:6379/2` |
-| `JIT_LEASE_STORE_PASSWORD_FILE` | yes | Mounted file containing the Redis password |
+| `JIT_LEASE_STORE_URL` | yes | PostgreSQL URL without a password |
+| `JIT_LEASE_STORE_PASSWORD_FILE` | yes | Mounted file containing the PostgreSQL password |
+| `JIT_LEASE_STORE_CA_FILE` | yes | CA bundle used to validate the PostgreSQL server identity |
 | `JIT_LEASE_VERIFIER_KEY_FILE` | yes | Mounted binary verifier key shared with the authorized JITPW issuer |
-| `JIT_MANAGED_NADS` | yes | Comma-separated exact certificate identities for managed NADs |
-| `JIT_LEASE_KEY_PREFIX` | no | Redis namespace; defaults to `tacacs:jit` |
+| `JIT_MANAGED_NADS` | yes | Comma-separated canonical NAD identities that require JIT exclusively |
+| `JIT_LEGACY_NADS` | no | Comma-separated `IP=NAD_IDENTITY` mappings for managed legacy NADs |
 | `AUDIT_HMAC_KEY_FILE` | yes | Hex-encoded key of at least 32 bytes for audit-record signatures |
 
 Example Kubernetes environment and secret mounts:
@@ -61,15 +66,17 @@ Example Kubernetes environment and secret mounts:
 ```yaml
 env:
   - name: JIT_LEASE_STORE_URL
-    value: rediss://jit-redis.jitpw.svc:6379/2
+    value: postgresql://tacacs_jit@jit-postgres.jitpw.svc:5432/tacacs?sslmode=verify-full
   - name: JIT_LEASE_STORE_PASSWORD_FILE
-    value: /run/secrets/jit/redis-password
+    value: /run/secrets/jit/postgres-password
+  - name: JIT_LEASE_STORE_CA_FILE
+    value: /run/tls/postgres-ca.crt
   - name: JIT_LEASE_VERIFIER_KEY_FILE
     value: /run/secrets/jit/verifier-key
   - name: JIT_MANAGED_NADS
     value: router-a.example.mil,router-b.example.mil
-  - name: JIT_LEASE_KEY_PREFIX
-    value: tacacs:jit
+  - name: JIT_LEGACY_NADS
+    value: 192.0.2.10=router-b.example.mil
   - name: AUDIT_HMAC_KEY_FILE
     value: /run/secrets/audit/hmac-key
 ```
@@ -77,6 +84,18 @@ env:
 Mount secret volumes read-only, restrict them to the TACACS service identity,
 and never place secret values directly in environment variables, command-line
 arguments, ConfigMaps, manifests, or logs.
+
+### Database migration
+
+Apply `crates/tacacs-server/migrations/0001_jit_leases.sql` with a dedicated
+migration identity before starting a JIT-enabled TACACS replica. Do not grant
+schema creation or alteration privileges to the runtime identity. Validate the
+schema and take a recoverable database snapshot before deployment.
+
+The initial migration is forward-only. To roll back the application, stop lease
+issuance, revoke or drain active leases, deploy the previous TACACS release, and
+retain the `jitpw` schema for forensic and recovery purposes. Schema removal is
+a separately approved data-destruction operation, not an application rollback.
 
 ## Management API and RBAC
 
@@ -127,7 +146,7 @@ Lease operations are:
 | `DELETE` | `/api/v1/jit-leases/{lease_id}` | `write:jit-leases` | Revoke a lease idempotently |
 
 Creation requests require `Idempotency-Key` and `X-Correlation-ID`. Preserve
-the correlation ID across JITPW, TACACS, Redis telemetry, and centralized audit
+the correlation ID across JITPW, TACACS, PostgreSQL telemetry, and centralized audit
 records. Do not capture request bodies at proxies, service meshes, or APM agents
 because the create body contains credential material.
 
@@ -144,7 +163,7 @@ least these JIT events:
 
 Retain the actor certificate identity, canonical EID, NAD identity, lease ID,
 correlation ID, outcome, reason code, source address, server instance, and event
-time. Never retain passwords, verifiers, Redis credentials, verifier keys, or
+time. Never retain passwords, verifiers, PostgreSQL credentials, verifier keys, or
 audit-signing keys. Verify HMAC signatures before ingestion and preserve raw
 records in write-once storage under the organization's retention policy.
 
@@ -152,10 +171,11 @@ records in write-once storage under the organization's retention policy.
 
 Coordinate verifier-key rotation between JITPW and TACACS. Because a single
 verifier key is active, drain or revoke outstanding leases before replacing the
-key and restart all TACACS replicas as one controlled change. Rotate the Redis
-credential independently, then verify store health before restoring traffic.
+key and restart all TACACS replicas as one controlled change. Rotate the
+PostgreSQL credential independently, then verify store health before restoring
+traffic.
 
-If Redis becomes unavailable, managed NAD authentication fails closed. Do not
+If PostgreSQL becomes unavailable, managed NAD authentication fails closed. Do not
 temporarily remove a NAD from `JIT_MANAGED_NADS` to restore access. Use the
 documented emergency-access process, record the incident, and preserve all
 related audit evidence.
@@ -178,7 +198,6 @@ related audit evidence.
 |---|---|
 | Server refuses startup | Confirm all required JIT variables, API mTLS files, and `AUDIT_HMAC_KEY_FILE` are present |
 | API returns `403` | Match the client certificate CN exactly to the RBAC `users` entry and permission |
-| API returns `503` | Verify Redis TLS trust, credentials, network policy, and key namespace |
-| Authentication rejects a valid-looking user | Confirm canonical lowercase EID, NAD certificate identity, lease binding, expiry, and revocation state |
+| API returns `503` | Verify PostgreSQL TLS trust, credentials, migration state, and network policy |
+| Authentication rejects a valid-looking user | Confirm canonical lowercase EID, trusted TLS or legacy NAD identity, lease binding, expiry, and revocation state |
 | Swagger cannot execute requests | Present the authorized client certificate to the browser and use the same management API origin |
-
