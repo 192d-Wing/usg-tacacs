@@ -134,7 +134,7 @@ use usg_tacacs_proto::{
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | SC-7 | Boundary Protection | Prevents rate-limit bypass via IPv4-mapped IPv6 |
-fn normalize_ip(ip: IpAddr) -> IpAddr {
+pub(crate) fn normalize_ip(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => v6
             .to_ipv4_mapped()
@@ -1310,8 +1310,12 @@ fn resolve_identity_source(
     }
 }
 
-/// Build a per-NAD `AuthContext` by overriding the shared secret.
-fn auth_ctx_with_secret(base: AuthContext, secret: Option<Arc<Vec<u8>>>) -> AuthContext {
+/// Build a per-NAD legacy `AuthContext` from trusted source configuration.
+fn auth_ctx_with_legacy_nad(
+    base: AuthContext,
+    secret: Option<Arc<Vec<u8>>>,
+    jit_nad_identity: Option<NadIdentity>,
+) -> AuthContext {
     AuthContext {
         policy: base.policy.clone(),
         secret,
@@ -1324,7 +1328,7 @@ fn auth_ctx_with_secret(base: AuthContext, secret: Option<Arc<Vec<u8>>>) -> Auth
         audit_hmac_key: base.audit_hmac_key.clone(),
         jit_lease_store: base.jit_lease_store.clone(),
         jit_managed_nads: base.jit_managed_nads.clone(),
-        jit_nad_identity: base.jit_nad_identity.clone(),
+        jit_nad_identity,
     }
 }
 
@@ -1333,6 +1337,7 @@ pub async fn serve_legacy(
     auth_ctx: AuthContext,
     conn_cfg: ConnectionConfig,
     nad_secrets: Arc<HashMap<IpAddr, Arc<Vec<u8>>>>,
+    jit_legacy_nads: Arc<HashMap<IpAddr, NadIdentity>>,
     registry: Arc<SessionRegistry>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
@@ -1344,6 +1349,7 @@ pub async fn serve_legacy(
         let conn_auth_ctx = auth_ctx.clone();
         let conn_cfg = conn_cfg.clone();
         let conn_nad_secrets = nad_secrets.clone();
+        let conn_jit_legacy_nads = jit_legacy_nads.clone();
         let conn_registry = registry.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip();
@@ -1364,7 +1370,11 @@ pub async fn serve_legacy(
                 warn!(peer = %peer_addr, "legacy connection rejected: NAD not in allowlist");
                 return;
             }
-            let per_nad_auth_ctx = auth_ctx_with_secret(conn_auth_ctx, conn_secret);
+            let jit_nad_identity = conn_jit_legacy_nads
+                .get(&normalize_ip(peer_addr.ip()))
+                .cloned();
+            let per_nad_auth_ctx =
+                auth_ctx_with_legacy_nad(conn_auth_ctx, conn_secret, jit_nad_identity);
             if let Err(err) = handle_connection(
                 socket,
                 peer_addr,

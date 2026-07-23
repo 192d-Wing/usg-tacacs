@@ -18,12 +18,13 @@ use crate::jit_lease::{
     CanonicalEid, LeaseTtl, NadIdentity, PasswordVerifier, ValidationError, VerifierKey,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -152,6 +153,7 @@ impl JitLeaseStore {
     pub async fn connect(
         url: &str,
         password: Option<&str>,
+        ca_file: &Path,
         verifier_key: Arc<VerifierKey>,
     ) -> Result<Self, StoreError> {
         validate_store_config(url)?;
@@ -160,7 +162,21 @@ impl JitLeaseStore {
         if let Some(value) = password {
             options = options.password(value);
         }
+        options = options
+            .ssl_mode(PgSslMode::VerifyFull)
+            .ssl_root_cert(ca_file)
+            .application_name("usg-tacacs-jit")
+            .options([
+                ("statement_timeout", "3s"),
+                ("lock_timeout", "2s"),
+                ("idle_in_transaction_session_timeout", "5s"),
+            ]);
         let pool = PgPoolOptions::new()
+            .max_connections(16)
+            .min_connections(1)
+            .acquire_timeout(Duration::from_secs(3))
+            .idle_timeout(Duration::from_secs(300))
+            .max_lifetime(Duration::from_secs(1_800))
             .connect_with(options)
             .await
             .map_err(|_| StoreError::Unavailable)?;
@@ -507,11 +523,13 @@ struct LeaseRequestFingerprint<'a> {
 }
 
 fn validate_store_config(url: &str) -> Result<(), StoreError> {
-    if !(url.starts_with("postgresql://") || url.starts_with("postgres://")) {
+    let parsed =
+        url::Url::parse(url).map_err(|_| StoreError::InvalidInput("invalid_jit_store_url"))?;
+    if !matches!(parsed.scheme(), "postgresql" | "postgres") || parsed.host_str().is_none() {
         return Err(StoreError::InvalidInput("invalid_jit_store_url"));
     }
-    if !url.contains("sslmode=verify-full") {
-        return Err(StoreError::InvalidInput("jit_store_requires_tls"));
+    if parsed.password().is_some() {
+        return Err(StoreError::InvalidInput("jit_store_password_in_url"));
     }
     Ok(())
 }
@@ -595,13 +613,10 @@ mod tests {
 
     #[test]
     fn store_requires_tls_url() {
-        assert!(
-            validate_store_config("postgresql://tacacs@db.example.mil/tacacs?sslmode=verify-full")
-                .is_ok()
-        );
+        assert!(validate_store_config("postgresql://tacacs@db.example.mil/tacacs").is_ok());
         assert_eq!(
-            validate_store_config("postgresql://tacacs@db.example.mil/tacacs").unwrap_err(),
-            StoreError::InvalidInput("jit_store_requires_tls")
+            validate_store_config("postgresql://tacacs:secret@db.example.mil/tacacs").unwrap_err(),
+            StoreError::InvalidInput("jit_store_password_in_url")
         );
         assert_eq!(
             validate_store_config("rediss://redis.example.mil:6379").unwrap_err(),

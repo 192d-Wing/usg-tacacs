@@ -42,6 +42,7 @@ redis = { version = "1.4", default-features = false, features = [
     "script",
 ] }
 sqlx.workspace = true
+url = "2"
 uuid.workspace = true
 time.workspace = true
 

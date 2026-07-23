@@ -83,8 +83,8 @@ use crate::icam::{IcamConfig, icam_build_client};
 use crate::metrics::metrics;
 use crate::server::{
     AuthContext, CertificateReloadRequest, ConnLimiter, ConnectionConfig, PolicyReloadRequest,
-    TlsIdentityConfig, init_audit_hmac, serve_legacy, serve_tls, tls_acceptor, validate_policy,
-    watch_certificate_changes, watch_policy_changes,
+    TlsIdentityConfig, init_audit_hmac, normalize_ip, serve_legacy, serve_tls, tls_acceptor,
+    validate_policy, watch_certificate_changes, watch_policy_changes,
 };
 use crate::session_registry::{SessionLimits, SessionRegistry, run_idle_sweep_task};
 use crate::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
@@ -122,6 +122,8 @@ struct AppState {
     audit_hmac_key: Option<Arc<Vec<u8>>>,
     jit_lease_store: Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
     jit_managed_nads: Arc<std::collections::HashSet<String>>,
+    jit_legacy_nads:
+        Arc<std::collections::HashMap<std::net::IpAddr, crate::jit_lease::NadIdentity>>,
     legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
     conn_limiter: ConnLimiter,
     session_registry: Arc<SessionRegistry>,
@@ -576,10 +578,19 @@ fn setup_legacy_listener(
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
     let nad_secrets = state.legacy_nad_secrets.clone();
+    let jit_legacy_nads = state.jit_legacy_nads.clone();
     let legacy_registry = state.session_registry.clone();
 
     handles.push(tokio::spawn(async move {
-        if let Err(err) = serve_legacy(addr, auth_ctx, conn_cfg, nad_secrets, legacy_registry).await
+        if let Err(err) = serve_legacy(
+            addr,
+            auth_ctx,
+            conn_cfg,
+            nad_secrets,
+            jit_legacy_nads,
+            legacy_registry,
+        )
+        .await
         {
             error!(error = %err, "legacy listener stopped");
         }
@@ -947,6 +958,17 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
     setup_group_cache(args).await?;
     let jit_lease_store = setup_jit_lease_store(args).await?;
     let jit_managed_nads = resolve_jit_managed_nads(jit_lease_store.is_some())?;
+    let legacy_nad_secrets = Arc::new(
+        args.legacy_nad_secret
+            .iter()
+            .map(|(ip, sec)| (normalize_ip(*ip), Arc::new(sec.clone().into_bytes())))
+            .collect(),
+    );
+    let jit_legacy_nads = resolve_jit_legacy_nads(
+        jit_lease_store.is_some(),
+        jit_managed_nads.as_ref(),
+        legacy_nad_secrets.as_ref(),
+    )?;
     if jit_lease_store.is_some() && audit_hmac_key.is_none() {
         bail!("JIT lease management requires AUDIT_HMAC_KEY_FILE for signed audit records");
     }
@@ -980,12 +1002,8 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         audit_hmac_key,
         jit_lease_store,
         jit_managed_nads,
-        legacy_nad_secrets: Arc::new(
-            args.legacy_nad_secret
-                .iter()
-                .map(|(ip, sec)| (*ip, Arc::new(sec.clone().into_bytes())))
-                .collect(),
-        ),
+        jit_legacy_nads,
+        legacy_nad_secrets,
         conn_limiter: ConnLimiter::new(args.max_connections_per_ip),
         session_registry: setup_session_registry(args),
         est_provider,
@@ -1010,9 +1028,72 @@ fn resolve_jit_managed_nads(enabled: bool) -> Result<Arc<std::collections::HashS
         identities.insert(identity.as_str().to_owned());
     }
     if identities.is_empty() {
-        bail!("JIT_MANAGED_NADS must contain at least one NAD certificate identity");
+        bail!("JIT_MANAGED_NADS must contain at least one canonical NAD identity");
     }
     Ok(Arc::new(identities))
+}
+
+fn resolve_jit_legacy_nads(
+    enabled: bool,
+    managed_nads: &std::collections::HashSet<String>,
+    legacy_nad_secrets: &std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>,
+) -> Result<Arc<std::collections::HashMap<std::net::IpAddr, crate::jit_lease::NadIdentity>>> {
+    let Some(raw) = std::env::var("JIT_LEGACY_NADS").ok() else {
+        return Ok(Arc::new(std::collections::HashMap::new()));
+    };
+    if !enabled {
+        bail!("JIT_LEGACY_NADS requires the JIT lease store");
+    }
+    parse_jit_legacy_nads(&raw, managed_nads, legacy_nad_secrets).map(Arc::new)
+}
+
+fn parse_jit_legacy_nads(
+    raw: &str,
+    managed_nads: &std::collections::HashSet<String>,
+    legacy_nad_secrets: &std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>,
+) -> Result<std::collections::HashMap<std::net::IpAddr, crate::jit_lease::NadIdentity>> {
+    let mut mappings = std::collections::HashMap::new();
+    for entry in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let (ip_value, identity_value) = entry
+            .split_once('=')
+            .context("JIT_LEGACY_NADS entries must use IP=NAD_IDENTITY")?;
+        let ip = normalize_ip(
+            ip_value
+                .trim()
+                .parse()
+                .context("JIT_LEGACY_NADS contains an invalid IP address")?,
+        );
+        let identity = crate::jit_lease::NadIdentity::parse(identity_value.trim())
+            .map_err(|error| anyhow::anyhow!(error))?;
+        if !managed_nads.contains(identity.as_str()) {
+            bail!("JIT legacy NAD identity is not listed in JIT_MANAGED_NADS");
+        }
+        if !legacy_nad_secrets.contains_key(&ip) {
+            bail!("JIT legacy NAD requires a unique per-NAD TACACS secret");
+        }
+        if mappings.insert(ip, identity).is_some() {
+            bail!("JIT_LEGACY_NADS contains a duplicate normalized IP address");
+        }
+    }
+    if raw.trim().is_empty() {
+        bail!("JIT_LEGACY_NADS must not be empty when set");
+    }
+    let entries = mappings.iter().collect::<Vec<_>>();
+    for (index, (ip, identity)) in entries.iter().enumerate() {
+        for (other_ip, other_identity) in entries.iter().skip(index + 1) {
+            if identity != other_identity
+                && legacy_nad_secrets.get(ip).map(Arc::as_ref)
+                    == legacy_nad_secrets.get(other_ip).map(Arc::as_ref)
+            {
+                bail!("JIT legacy NAD identities must not share TACACS secrets");
+            }
+        }
+    }
+    Ok(mappings)
 }
 
 /// Configure the authoritative JIT store from file-backed secrets.
@@ -1037,6 +1118,8 @@ async fn setup_jit_lease_store(
         .map_err(|error| anyhow::anyhow!("AWS-LC FIPS self-test failed: {error}"))?;
     let password_path = std::env::var("JIT_LEASE_STORE_PASSWORD_FILE")
         .context("JIT_LEASE_STORE_PASSWORD_FILE is required")?;
+    let ca_path =
+        std::env::var("JIT_LEASE_STORE_CA_FILE").context("JIT_LEASE_STORE_CA_FILE is required")?;
     let verifier_path = std::env::var("JIT_LEASE_VERIFIER_KEY_FILE")
         .context("JIT_LEASE_VERIFIER_KEY_FILE is required")?;
     let password = zeroize::Zeroizing::new(
@@ -1053,10 +1136,14 @@ async fn setup_jit_lease_store(
         crate::jit_lease::VerifierKey::new(zeroize::Zeroizing::new(key_bytes))
             .map_err(|error| anyhow::anyhow!(error))?,
     );
-    let store =
-        crate::jit_lease_store::JitLeaseStore::connect(&url, Some(password.as_str()), verifier_key)
-            .await
-            .map_err(|error| anyhow::anyhow!("initializing JIT lease store: {error}"))?;
+    let store = crate::jit_lease_store::JitLeaseStore::connect(
+        &url,
+        Some(password.as_str()),
+        &PathBuf::from(ca_path),
+        verifier_key,
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("initializing JIT lease store: {error}"))?;
     info!("authoritative JIT lease store enabled");
     Ok(Some(Arc::new(store)))
 }
@@ -1170,5 +1257,50 @@ mod tests {
         let result = build_device_flow_config(&args, None);
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_jit_mapping_requires_managed_identity_and_per_nad_secret() {
+        let ip: std::net::IpAddr = "192.0.2.10".parse().unwrap();
+        let managed = std::collections::HashSet::from(["router-a.example.mil".to_owned()]);
+        let secrets = std::collections::HashMap::from([(ip, Arc::new(vec![7_u8; 32]))]);
+
+        let mappings =
+            parse_jit_legacy_nads("192.0.2.10=router-a.example.mil", &managed, &secrets).unwrap();
+        assert_eq!(mappings[&ip].as_str(), "router-a.example.mil");
+        assert!(
+            parse_jit_legacy_nads("192.0.2.10=router-b.example.mil", &managed, &secrets).is_err()
+        );
+        assert!(
+            parse_jit_legacy_nads("192.0.2.11=router-a.example.mil", &managed, &secrets).is_err()
+        );
+    }
+
+    #[test]
+    fn legacy_jit_mapping_rejects_duplicate_normalized_ip() {
+        let ip: std::net::IpAddr = "192.0.2.10".parse().unwrap();
+        let managed = std::collections::HashSet::from(["router-a.example.mil".to_owned()]);
+        let secrets = std::collections::HashMap::from([(ip, Arc::new(vec![7_u8; 32]))]);
+        let raw = "192.0.2.10=router-a.example.mil,::ffff:192.0.2.10=router-a.example.mil";
+
+        assert!(parse_jit_legacy_nads(raw, &managed, &secrets).is_err());
+    }
+
+    #[test]
+    fn legacy_jit_mapping_rejects_secret_reuse_between_identities() {
+        let first_ip: std::net::IpAddr = "192.0.2.10".parse().unwrap();
+        let second_ip: std::net::IpAddr = "192.0.2.11".parse().unwrap();
+        let managed = std::collections::HashSet::from([
+            "router-a.example.mil".to_owned(),
+            "router-b.example.mil".to_owned(),
+        ]);
+        let shared = vec![7_u8; 32];
+        let secrets = std::collections::HashMap::from([
+            (first_ip, Arc::new(shared.clone())),
+            (second_ip, Arc::new(shared)),
+        ]);
+        let raw = "192.0.2.10=router-a.example.mil,192.0.2.11=router-b.example.mil";
+
+        assert!(parse_jit_legacy_nads(raw, &managed, &secrets).is_err());
     }
 }
