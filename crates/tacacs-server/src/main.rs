@@ -104,6 +104,10 @@ use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::MIN_SECRET_LEN;
 use usg_tacacs_secrets::SecretsProvider;
 
+type LegacyNadSecrets = Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>;
+type JitLegacyNads =
+    Arc<std::collections::HashMap<std::net::IpAddr, crate::jit_lease::NadIdentity>>;
+
 // ============================================================================
 // Application State Container
 // ============================================================================
@@ -122,9 +126,8 @@ struct AppState {
     audit_hmac_key: Option<Arc<Vec<u8>>>,
     jit_lease_store: Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
     jit_managed_nads: Arc<std::collections::HashSet<String>>,
-    jit_legacy_nads:
-        Arc<std::collections::HashMap<std::net::IpAddr, crate::jit_lease::NadIdentity>>,
-    legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>>,
+    jit_legacy_nads: JitLegacyNads,
+    legacy_nad_secrets: LegacyNadSecrets,
     conn_limiter: ConnLimiter,
     session_registry: Arc<SessionRegistry>,
     est_provider: Option<Arc<usg_tacacs_secrets::EstProvider>>,
@@ -958,17 +961,8 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
     setup_group_cache(args).await?;
     let jit_lease_store = setup_jit_lease_store(args).await?;
     let jit_managed_nads = resolve_jit_managed_nads(jit_lease_store.is_some())?;
-    let legacy_nad_secrets = Arc::new(
-        args.legacy_nad_secret
-            .iter()
-            .map(|(ip, sec)| (normalize_ip(*ip), Arc::new(sec.clone().into_bytes())))
-            .collect(),
-    );
-    let jit_legacy_nads = resolve_jit_legacy_nads(
-        jit_lease_store.is_some(),
-        jit_managed_nads.as_ref(),
-        legacy_nad_secrets.as_ref(),
-    )?;
+    let (legacy_nad_secrets, jit_legacy_nads) =
+        build_jit_legacy_config(args, jit_lease_store.is_some(), jit_managed_nads.as_ref())?;
     if jit_lease_store.is_some() && audit_hmac_key.is_none() {
         bail!("JIT lease management requires AUDIT_HMAC_KEY_FILE for signed audit records");
     }
@@ -1012,6 +1006,22 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
     })
 }
 
+fn build_jit_legacy_config(
+    args: &Args,
+    enabled: bool,
+    managed_nads: &std::collections::HashSet<String>,
+) -> Result<(LegacyNadSecrets, JitLegacyNads)> {
+    let legacy_nad_secrets: LegacyNadSecrets = Arc::new(
+        args.legacy_nad_secret
+            .iter()
+            .map(|(ip, secret)| (normalize_ip(*ip), Arc::new(secret.clone().into_bytes())))
+            .collect(),
+    );
+    let jit_legacy_nads =
+        resolve_jit_legacy_nads(enabled, managed_nads, legacy_nad_secrets.as_ref())?;
+    Ok((legacy_nad_secrets, jit_legacy_nads))
+}
+
 fn resolve_jit_managed_nads(enabled: bool) -> Result<Arc<std::collections::HashSet<String>>> {
     if !enabled {
         return Ok(Arc::new(std::collections::HashSet::new()));
@@ -1037,7 +1047,7 @@ fn resolve_jit_legacy_nads(
     enabled: bool,
     managed_nads: &std::collections::HashSet<String>,
     legacy_nad_secrets: &std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>,
-) -> Result<Arc<std::collections::HashMap<std::net::IpAddr, crate::jit_lease::NadIdentity>>> {
+) -> Result<JitLegacyNads> {
     let Some(raw) = std::env::var("JIT_LEGACY_NADS").ok() else {
         return Ok(Arc::new(std::collections::HashMap::new()));
     };
