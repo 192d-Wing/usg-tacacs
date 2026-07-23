@@ -14,8 +14,9 @@ mTLS, and signed audit logging are configured.
 
 ## Security model
 
-- JITPW sends a password verifier and non-secret authorization metadata. The
-  cleartext password is never returned by the API or included in audit events.
+- JITPW sends the high-entropy temporary password and authorization metadata
+  over mTLS. TACACS derives and stores a keyed verifier; the password is never
+  returned by the API or included in audit events.
 - TACACS derives the NAD identity from a validated client certificate for
   TACACS-over-TLS or from an explicit source-IP mapping plus a unique per-NAD
   shared secret for legacy TACACS+.
@@ -179,6 +180,25 @@ If PostgreSQL becomes unavailable, managed NAD authentication fails closed. Do n
 temporarily remove a NAD from `JIT_MANAGED_NADS` to restore access. Use the
 documented emergency-access process, record the incident, and preserve all
 related audit evidence.
+
+## Backup, restore, and retention
+
+PostgreSQL backups contain password verifiers and identity metadata. Treat them
+as sensitive authentication data: encrypt them with separately managed keys,
+restrict restore privileges, audit every access, and use an approved retention
+schedule. The verifier key is deliberately excluded from database backups.
+
+Use PostgreSQL point-in-time recovery and test restoration in an isolated
+environment. A restored database is usable only with the exact verifier key
+that created its unexpired leases. If key continuity cannot be proven, mark or
+revoke every active lease before admitting TACACS traffic; do not guess which
+key applies.
+
+Expired and revoked rows may be retained for investigation according to policy,
+then purged by a separately authorized maintenance role. The TACACS runtime role
+must not have `DELETE`, schema-change, or migration privileges. Preserve the
+corresponding immutable forensic records even after operational lease rows age
+out.
 
 ## Validation checklist
 
