@@ -145,10 +145,10 @@ where
     if header.flags & FLAG_UNENCRYPTED != 0 {
         bail!("unencrypted TACACS+ packet received (deprecated and refused)");
     }
-    if let Some(sec) = secret {
-        if sec.len() < MIN_SECRET_LEN {
-            bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
-        }
+    if let Some(sec) = secret
+        && sec.len() < MIN_SECRET_LEN
+    {
+        bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
     }
     header::validate_request_header(&header, None, ALLOWED_FLAGS, true, VERSION >> 4)?;
 
@@ -216,10 +216,10 @@ where
     if request_header.flags & FLAG_UNENCRYPTED != 0 {
         bail!("unencrypted TACACS+ packet not permitted");
     }
-    if let Some(sec) = secret {
-        if sec.len() < MIN_SECRET_LEN {
-            bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
-        }
+    if let Some(sec) = secret
+        && sec.len() < MIN_SECRET_LEN
+    {
+        bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
     }
     let mut body = author::encode_author_response(response)?;
     let header = request_header.response(body.len() as u32)?;
@@ -253,10 +253,10 @@ where
     if request_header.flags & FLAG_UNENCRYPTED != 0 {
         bail!("unencrypted TACACS+ packet not permitted");
     }
-    if let Some(sec) = secret {
-        if sec.len() < MIN_SECRET_LEN {
-            bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
-        }
+    if let Some(sec) = secret
+        && sec.len() < MIN_SECRET_LEN
+    {
+        bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
     }
     let mut body: Vec<u8> = authen::encode_authen_reply(reply)?;
     let header: Header = request_header.response(body.len() as u32)?;
@@ -342,10 +342,10 @@ where
     if request_header.flags & FLAG_UNENCRYPTED != 0 {
         bail!("unencrypted TACACS+ packet not permitted");
     }
-    if let Some(sec) = secret {
-        if sec.len() < MIN_SECRET_LEN {
-            bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
-        }
+    if let Some(sec) = secret
+        && sec.len() < MIN_SECRET_LEN
+    {
+        bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
     }
     let mut body: Vec<u8> = accounting::encode_accounting_response(response)?;
     let header: Header = request_header.response(body.len() as u32)?;
