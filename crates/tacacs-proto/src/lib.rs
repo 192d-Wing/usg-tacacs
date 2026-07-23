@@ -127,6 +127,12 @@ pub enum Packet {
     Capability(Capability),
 }
 
+/// Read one TACACS+ packet.
+///
+/// `secret = Some(...)` applies the RFC 8907 legacy body transform.
+/// `secret = None` treats the body as cleartext and is only safe when the
+/// caller has already established an authenticated, encrypted transport such
+/// as TACACS+ over TLS (RFC 9887).
 pub async fn read_packet<R>(reader: &mut R, secret: Option<&[u8]>) -> Result<Option<Packet>>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -143,8 +149,6 @@ where
         if sec.len() < MIN_SECRET_LEN {
             bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
         }
-    } else {
-        bail!("TACACS+ packet requires obfuscation but no secret provided");
     }
     header::validate_request_header(&header, None, ALLOWED_FLAGS, true, VERSION >> 4)?;
 
@@ -161,7 +165,9 @@ where
         .read_exact(&mut body)
         .await
         .with_context(|| "reading TACACS+ body")?;
-    crypto::apply_body_crypto(&header, &mut body, secret)?;
+    if secret.is_some() {
+        crypto::apply_body_crypto(&header, &mut body, secret)?;
+    }
 
     match header.packet_type {
         TYPE_AUTHOR => author::parse_author_body(header, &body)
@@ -214,12 +220,12 @@ where
         if sec.len() < MIN_SECRET_LEN {
             bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
         }
-    } else {
-        bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body = author::encode_author_response(response)?;
     let header = request_header.response(body.len() as u32)?;
-    crypto::apply_body_crypto(&header, &mut body, secret)?;
+    if secret.is_some() {
+        crypto::apply_body_crypto(&header, &mut body, secret)?;
+    }
     header::validate_response_header(
         &header,
         Some(TYPE_AUTHOR),
@@ -251,12 +257,12 @@ where
         if sec.len() < MIN_SECRET_LEN {
             bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
         }
-    } else {
-        bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body: Vec<u8> = authen::encode_authen_reply(reply)?;
     let header: Header = request_header.response(body.len() as u32)?;
-    crypto::apply_body_crypto(&header, &mut body, secret)?;
+    if secret.is_some() {
+        crypto::apply_body_crypto(&header, &mut body, secret)?;
+    }
     header::validate_response_header(
         &header,
         Some(TYPE_AUTHEN),
@@ -288,12 +294,12 @@ where
         if sec.len() < MIN_SECRET_LEN {
             bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
         }
-    } else {
-        bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body: Vec<u8> = accounting::encode_accounting_response(response)?;
     let header: Header = request_header.response(body.len() as u32)?;
-    crypto::apply_body_crypto(&header, &mut body, secret)?;
+    if secret.is_some() {
+        crypto::apply_body_crypto(&header, &mut body, secret)?;
+    }
     header::validate_response_header(&header, Some(TYPE_ACCT), ALLOWED_FLAGS, true, VERSION >> 4)?;
     header::write_header(writer, &header).await?;
     writer
@@ -315,14 +321,17 @@ where
     if request_header.flags & FLAG_UNENCRYPTED != 0 {
         bail!("unencrypted TACACS+ packet not permitted");
     }
-    let sec = secret.context("cannot send encrypted TACACS+ capability without a shared secret")?;
-    ensure!(
-        sec.len() >= MIN_SECRET_LEN,
-        "shared secret too short; minimum {MIN_SECRET_LEN} bytes required"
-    );
+    if let Some(sec) = secret {
+        ensure!(
+            sec.len() >= MIN_SECRET_LEN,
+            "shared secret too short; minimum {MIN_SECRET_LEN} bytes required"
+        );
+    }
     let mut body = encode_capability(cap)?;
     let header: Header = request_header.response(body.len() as u32)?;
-    crypto::apply_body_crypto(&header, &mut body, secret)?;
+    if secret.is_some() {
+        crypto::apply_body_crypto(&header, &mut body, secret)?;
+    }
     header::validate_response_header(
         &header,
         Some(TYPE_CAPABILITY),
@@ -965,6 +974,45 @@ fn is_clean_eof(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn tls_transport_reads_clear_pap_body_without_legacy_secret() {
+        let user = b"john.e.willman3.mil";
+        let password = b"temporary-password";
+        let mut body = vec![
+            AUTHEN_ACTION_LOGIN,
+            0,
+            AUTHEN_TYPE_PAP,
+            1,
+            user.len() as u8,
+            0,
+            0,
+            password.len() as u8,
+        ];
+        body.extend_from_slice(user);
+        body.extend_from_slice(password);
+        let header = Header {
+            version: VERSION,
+            packet_type: TYPE_AUTHEN,
+            seq_no: 1,
+            flags: 0,
+            session_id: 42,
+            length: body.len() as u32,
+        };
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        tokio::spawn(async move {
+            header::write_header(&mut client, &header).await.unwrap();
+            client.write_all(&body).await.unwrap();
+        });
+
+        let packet = read_packet(&mut server, None).await.unwrap().unwrap();
+        let Packet::Authentication(AuthenPacket::Start(start)) = packet else {
+            panic!("expected PAP authentication start");
+        };
+        assert_eq!(start.user, "john.e.willman3.mil");
+        assert_eq!(start.data, password);
+    }
 
     // ==================== Constants Tests ====================
 

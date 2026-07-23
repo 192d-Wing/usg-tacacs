@@ -497,6 +497,10 @@ fn enforce_client_cert_policy(
 fn auth_ctx_with_nad_identity(base: AuthContext, cert_names: &[String]) -> Result<AuthContext> {
     let jit_nad_identity = select_managed_nad_identity(cert_names, &base.jit_managed_nads)?;
     Ok(AuthContext {
+        // RFC 9887 protects the TACACS+ body with TLS and does not use the
+        // legacy shared-secret transform. The legacy listener independently
+        // requires and installs a per-NAD secret before packet processing.
+        secret: None,
         jit_nad_identity,
         ..base
     })

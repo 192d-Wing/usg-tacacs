@@ -4933,6 +4933,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "usg-tacacs-policy",
  "usg-tacacs-proto",
  "usg-tacacs-secrets",
