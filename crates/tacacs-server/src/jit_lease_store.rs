@@ -611,6 +611,26 @@ fn rejected_authentication() -> LeaseAuthentication {
 mod tests {
     use super::*;
 
+    fn test_store(pool: PgPool) -> JitLeaseStore {
+        let key = VerifierKey::new(Zeroizing::new(vec![0x5a; 32])).unwrap();
+        JitLeaseStore {
+            pool,
+            verifier_key: Arc::new(key),
+        }
+    }
+
+    fn test_input(idempotency_key: &str, password_byte: u8) -> CreateLeaseInput {
+        CreateLeaseInput {
+            eid: CanonicalEid::parse("john.e.willman3.mil").unwrap(),
+            icam_subject: "icam-subject-123".to_owned(),
+            nad_identity: NadIdentity::parse("router-a.example.mil").unwrap(),
+            authorization_groups: vec!["network:admins".to_owned()],
+            ttl: LeaseTtl::new(900).unwrap(),
+            idempotency_key: idempotency_key.to_owned(),
+            password: Zeroizing::new(vec![password_byte; 32]),
+        }
+    }
+
     #[test]
     fn store_requires_tls_url() {
         assert!(validate_store_config("postgresql://tacacs@db.example.mil/tacacs").is_ok());
@@ -649,5 +669,101 @@ mod tests {
         let id = fips_uuid().unwrap();
         assert_eq!(id.get_version_num(), 4);
         assert_eq!(id.get_variant(), uuid::Variant::RFC4122);
+    }
+
+    #[sqlx::test]
+    async fn postgres_lease_lifecycle(pool: PgPool) {
+        let store = test_store(pool);
+        let created = store
+            .create(test_input("lifecycle-key-001", 0x41))
+            .await
+            .unwrap();
+        let metadata = match created {
+            CreateLeaseOutcome::Created(value) => value,
+            CreateLeaseOutcome::Replay(_) => panic!("first request must create a lease"),
+        };
+
+        let authenticated = store
+            .authenticate(
+                &CanonicalEid::parse("john.e.willman3.mil").unwrap(),
+                &NadIdentity::parse("router-a.example.mil").unwrap(),
+                &[0x41; 32],
+            )
+            .await
+            .unwrap();
+        assert!(authenticated.authenticated);
+
+        store.revoke(metadata.lease_id).await.unwrap();
+        store.revoke(metadata.lease_id).await.unwrap();
+        let rejected = store
+            .authenticate(
+                &CanonicalEid::parse("john.e.willman3.mil").unwrap(),
+                &NadIdentity::parse("router-a.example.mil").unwrap(),
+                &[0x41; 32],
+            )
+            .await
+            .unwrap();
+        assert!(!rejected.authenticated);
+        assert_eq!(
+            store.get(metadata.lease_id).await.unwrap().unwrap().status,
+            LeaseStatus::Revoked
+        );
+    }
+
+    #[sqlx::test]
+    async fn postgres_idempotency_replays_only_identical_request(pool: PgPool) {
+        let store = test_store(pool);
+        let first = store
+            .create(test_input("idempotency-key-001", 0x41))
+            .await
+            .unwrap();
+        let replay = store
+            .create(test_input("idempotency-key-001", 0x41))
+            .await
+            .unwrap();
+        assert!(matches!(first, CreateLeaseOutcome::Created(_)));
+        assert!(matches!(replay, CreateLeaseOutcome::Replay(_)));
+        assert_eq!(
+            store
+                .create(test_input("idempotency-key-001", 0x42))
+                .await
+                .unwrap_err(),
+            StoreError::Conflict
+        );
+    }
+
+    #[sqlx::test]
+    async fn postgres_concurrent_issuance_allows_one_active_lease(pool: PgPool) {
+        let first_store = test_store(pool.clone());
+        let second_store = test_store(pool);
+        let (first, second) = tokio::join!(
+            first_store.create(test_input("concurrent-key-001", 0x41)),
+            second_store.create(test_input("concurrent-key-002", 0x42))
+        );
+        let outcomes = [first, second];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|result| matches!(result, Ok(CreateLeaseOutcome::Created(_))))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|result| matches!(result, Err(StoreError::Conflict)))
+                .count(),
+            1
+        );
+    }
+
+    #[sqlx::test]
+    async fn postgres_store_outage_fails_closed(pool: PgPool) {
+        let store = test_store(pool.clone());
+        pool.close().await;
+        assert_eq!(
+            store.get(fips_uuid().unwrap()).await.unwrap_err(),
+            StoreError::Unavailable
+        );
     }
 }
