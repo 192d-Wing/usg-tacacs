@@ -69,3 +69,4 @@ opentelemetry-otlp.workspace = true
 [dev-dependencies]
 tempfile = "3.14"
 rcgen = "0.14"
+usg-tacacs-client-tls.workspace = true
