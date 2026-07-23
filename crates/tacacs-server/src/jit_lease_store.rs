@@ -826,6 +826,7 @@ mod tests {
 
     #[sqlx::test]
     async fn jit_e2e_tls_nad_binding_revocation_and_forbidden_fallback(pool: PgPool) {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let store = test_store(pool);
         let created = store
             .create(test_input("tls-e2e-key-0001", 0x41))
