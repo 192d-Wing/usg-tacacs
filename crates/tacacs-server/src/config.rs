@@ -336,6 +336,13 @@ pub struct Args {
     #[arg(long, value_parser = parse_nad_secret, value_name = "IP:SECRET", num_args = 0..)]
     pub legacy_nad_secret: Vec<(IpAddr, String)>,
 
+    /// File containing legacy per-NAD secrets, one `IP:SECRET` entry per line.
+    ///
+    /// Use this instead of `--legacy-nad-secret` in production so secrets are
+    /// not exposed through the process command line or Kubernetes pod spec.
+    #[arg(long)]
+    pub legacy_nad_secrets_file: Option<PathBuf>,
+
     /// OpenTelemetry OTLP endpoint URL (e.g., http://jaeger:4317). Enables distributed tracing.
     #[arg(long)]
     pub otlp_endpoint: Option<String>,
@@ -702,6 +709,51 @@ pub fn read_secret_file(path: &PathBuf) -> std::io::Result<String> {
         ));
     }
     Ok(secret)
+}
+
+/// Resolve legacy per-NAD secrets from a protected file and CLI entries.
+///
+/// File entries are loaded first. Duplicate normalized IP addresses are
+/// rejected, including duplicates across the file and command line.
+pub fn resolve_legacy_nad_secrets(
+    args: &Args,
+) -> std::result::Result<Vec<(IpAddr, String)>, String> {
+    let mut entries = Vec::new();
+    if let Some(path) = &args.legacy_nad_secrets_file {
+        let content = std::fs::read_to_string(path)
+            .map_err(|error| format!("failed to read legacy NAD secrets file {path:?}: {error}"))?;
+        for (index, line) in content.lines().enumerate() {
+            let value = line.trim();
+            if value.is_empty() || value.starts_with('#') {
+                continue;
+            }
+            let entry = parse_nad_secret(value).map_err(|error| {
+                format!(
+                    "invalid legacy NAD secret in {path:?} at line {}: {error}",
+                    index + 1
+                )
+            })?;
+            entries.push(entry);
+        }
+    }
+    entries.extend(args.legacy_nad_secret.iter().cloned());
+
+    let mut seen = std::collections::HashSet::new();
+    for (ip, _) in &entries {
+        let normalized = match ip {
+            IpAddr::V6(value) => value
+                .to_ipv4_mapped()
+                .map(IpAddr::V4)
+                .unwrap_or(IpAddr::V6(*value)),
+            value => *value,
+        };
+        if !seen.insert(normalized) {
+            return Err(format!(
+                "duplicate legacy NAD secret for normalized IP {normalized}"
+            ));
+        }
+    }
+    Ok(entries)
 }
 
 /// Resolve the TACACS+ shared secret from file, CLI argument, or environment variable.
@@ -1299,6 +1351,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -1426,6 +1479,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -1551,6 +1605,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -1676,6 +1731,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -1802,6 +1858,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -1927,6 +1984,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -2057,6 +2115,43 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn resolve_legacy_nad_secrets_reads_protected_file() {
+        use std::io::Write;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "# one secret per NAD\n192.0.2.10:{}\n[2001:db8::10]:{}",
+            "a".repeat(MIN_SECRET_LEN),
+            "b".repeat(MIN_SECRET_LEN)
+        )
+        .unwrap();
+        let mut args = Args::try_parse_from(["usg-tacacs"]).unwrap();
+        args.legacy_nad_secrets_file = Some(file.path().to_path_buf());
+
+        let entries = resolve_legacy_nad_secrets(&args).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, "192.0.2.10".parse::<IpAddr>().unwrap());
+        assert_eq!(entries[1].0, "2001:db8::10".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn resolve_legacy_nad_secrets_rejects_normalized_duplicate() {
+        use std::io::Write;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "192.0.2.10:{}", "a".repeat(MIN_SECRET_LEN)).unwrap();
+        let mut args = Args::try_parse_from(["usg-tacacs"]).unwrap();
+        args.legacy_nad_secrets_file = Some(file.path().to_path_buf());
+        args.legacy_nad_secret = vec![(
+            "::ffff:192.0.2.10".parse().unwrap(),
+            "b".repeat(MIN_SECRET_LEN),
+        )];
+
+        assert!(resolve_legacy_nad_secrets(&args).is_err());
+    }
+
     // ==================== resolve_tacacs_secret Tests ====================
 
     #[test]
@@ -2117,6 +2212,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -2239,6 +2335,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -2361,6 +2458,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
@@ -2488,6 +2586,7 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            legacy_nad_secrets_file: None,
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,

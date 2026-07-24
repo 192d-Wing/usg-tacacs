@@ -76,7 +76,7 @@ use crate::ascii::AsciiConfig;
 use crate::auth::LdapConfig;
 use crate::config::{
     Args, LogFormat, StaticCreds, build_est_config, credentials_map, read_secret_file,
-    resolve_icam_client_secret,
+    resolve_icam_client_secret, resolve_legacy_nad_secrets,
 };
 use crate::http::{ServerState, serve_http};
 use crate::icam::{IcamConfig, icam_build_client};
@@ -210,8 +210,11 @@ fn handle_check_policy_mode(args: &Args) -> Result<bool> {
 }
 
 /// Validate secrets and build LDAP configuration.
-fn validate_secrets_and_build_ldap(args: &Args) -> Result<Option<Arc<LdapConfig>>> {
-    for (ip, sec) in &args.legacy_nad_secret {
+fn validate_secrets_and_build_ldap(
+    args: &Args,
+    legacy_nad_secrets: &[(std::net::IpAddr, String)],
+) -> Result<Option<Arc<LdapConfig>>> {
+    for (ip, sec) in legacy_nad_secrets {
         if sec.len() < MIN_SECRET_LEN {
             bail!(
                 "legacy NAD secret for {} must be at least {} bytes",
@@ -954,15 +957,19 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         .as_ref()
         .context("a --policy path is required to start the server")?
         .clone();
-    let ldap_config = validate_secrets_and_build_ldap(args)?;
+    let legacy_nad_secret_entries = resolve_legacy_nad_secrets(args).map_err(anyhow::Error::msg)?;
+    let ldap_config = validate_secrets_and_build_ldap(args, &legacy_nad_secret_entries)?;
     let icam_config = build_icam_config(args)?;
     let device_flow_config = build_device_flow_config(args, icam_config.as_deref())?;
     let audit_hmac_key = resolve_audit_hmac_key(args).map_err(anyhow::Error::msg)?;
     setup_group_cache(args).await?;
     let jit_lease_store = setup_jit_lease_store(args).await?;
     let jit_managed_nads = resolve_jit_managed_nads(jit_lease_store.is_some())?;
-    let (legacy_nad_secrets, jit_legacy_nads) =
-        build_jit_legacy_config(args, jit_lease_store.is_some(), jit_managed_nads.as_ref())?;
+    let (legacy_nad_secrets, jit_legacy_nads) = build_jit_legacy_config(
+        &legacy_nad_secret_entries,
+        jit_lease_store.is_some(),
+        jit_managed_nads.as_ref(),
+    )?;
     if jit_lease_store.is_some() && audit_hmac_key.is_none() {
         bail!("JIT lease management requires AUDIT_HMAC_KEY_FILE for signed audit records");
     }
@@ -1007,12 +1014,12 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
 }
 
 fn build_jit_legacy_config(
-    args: &Args,
+    legacy_nad_secret_entries: &[(std::net::IpAddr, String)],
     enabled: bool,
     managed_nads: &std::collections::HashSet<String>,
 ) -> Result<(LegacyNadSecrets, JitLegacyNads)> {
     let legacy_nad_secrets: LegacyNadSecrets = Arc::new(
-        args.legacy_nad_secret
+        legacy_nad_secret_entries
             .iter()
             .map(|(ip, secret)| (normalize_ip(*ip), Arc::new(secret.clone().into_bytes())))
             .collect(),
