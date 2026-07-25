@@ -49,10 +49,28 @@
 //!
 //! - **AU-12 (Audit Generation)**: Permission denials are logged via tracing.
 
-use axum::{body::Body, extract::Request, http::StatusCode, middleware::Next, response::Response};
+use axum::{
+    Json,
+    body::Body,
+    extract::Request,
+    http::{HeaderValue, StatusCode, header},
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::warn;
+use uuid::Uuid;
+
+#[derive(Serialize)]
+struct AuthorizationProblem {
+    #[serde(rename = "type")]
+    problem_type: &'static str,
+    title: &'static str,
+    status: u16,
+    code: &'static str,
+    correlation_id: String,
+}
 
 /// Identity extracted from TLS client certificate CN.
 ///
@@ -178,11 +196,7 @@ impl RbacMiddleware {
     /// |---------|------|----------------|
     /// | IA-3 | Device Identification | Extracts identity from TLS client certificate extension |
     /// | AC-3 | Access Enforcement | Denies requests without valid certificate identity |
-    pub async fn check_permission(
-        &self,
-        req: Request<Body>,
-        next: Next,
-    ) -> Result<Response, StatusCode> {
+    pub async fn check_permission(&self, req: Request<Body>, next: Next) -> Response {
         // NIST IA-3: Extract user identity from TLS client certificate extension.
         // The TlsClientIdentity is inserted by the TLS connection handler after
         // validating the client certificate -- it cannot be spoofed via headers.
@@ -194,10 +208,28 @@ impl RbacMiddleware {
                 permission = %self.required_permission,
                 "access denied: insufficient permissions"
             );
-            return Err(StatusCode::FORBIDDEN);
+            let correlation_id = req
+                .headers()
+                .get("x-correlation-id")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .unwrap_or_else(Uuid::now_v7);
+            let body = AuthorizationProblem {
+                problem_type: "about:blank",
+                title: "Forbidden",
+                status: StatusCode::FORBIDDEN.as_u16(),
+                code: "permission_denied",
+                correlation_id: correlation_id.to_string(),
+            };
+            let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/problem+json"),
+            );
+            return response;
         }
 
-        Ok(next.run(req).await)
+        next.run(req).await
     }
 
     /// Extract user identity from request extensions (production) or header (test only).
@@ -245,8 +277,7 @@ pub fn require_permission(
 ) -> impl Fn(
     Request<Body>,
     Next,
-)
-    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, StatusCode>> + Send>>
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
 + Clone
 + Send
 + Sync

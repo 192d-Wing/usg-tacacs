@@ -18,8 +18,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/Status"
         "403":
           $ref: "#/components/responses/Forbidden"
   /sessions:
@@ -32,10 +31,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: true
+                $ref: "#/components/schemas/Sessions"
         "403":
           $ref: "#/components/responses/Forbidden"
   /sessions/{id}:
@@ -44,7 +40,9 @@ paths:
         in: path
         required: true
         schema:
-          type: string
+          type: integer
+          format: int64
+          minimum: 1
     delete:
       operationId: deleteSession
       summary: Terminate an active TACACS session
@@ -54,7 +52,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
-          description: Session not found
+          $ref: "#/components/responses/NotFound"
   /policy:
     get:
       operationId: getPolicy
@@ -65,8 +63,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/Policy"
         "403":
           $ref: "#/components/responses/Forbidden"
     post:
@@ -77,15 +74,26 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: true
+              $ref: "#/components/schemas/PolicyUpload"
       responses:
         "200":
           description: Policy replaced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyUploadResult"
         "400":
-          description: Invalid policy
+          $ref: "#/components/responses/InvalidRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Policy upload is disabled by authoritative declarative configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyUploadResult"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
   /policy/reload:
     post:
       operationId: reloadPolicy
@@ -93,8 +101,14 @@ paths:
       responses:
         "202":
           description: Reload requested
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
   /config:
     get:
       operationId: getRuntimeConfig
@@ -105,8 +119,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/RuntimeConfig"
         "403":
           $ref: "#/components/responses/Forbidden"
   /metrics:
@@ -269,6 +282,16 @@ components:
   responses:
     Forbidden:
       description: The authenticated client lacks the required permission.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InvalidRequest:
+      description: The request is malformed or fails validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     InvalidHeader:
       description: A required request header is missing or malformed.
       content:
@@ -334,6 +357,167 @@ components:
       schema:
         type: string
   schemas:
+    Status:
+      type: object
+      additionalProperties: false
+      required: [status, version, uptime_seconds, stats]
+      properties:
+        status:
+          type: string
+          const: ok
+        version:
+          type: string
+        uptime_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+        stats:
+          $ref: "#/components/schemas/ServerStats"
+    ServerStats:
+      type: object
+      additionalProperties: false
+      required:
+        - total_connections
+        - active_connections
+        - total_authn_requests
+        - total_authz_requests
+        - total_acct_requests
+        - authn_success_rate
+        - authz_success_rate
+      properties:
+        total_connections:
+          type: integer
+          format: int64
+          minimum: 0
+        active_connections:
+          type: integer
+          format: int64
+          minimum: 0
+        total_authn_requests:
+          type: integer
+          format: int64
+          minimum: 0
+        total_authz_requests:
+          type: integer
+          format: int64
+          minimum: 0
+        total_acct_requests:
+          type: integer
+          format: int64
+          minimum: 0
+        authn_success_rate:
+          type: number
+          minimum: 0
+          maximum: 100
+        authz_success_rate:
+          type: number
+          minimum: 0
+          maximum: 100
+    Session:
+      type: object
+      additionalProperties: false
+      required: [id, peer_addr, username, start_time, idle_seconds, request_count]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        peer_addr:
+          type: string
+        username:
+          type: [string, "null"]
+        start_time:
+          type: integer
+          format: int64
+          minimum: 0
+        idle_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+        request_count:
+          type: integer
+          format: int64
+          minimum: 0
+    Sessions:
+      type: object
+      additionalProperties: false
+      required: [sessions, total]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+        total:
+          type: integer
+          minimum: 0
+    Policy:
+      type: object
+      additionalProperties: false
+      required: [rule_count, last_loaded, source]
+      properties:
+        rule_count:
+          type: integer
+          minimum: 0
+        last_loaded:
+          type: string
+        source:
+          type: string
+    PolicyUpload:
+      type: object
+      additionalProperties: false
+      required: [policy]
+      properties:
+        policy:
+          type: string
+        validate:
+          type: boolean
+          default: false
+    PolicyUploadResult:
+      type: object
+      additionalProperties: false
+      required: [success, message, rule_count]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        rule_count:
+          type: [integer, "null"]
+          minimum: 0
+    RuntimeConfig:
+      type: object
+      additionalProperties: false
+      required:
+        - listen_addrs
+        - tls_enabled
+        - ldap_enabled
+        - policy_source
+        - metrics_enabled
+        - api_enabled
+      properties:
+        listen_addrs:
+          type: array
+          items:
+            type: string
+        tls_enabled:
+          type: boolean
+        ldap_enabled:
+          type: boolean
+        policy_source:
+          type: string
+        metrics_enabled:
+          type: boolean
+        api_enabled:
+          type: boolean
+    Success:
+      type: object
+      additionalProperties: false
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
     NadAuthentication:
       oneOf:
         - $ref: "#/components/schemas/LegacyNadAuthentication"

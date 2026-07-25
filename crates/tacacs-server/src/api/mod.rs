@@ -55,6 +55,7 @@
 //! - **AU-2/AU-12 (Audit Events)**: All API access attempts are logged.
 
 mod handlers;
+mod middleware;
 mod models;
 mod rbac;
 

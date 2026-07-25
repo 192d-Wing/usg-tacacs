@@ -4971,6 +4971,7 @@ dependencies = [
  "utoipa-swagger-ui",
  "uuid",
  "x509-cert",
+ "yaml_serde",
  "zeroize",
 ]
 

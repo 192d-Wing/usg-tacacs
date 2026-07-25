@@ -100,6 +100,10 @@ pub struct Metrics {
     // Rate limiting metrics
     pub ratelimit_rejections_total: CounterVec,
 
+    // HTTP API metrics
+    pub api_requests_total: CounterVec,
+    pub api_request_duration_seconds: HistogramVec,
+
     // Certificate metrics (EST/PKI)
     pub certificate_expiry_timestamp: Gauge,
     pub certificate_renewal_total: CounterVec,
@@ -292,6 +296,26 @@ fn create_ratelimit_metrics() -> CounterVec {
     .expect("metric can be created")
 }
 
+fn create_api_metrics() -> (CounterVec, HistogramVec) {
+    let requests = CounterVec::new(
+        Opts::new(
+            "tacacs_api_requests_total",
+            "HTTP API requests by method and response status",
+        ),
+        &["method", "status"],
+    )
+    .expect("metric can be created");
+    let duration = HistogramVec::new(
+        HistogramOpts::new(
+            "tacacs_api_request_duration_seconds",
+            "HTTP API request duration by method",
+        ),
+        &["method"],
+    )
+    .expect("metric can be created");
+    (requests, duration)
+}
+
 /// Create certificate metrics for EST/PKI.
 ///
 /// # NIST SP 800-53 Controls
@@ -355,6 +379,7 @@ impl Metrics {
         let (nad_reconciliation_total, nad_reconciliation_resources, nad_reconciliation_timestamp) =
             create_nad_reconciliation_metrics();
         let ratelimit_rejections_total = create_ratelimit_metrics();
+        let (api_requests_total, api_request_duration_seconds) = create_api_metrics();
         let (certificate_expiry_timestamp, certificate_renewal_total, certificate_validity_days) =
             create_certificate_metrics();
 
@@ -374,6 +399,8 @@ impl Metrics {
         register_metric(&registry, &nad_reconciliation_resources);
         register_metric(&registry, &nad_reconciliation_timestamp);
         register_metric(&registry, &ratelimit_rejections_total);
+        register_metric(&registry, &api_requests_total);
+        register_metric(&registry, &api_request_duration_seconds);
         register_metric(&registry, &certificate_expiry_timestamp);
         register_metric(&registry, &certificate_renewal_total);
         register_metric(&registry, &certificate_validity_days);
@@ -395,6 +422,8 @@ impl Metrics {
             nad_reconciliation_resources,
             nad_reconciliation_timestamp,
             ratelimit_rejections_total,
+            api_requests_total,
+            api_request_duration_seconds,
             certificate_expiry_timestamp,
             certificate_renewal_total,
             certificate_validity_days,

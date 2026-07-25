@@ -49,6 +49,7 @@
 //! - **AU-2/AU-12 (Audit Events/Generation)**: All API requests are logged
 //!   with user identity, endpoint, and authorization result.
 
+use super::middleware::request_context;
 use super::models::*;
 use super::rbac::TlsClientIdentity;
 use super::rbac::{RbacConfig, require_permission};
@@ -305,6 +306,7 @@ pub fn build_api_router(
                 ))),
         )
         .with_state(state)
+        .layer(middleware::from_fn(request_context))
 }
 
 /// Return the version-controlled management OpenAPI 3.1.1 contract.
@@ -976,24 +978,21 @@ async fn get_sessions(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 async fn delete_session(
     State(state): State<Arc<ApiState>>,
     Path(session_id): Path<u64>,
-) -> impl IntoResponse {
+    headers: HeaderMap,
+) -> Response {
     info!(session_id = session_id, "API request to terminate session");
 
     // NIST AC-12: Terminate session by connection ID
     let success = state.registry.terminate_session(session_id).await;
 
     if success {
-        let response = SuccessResponse {
-            success: true,
-            message: format!("Session {} termination requested", session_id),
-        };
-        (StatusCode::OK, Json(response))
+        StatusCode::NO_CONTENT.into_response()
     } else {
-        let response = SuccessResponse {
-            success: false,
-            message: format!("Session {} not found", session_id),
-        };
-        (StatusCode::NOT_FOUND, Json(response))
+        problem(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            mutation_correlation(&headers),
+        )
     }
 }
 
@@ -1032,7 +1031,7 @@ async fn get_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 /// | AC-3 | Access Enforcement | Requires `write:policy` permission |
 /// | AU-12 | Audit Generation | Logs reload request initiation |
 /// | CM-3 | Configuration Change Control | API-triggered policy reload with audit logging |
-async fn reload_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+async fn reload_policy(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
     info!("API request to reload policy");
 
     // NIST CM-3: Send reload request through internal channel
@@ -1048,15 +1047,15 @@ async fn reload_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse 
                 success: true,
                 message: "Policy reload triggered".to_string(),
             };
-            (StatusCode::OK, Json(response))
+            (StatusCode::ACCEPTED, Json(response)).into_response()
         }
         Err(e) => {
             warn!(error = %e, "Failed to queue policy reload request");
-            let response = SuccessResponse {
-                success: false,
-                message: "Failed to queue policy reload - channel closed".to_string(),
-            };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(response))
+            problem(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "policy_reload_unavailable",
+                mutation_correlation(&headers),
+            )
         }
     }
 }
@@ -1472,6 +1471,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mgmt_openapi_is_parseable_and_internal_references_resolve() {
+        let document: serde_json::Value =
+            yaml_serde::from_str(include_str!("../../../../docs/api/mgmt/openapi.yaml"))
+                .expect("management OpenAPI document must be valid YAML");
+        assert_eq!(document["openapi"], "3.1.1");
+        assert!(
+            document["paths"]
+                .as_object()
+                .is_some_and(|paths| !paths.is_empty())
+        );
+
+        fn verify_references(root: &serde_json::Value, value: &serde_json::Value) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    if let Some(reference) = object.get("$ref").and_then(|value| value.as_str()) {
+                        let pointer = reference
+                            .strip_prefix('#')
+                            .expect("only internal OpenAPI references are allowed");
+                        assert!(
+                            root.pointer(pointer).is_some(),
+                            "unresolved OpenAPI reference: {reference}"
+                        );
+                    }
+                    for child in object.values() {
+                        verify_references(root, child);
+                    }
+                }
+                serde_json::Value::Array(array) => {
+                    for child in array {
+                        verify_references(root, child);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        verify_references(&document, &document);
+    }
+
     #[tokio::test]
     async fn jit_openapi_serves_versioned_contract() {
         use http_body_util::BodyExt;
@@ -1525,7 +1564,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/policy/reload")
+                    .uri("/api/mgmt/v1/policy/reload")
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1545,7 +1584,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/mgmt/v1/status")
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1565,7 +1604,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/policy")
+                    .uri("/api/mgmt/v1/policy")
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1586,7 +1625,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/mgmt/v1/status")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1605,7 +1644,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1624,7 +1663,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/metrics")
+                    .uri("/api/mgmt/v1/metrics")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1650,7 +1689,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/config")
+                    .uri("/api/mgmt/v1/config")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1671,7 +1710,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/policy/reload")
+                    .uri("/api/mgmt/v1/policy/reload")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1679,7 +1718,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
 
         // Verify the reload request was sent to the channel
         let reload_request = reload_rx.try_recv().expect("should receive reload request");
@@ -1711,7 +1750,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1756,7 +1795,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1789,7 +1828,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1808,7 +1847,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_session_terminates_existing() {
-        use http_body_util::BodyExt;
         use std::net::{IpAddr, Ipv4Addr};
 
         let rbac = make_test_rbac();
@@ -1825,7 +1863,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/api/v1/sessions/{}", conn_id))
+                    .uri(format!("/api/mgmt/v1/sessions/{}", conn_id))
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1833,13 +1871,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let success_response: SuccessResponse = serde_json::from_slice(&body).unwrap();
-
-        assert!(success_response.success);
-        assert!(success_response.message.contains("termination requested"));
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
         // Verify session is now marked for termination
         assert!(registry.is_termination_requested(conn_id).await);
@@ -1859,7 +1891,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/api/v1/sessions/999999")
+                    .uri("/api/mgmt/v1/sessions/999999")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1870,10 +1902,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        let success_response: SuccessResponse = serde_json::from_slice(&body).unwrap();
-
-        assert!(!success_response.success);
-        assert!(success_response.message.contains("not found"));
+        let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(problem["code"], "session_not_found");
     }
 
     #[tokio::test]
@@ -1904,7 +1934,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1963,7 +1993,7 @@ mod tests {
                 .clone()
                 .oneshot(
                     Request::builder()
-                        .uri("/api/v1/sessions")
+                        .uri("/api/mgmt/v1/sessions")
                         .header("X-User-CN", "CN=admin.test")
                         .body(Body::empty())
                         .unwrap(),
@@ -1984,7 +2014,7 @@ mod tests {
             let response = router
                 .oneshot(
                     Request::builder()
-                        .uri("/api/v1/sessions")
+                        .uri("/api/mgmt/v1/sessions")
                         .header("X-User-CN", "CN=admin.test")
                         .body(Body::empty())
                         .unwrap(),
@@ -2018,7 +2048,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -2053,7 +2083,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/api/v1/sessions/{}", conn_id))
+                    .uri(format!("/api/mgmt/v1/sessions/{}", conn_id))
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),
