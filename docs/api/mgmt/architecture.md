@@ -61,6 +61,32 @@ API does not rewrite a mounted ConfigMap or local YAML file. Git-managed YAML is
 the baseline; PostgreSQL contains runtime resources. A deterministic precedence
 and reconciliation policy must reject conflicting NAD identities.
 
+### NAD ownership and reconciliation
+
+YAML NADs have `yaml` ownership and remain Git-managed. PostgreSQL NADs have
+`api` ownership. The management API lists both sources but mutation operations
+apply only to `api` resources. Attempts to update or delete YAML-owned NADs
+return `409 Conflict`.
+
+An active NAD name and source address must be globally unique across both
+sources. Before committing a database mutation, the service checks the current
+YAML snapshot and PostgreSQL partial unique indexes protect API resources from
+concurrent conflicts.
+
+API resources use a positive `resourceVersion`. Updates and soft deletes require
+`If-Match` with the current ETag so concurrent administrators cannot silently
+overwrite one another. Creates require an idempotency key; only its keyed token
+and request fingerprint are retained.
+
+The database stores an opaque `secretRef`, never a TACACS shared secret.
+Resolution is performed by the approved secret provider. A NAD cannot become
+active until that reference resolves successfully.
+
+Every successful mutation appends a hash-chained, HMAC-authenticated audit
+event containing the certificate actor, UUIDv7 correlation identifier, before
+and after state, and resource version. Database triggers reject updates and
+deletes against the audit table.
+
 ## Deployment
 
 The management listener may share the server process with TACACS data-plane
