@@ -27,6 +27,12 @@ Policy reload returns `202 Accepted` with an `operationId`. Poll
 `failed`. A failed reload preserves the previous active policy. Static listener,
 RBAC, NAD baseline, and secret-mount changes require a rolling restart.
 
+Apply migration `0004_management_operations.sql` before running multiple
+management API replicas. With PostgreSQL management storage enabled, operation
+IDs are replica-independent and survive pod restarts. Completed operations are
+retained for 24 hours and the service permits at most 1,024 concurrent running
+operations.
+
 ## Overview
 
 The API is disabled by default and must be explicitly enabled with `--api-enabled`. For production use, TLS with mutual authentication (mTLS) is strongly recommended.

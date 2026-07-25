@@ -76,6 +76,14 @@ validation and is atomically installed. On failure, the previous policy remains
 active. Listener, RBAC, NAD baseline, and secret-mount changes require a rolling
 restart; the reload operation does not claim to activate those static fields.
 
+When PostgreSQL management storage is configured, operation state is written
+to `tacacs_management.operations` before work is queued and completion is
+persisted by the worker. Any API replica can resolve the operation UUID, and
+the result survives pod replacement. Completed rows are retained for 24 hours;
+registration transactionally prunes older completed rows and caps concurrent
+running operations at 1,024. The in-memory registry remains only as a
+development fallback when PostgreSQL management storage is absent.
+
 Dynamic NAD records created through management API operations are stored
 transactionally in PostgreSQL, with an immutable audit record. The management
 API does not rewrite a mounted ConfigMap or local YAML file. Git-managed YAML is

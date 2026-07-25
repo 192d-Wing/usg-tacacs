@@ -60,7 +60,8 @@ use crate::jit_lease_store::{
 use crate::metrics::metrics;
 use crate::nad_reconciler::RuntimeNadRegistry;
 use crate::nad_store::{
-    CreateNadInput, CreateNadOutcome, NadAuthentication, NadStore, NadStoreError, UpdateNadInput,
+    CreateNadInput, CreateNadOutcome, NadAuthentication, NadStore, NadStoreError, StoredOperation,
+    UpdateNadInput,
 };
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
@@ -1326,7 +1327,7 @@ async fn reload_policy(State(state): State<Arc<ApiState>>, headers: HeaderMap) -
         completed_at: None,
         error: None,
     };
-    if !register_operation(&state.operations, operation_id, operation.clone()).await {
+    if !register_operation(&state, operation_id, operation.clone()).await {
         return problem(
             StatusCode::SERVICE_UNAVAILABLE,
             "operation_capacity_exceeded",
@@ -1343,27 +1344,17 @@ async fn reload_policy(State(state): State<Arc<ApiState>>, headers: HeaderMap) -
     match state.reload_tx.send(request).await {
         Ok(_) => {
             info!("Policy reload request queued successfully");
-            let operations = Arc::clone(&state.operations);
-            tokio::spawn(async move {
-                let result = completion_rx
-                    .await
-                    .unwrap_or_else(|_| Err("policy reload worker stopped".to_string()));
-                if let Some(operation) = operations.write().await.get_mut(&operation_id) {
-                    operation.completed_at = Some(current_timestamp());
-                    match result {
-                        Ok(()) => operation.status = "succeeded",
-                        Err(error) => {
-                            operation.status = "failed";
-                            operation.error = Some(error);
-                        }
-                    }
-                }
-            });
+            spawn_operation_completion(&state, operation_id, completion_rx);
             (StatusCode::ACCEPTED, Json(operation)).into_response()
         }
         Err(e) => {
             warn!(error = %e, "Failed to queue policy reload request");
             state.operations.write().await.remove(&operation_id);
+            if let Some(store) = &state.nad_store {
+                let _ = store
+                    .complete_operation(operation_id, "failed", Some("policy reload unavailable"))
+                    .await;
+            }
             problem(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "policy_reload_unavailable",
@@ -1373,13 +1364,48 @@ async fn reload_policy(State(state): State<Arc<ApiState>>, headers: HeaderMap) -
     }
 }
 
-async fn register_operation(
-    operations: &RwLock<HashMap<Uuid, OperationResponse>>,
-    id: Uuid,
-    operation: OperationResponse,
-) -> bool {
+fn spawn_operation_completion(
+    state: &ApiState,
+    operation_id: Uuid,
+    completion_rx: tokio::sync::oneshot::Receiver<Result<(), String>>,
+) {
+    let operations = Arc::clone(&state.operations);
+    let operation_store = state.nad_store.clone();
+    tokio::spawn(async move {
+        let result = completion_rx
+            .await
+            .unwrap_or_else(|_| Err("policy reload worker stopped".to_string()));
+        let (status, error) = match result {
+            Ok(()) => ("succeeded", None),
+            Err(error) => ("failed", Some(error)),
+        };
+        if let Some(operation) = operations.write().await.get_mut(&operation_id) {
+            operation.completed_at = Some(current_timestamp());
+            operation.status = status;
+            operation.error.clone_from(&error);
+        }
+        if let Some(store) = operation_store
+            && let Err(store_error) = store
+                .complete_operation(operation_id, status, error.as_deref())
+                .await
+        {
+            warn!(error = %store_error, %operation_id, "failed to persist operation result");
+        }
+    });
+}
+
+async fn register_operation(state: &ApiState, id: Uuid, operation: OperationResponse) -> bool {
+    let durable = state.nad_store.is_some();
+    if let Some(store) = &state.nad_store {
+        let Some(stored) = stored_operation(id, &operation) else {
+            return false;
+        };
+        if store.create_operation(&stored).await.is_err() {
+            return false;
+        }
+    }
     const MAX_OPERATIONS: usize = 1024;
-    let mut records = operations.write().await;
+    let mut records = state.operations.write().await;
     if records.len() >= MAX_OPERATIONS {
         let completed = records
             .iter()
@@ -1387,7 +1413,7 @@ async fn register_operation(
             .min_by_key(|(_, value)| &value.submitted_at)
             .map(|(id, _)| *id);
         let Some(completed) = completed else {
-            return false;
+            return durable;
         };
         records.remove(&completed);
     }
@@ -1400,6 +1426,17 @@ async fn get_operation(
     Path(operation_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(store) = &state.nad_store {
+        return match store.get_operation(operation_id).await {
+            Ok(operation) => Json(operation_response(operation)).into_response(),
+            Err(NadStoreError::NotFound) => problem(
+                StatusCode::NOT_FOUND,
+                "operation_not_found",
+                mutation_correlation(&headers),
+            ),
+            Err(error) => nad_problem(error, mutation_correlation(&headers)),
+        };
+    }
     match state.operations.read().await.get(&operation_id).cloned() {
         Some(operation) => Json(operation).into_response(),
         None => problem(
@@ -1410,10 +1447,49 @@ async fn get_operation(
     }
 }
 
-fn current_timestamp() -> String {
-    time::OffsetDateTime::now_utc()
+fn stored_operation(id: Uuid, operation: &OperationResponse) -> Option<StoredOperation> {
+    let submitted_at = time::OffsetDateTime::parse(
+        &operation.submitted_at,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .ok()?;
+    Some(StoredOperation {
+        operation_id: id,
+        kind: operation.kind.to_owned(),
+        status: operation.status.to_owned(),
+        submitted_at,
+        completed_at: None,
+        error: None,
+    })
+}
+
+fn operation_response(operation: StoredOperation) -> OperationResponse {
+    OperationResponse {
+        operation_id: operation.operation_id.to_string(),
+        kind: match operation.kind.as_str() {
+            "authorizationPolicyReload" => "authorizationPolicyReload",
+            _ => "unknown",
+        },
+        status: match operation.status.as_str() {
+            "running" => "running",
+            "succeeded" => "succeeded",
+            "failed" => "failed",
+            _ => "failed",
+        },
+        submitted_at: format_operation_timestamp(operation.submitted_at),
+        completed_at: operation.completed_at.map(format_operation_timestamp),
+        error: operation.error,
+    }
+}
+
+fn format_operation_timestamp(value: time::OffsetDateTime) -> String {
+    value
         .format(&time::format_description::well_known::Rfc3339)
         .expect("UTC timestamp is RFC 3339 representable")
+}
+
+fn current_timestamp() -> String {
+    format_operation_timestamp(time::OffsetDateTime::now_utc())
 }
 
 /// POST /api/v1/policy - Upload new policy from JSON.

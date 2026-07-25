@@ -133,6 +133,16 @@ pub struct NadAuditVerification {
     pub failure_code: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredOperation {
+    pub operation_id: Uuid,
+    pub kind: String,
+    pub status: String,
+    pub submitted_at: OffsetDateTime,
+    pub completed_at: Option<OffsetDateTime>,
+    pub error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct NadStore {
     pool: PgPool,
@@ -250,6 +260,80 @@ impl NadStore {
         hex::decode(&event.event_hash)
             .map(Some)
             .map_err(|_| NadStoreError::CorruptRecord)
+    }
+
+    pub async fn create_operation(&self, operation: &StoredOperation) -> Result<(), NadStoreError> {
+        let mut tx = self.pool.begin().await.map_err(map_database_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('management_operations'))")
+            .execute(&mut *tx)
+            .await
+            .map_err(map_database_error)?;
+        sqlx::query(
+            "DELETE FROM tacacs_management.operations
+              WHERE completed_at < clock_timestamp() - interval '24 hours'",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(map_database_error)?;
+        let running: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM tacacs_management.operations WHERE status = 'running'",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_database_error)?;
+        if running >= 1_024 {
+            return Err(NadStoreError::InvalidInput("operation_capacity_exceeded"));
+        }
+        insert_operation(&mut tx, operation).await?;
+        tx.commit().await.map_err(map_database_error)
+    }
+
+    pub async fn complete_operation(
+        &self,
+        operation_id: Uuid,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), NadStoreError> {
+        let result = sqlx::query(
+            "UPDATE tacacs_management.operations
+                SET status = $2, completed_at = clock_timestamp(), error = $3
+              WHERE operation_id = $1 AND status = 'running'",
+        )
+        .bind(operation_id)
+        .bind(status)
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .map_err(map_database_error)?;
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(NadStoreError::NotFound)
+        }
+    }
+
+    pub async fn get_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<StoredOperation, NadStoreError> {
+        let row = sqlx::query(
+            "SELECT operation_id, kind, status, submitted_at, completed_at, error
+               FROM tacacs_management.operations
+              WHERE operation_id = $1",
+        )
+        .bind(operation_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_database_error)?
+        .ok_or(NadStoreError::NotFound)?;
+        Ok(StoredOperation {
+            operation_id: row.get("operation_id"),
+            kind: row.get("kind"),
+            status: row.get("status"),
+            submitted_at: row.get("submitted_at"),
+            completed_at: row.get("completed_at"),
+            error: row.get("error"),
+        })
     }
 
     pub async fn create(&self, input: CreateNadInput) -> Result<CreateNadOutcome, NadStoreError> {
@@ -595,6 +679,27 @@ async fn insert_idempotency(
     .bind(token)
     .bind(fingerprint)
     .bind(nad_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_database_error)?;
+    Ok(())
+}
+
+async fn insert_operation(
+    tx: &mut Transaction<'_, Postgres>,
+    operation: &StoredOperation,
+) -> Result<(), NadStoreError> {
+    sqlx::query(
+        "INSERT INTO tacacs_management.operations
+            (operation_id, kind, status, submitted_at, completed_at, error)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(operation.operation_id)
+    .bind(&operation.kind)
+    .bind(&operation.status)
+    .bind(operation.submitted_at)
+    .bind(operation.completed_at)
+    .bind(&operation.error)
     .execute(&mut **tx)
     .await
     .map_err(map_database_error)?;
@@ -1230,6 +1335,38 @@ mod tests {
             .execute(&pool)
             .await;
         assert!(delete.is_err());
+    }
+
+    #[sqlx::test]
+    async fn postgres_management_operations_survive_replica_handoffs(pool: PgPool) {
+        let first_replica = test_store(pool.clone());
+        let second_replica = test_store(pool);
+        let operation = StoredOperation {
+            operation_id: Uuid::now_v7(),
+            kind: "authorizationPolicyReload".to_owned(),
+            status: "running".to_owned(),
+            submitted_at: audit_timestamp().unwrap(),
+            completed_at: None,
+            error: None,
+        };
+        first_replica.create_operation(&operation).await.unwrap();
+        assert_eq!(
+            second_replica
+                .get_operation(operation.operation_id)
+                .await
+                .unwrap(),
+            operation
+        );
+        second_replica
+            .complete_operation(operation.operation_id, "succeeded", None)
+            .await
+            .unwrap();
+        let completed = first_replica
+            .get_operation(operation.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(completed.status, "succeeded");
+        assert!(completed.completed_at.is_some());
     }
 
     #[test]
