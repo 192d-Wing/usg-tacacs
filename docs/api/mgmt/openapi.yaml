@@ -122,6 +122,145 @@ paths:
                 type: string
         "403":
           $ref: "#/components/responses/Forbidden"
+  /nads:
+    get:
+      operationId: listNads
+      summary: List API-owned network access devices
+      responses:
+        "200":
+          description: Active API-owned NADs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NadList"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
+    post:
+      operationId: createNad
+      summary: Create an API-owned network access device
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNad"
+      responses:
+        "201":
+          description: NAD created
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Nad"
+        "200":
+          description: Idempotent replay of an earlier successful creation
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Nad"
+        "400":
+          $ref: "#/components/responses/InvalidHeader"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/InvalidResource"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
+  /nads/{nadId}:
+    parameters:
+      - name: nadId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getNad
+      summary: Get an API-owned network access device
+      responses:
+        "200":
+          description: NAD
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Nad"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
+    patch:
+      operationId: updateNad
+      summary: Replace mutable fields of an API-owned NAD
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNad"
+      responses:
+        "200":
+          description: NAD updated
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Nad"
+        "400":
+          $ref: "#/components/responses/InvalidHeader"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/InvalidResource"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
+    delete:
+      operationId: deleteNad
+      summary: Soft-delete an API-owned network access device
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "204":
+          description: NAD deleted
+        "400":
+          $ref: "#/components/responses/InvalidHeader"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
 components:
   securitySchemes:
     mutualTLS:
@@ -130,3 +269,196 @@ components:
   responses:
     Forbidden:
       description: The authenticated client lacks the required permission.
+    InvalidHeader:
+      description: A required request header is missing or malformed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InvalidResource:
+      description: The submitted NAD is invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: A uniqueness, idempotency, or resource-version conflict occurred.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: The NAD was not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    StoreUnavailable:
+      description: The PostgreSQL NAD repository is unavailable.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+        pattern: "^[A-Za-z0-9_-]+$"
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Strong resource-version ETag returned by the API, for example `"rv-3"`.
+      schema:
+        type: string
+        pattern: '^"rv-[1-9][0-9]*"$'
+  headers:
+    ETag:
+      description: Strong resource-version validator, for example `"rv-3"`.
+      schema:
+        type: string
+  schemas:
+    NadAuthentication:
+      oneOf:
+        - $ref: "#/components/schemas/LegacyNadAuthentication"
+        - $ref: "#/components/schemas/TlsNadAuthentication"
+      discriminator:
+        propertyName: mode
+        mapping:
+          legacy: "#/components/schemas/LegacyNadAuthentication"
+          tls: "#/components/schemas/TlsNadAuthentication"
+    LegacyNadAuthentication:
+      type: object
+      additionalProperties: false
+      required: [mode, secretRef]
+      properties:
+        mode:
+          const: legacy
+        secretRef:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: Opaque reference to a separately provisioned TACACS shared secret.
+    TlsNadAuthentication:
+      type: object
+      additionalProperties: false
+      required: [mode, certificateIdentities]
+      properties:
+        mode:
+          const: tls
+        certificateIdentities:
+          type: array
+          minItems: 1
+          maxItems: 32
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+    CreateNad:
+      type: object
+      additionalProperties: false
+      required: [name, sourceAddress, authentication]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 253
+          pattern: "^[a-z0-9][a-z0-9.-]*$"
+        description:
+          type: [string, "null"]
+          maxLength: 1024
+        sourceAddress:
+          type: string
+          format: ip
+        authentication:
+          $ref: "#/components/schemas/NadAuthentication"
+    UpdateNad:
+      type: object
+      additionalProperties: false
+      required: [sourceAddress, authentication]
+      properties:
+        description:
+          type: [string, "null"]
+          maxLength: 1024
+        sourceAddress:
+          type: string
+          format: ip
+        authentication:
+          $ref: "#/components/schemas/NadAuthentication"
+    Nad:
+      allOf:
+        - $ref: "#/components/schemas/CreateNad"
+        - type: object
+          required:
+            - nadId
+            - ownership
+            - resourceVersion
+            - createdAt
+            - createdBy
+            - updatedAt
+            - updatedBy
+          properties:
+            nadId:
+              type: string
+              format: uuid
+            ownership:
+              const: api
+            resourceVersion:
+              type: integer
+              minimum: 1
+            createdAt:
+              type: string
+              format: date-time
+            createdBy:
+              type: string
+            updatedAt:
+              type: string
+              format: date-time
+            updatedBy:
+              type: string
+            deletedAt:
+              type: [string, "null"]
+              format: date-time
+            deletedBy:
+              type: [string, "null"]
+    NadList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Nad"
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code, correlation_id]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+        correlation_id:
+          type: string

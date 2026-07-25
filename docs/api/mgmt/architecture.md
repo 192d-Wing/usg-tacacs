@@ -10,7 +10,7 @@ The APIs have independent namespaces and contracts:
 
 | API | Namespace | Consumer | Responsibility |
 | --- | --- | --- | --- |
-| TACACS management | `/api/mgmt/v1` | administrators and automation | status, sessions, policy, redacted configuration, and metrics |
+| TACACS management | `/api/mgmt/v1` | administrators and automation | status, sessions, NADs, policy, redacted configuration, and metrics |
 | TACACS JIT lease | `/api/jit/v1` | JITPW backend | create, inspect, and revoke keyed-verifier leases |
 | JITPW | separate service and listener | `jit-ssh` and JITPW operators | PIV authentication, ABAC decisions, lease orchestration, and auditing |
 
@@ -55,7 +55,7 @@ Static baseline data such as listeners, trusted roots, authorization rules,
 RBAC roles, and secret-file references is declarative and validated before the
 server starts.
 
-Dynamic NAD records created through future management API operations are stored
+Dynamic NAD records created through management API operations are stored
 transactionally in PostgreSQL, with an immutable audit record. The management
 API does not rewrite a mounted ConfigMap or local YAML file. Git-managed YAML is
 the baseline; PostgreSQL contains runtime resources. A deterministic precedence
@@ -64,14 +64,15 @@ and reconciliation policy must reject conflicting NAD identities.
 ### NAD ownership and reconciliation
 
 YAML NADs have `yaml` ownership and remain Git-managed. PostgreSQL NADs have
-`api` ownership. The management API lists both sources but mutation operations
-apply only to `api` resources. Attempts to update or delete YAML-owned NADs
-return `409 Conflict`.
+`api` ownership. The `/nads` collection currently exposes API-owned records;
+the sanitized configuration endpoint remains the view of the YAML baseline.
+Mutation operations apply only to `api` resources.
 
-An active NAD name and source address must be globally unique across both
-sources. Before committing a database mutation, the service checks the current
-YAML snapshot and PostgreSQL partial unique indexes protect API resources from
-concurrent conflicts.
+PostgreSQL partial unique indexes protect API resources from concurrent name
+and source-address conflicts. Runtime activation and cross-source conflict
+checking against the current YAML snapshot are a separate reconciliation step;
+until that succeeds, a database record is desired state and does not alter a
+live TACACS listener.
 
 API resources use a positive `resourceVersion`. Updates and soft deletes require
 `If-Match` with the current ETag so concurrent administrators cannot silently
@@ -83,9 +84,26 @@ Resolution is performed by the approved secret provider. A NAD cannot become
 active until that reference resolves successfully.
 
 Every successful mutation appends a hash-chained, HMAC-authenticated audit
-event containing the certificate actor, UUIDv7 correlation identifier, before
+event containing the certificate actor, UUID correlation identifier, before
 and after state, and resource version. Database triggers reject updates and
 deletes against the audit table.
+
+## NAD management operations
+
+The management API exposes:
+
+- `GET /api/mgmt/v1/nads` and `GET /api/mgmt/v1/nads/{nadId}` with `read:nads`;
+- `POST /api/mgmt/v1/nads` with `write:nads`, `X-Correlation-ID`, and
+  `Idempotency-Key`;
+- `PATCH /api/mgmt/v1/nads/{nadId}` and
+  `DELETE /api/mgmt/v1/nads/{nadId}` with `write:nads`,
+  `X-Correlation-ID`, and the current `If-Match` ETag.
+
+Creation returns `201 Created`; replaying the same idempotency key and request
+returns `200 OK` for the original resource. Reusing the key for different input
+returns `409 Conflict`. Updates and soft deletes lock the record and compare its
+positive `resourceVersion` in the same transaction. All successful mutations
+commit their audit event atomically with the resource change.
 
 ## Deployment
 
