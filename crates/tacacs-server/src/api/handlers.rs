@@ -57,6 +57,7 @@ use crate::jit_lease_store::{
     CreateLeaseInput, CreateLeaseOutcome, JitLeaseStore, LeaseMetadata, StoreError,
 };
 use crate::metrics::metrics;
+use crate::nad_reconciler::RuntimeNadRegistry;
 use crate::nad_store::{CreateNadInput, CreateNadOutcome, NadStore, NadStoreError, UpdateNadInput};
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
@@ -135,6 +136,8 @@ pub struct ApiState {
     pub jit_lease_store: Option<Arc<JitLeaseStore>>,
     /// Transactional repository for API-owned NAD resources.
     pub nad_store: Option<Arc<NadStore>>,
+    /// Atomically published runtime NAD registry.
+    pub runtime_nads: Option<Arc<RuntimeNadRegistry>>,
 }
 
 /// Build the API router with all endpoints.
@@ -165,6 +168,7 @@ pub fn build_api_router(
     config: RuntimeConfig,
     jit_lease_store: Option<Arc<JitLeaseStore>>,
     nad_store: Option<Arc<NadStore>>,
+    runtime_nads: Option<Arc<RuntimeNadRegistry>>,
 ) -> Router {
     let state = Arc::new(ApiState {
         rbac: rbac.clone(),
@@ -177,6 +181,7 @@ pub fn build_api_router(
         config,
         jit_lease_store,
         nad_store,
+        runtime_nads,
     });
 
     Router::new()
@@ -328,7 +333,19 @@ async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Re
         );
     };
     match store.list().await {
-        Ok(items) => (StatusCode::OK, Json(NadListResponse { items })).into_response(),
+        Ok(items) => {
+            let snapshot = state.runtime_nads.as_ref().map(|value| value.snapshot());
+            let items = items
+                .into_iter()
+                .map(|record| NadResponse {
+                    reconciliation: snapshot
+                        .as_ref()
+                        .and_then(|value| value.statuses.get(&record.nad_id).cloned()),
+                    record,
+                })
+                .collect();
+            (StatusCode::OK, Json(NadListResponse { items })).into_response()
+        }
         Err(error) => nad_problem(error, correlation_id),
     }
 }
@@ -347,7 +364,7 @@ async fn get_nad(
         );
     };
     match store.get(nad_id).await {
-        Ok(record) => nad_response(StatusCode::OK, record),
+        Ok(record) => nad_response(StatusCode::OK, record, state.runtime_nads.as_deref()),
         Err(error) => nad_problem(error, correlation_id),
     }
 }
@@ -382,8 +399,14 @@ async fn create_nad(
         idempotency_key,
     };
     match store.create(input).await {
-        Ok(CreateNadOutcome::Created(record)) => nad_response(StatusCode::CREATED, record),
-        Ok(CreateNadOutcome::Replay(record)) => nad_response(StatusCode::OK, record),
+        Ok(CreateNadOutcome::Created(record)) => {
+            refresh_runtime(&state, correlation_id).await;
+            nad_response(StatusCode::CREATED, record, state.runtime_nads.as_deref())
+        }
+        Ok(CreateNadOutcome::Replay(record)) => {
+            refresh_runtime(&state, correlation_id).await;
+            nad_response(StatusCode::OK, record, state.runtime_nads.as_deref())
+        }
         Err(error) => nad_problem(error, correlation_id.to_string()),
     }
 }
@@ -418,7 +441,10 @@ async fn update_nad(
         correlation_id,
     };
     match store.update(input).await {
-        Ok(record) => nad_response(StatusCode::OK, record),
+        Ok(record) => {
+            refresh_runtime(&state, correlation_id).await;
+            nad_response(StatusCode::OK, record, state.runtime_nads.as_deref())
+        }
         Err(error) => nad_problem(error, correlation_id.to_string()),
     }
 }
@@ -446,8 +472,30 @@ async fn delete_nad(
         .delete(nad_id, expected_version, &identity.cn, correlation_id)
         .await
     {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => {
+            refresh_runtime(&state, correlation_id).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(error) => nad_problem(error, correlation_id.to_string()),
+    }
+}
+
+async fn refresh_runtime(state: &ApiState, correlation_id: Uuid) {
+    let Some(registry) = &state.runtime_nads else {
+        return;
+    };
+    match registry.refresh().await {
+        Ok(snapshot) => info!(
+            correlation_id = %correlation_id,
+            active_legacy = snapshot.legacy_identities.len(),
+            active_tls = snapshot.tls_identities.len(),
+            "published reconciled NAD snapshot"
+        ),
+        Err(error) => warn!(
+            correlation_id = %correlation_id,
+            error = %error,
+            "NAD reconciliation failed; retaining last valid snapshot"
+        ),
     }
 }
 
@@ -474,10 +522,24 @@ fn mutation_correlation(headers: &HeaderMap) -> String {
         .to_string()
 }
 
-fn nad_response(status: StatusCode, record: crate::nad_store::NadRecord) -> Response {
+fn nad_response(
+    status: StatusCode,
+    record: crate::nad_store::NadRecord,
+    registry: Option<&RuntimeNadRegistry>,
+) -> Response {
     let version = record.resource_version;
     let nad_id = record.nad_id;
-    let mut response = (status, Json(record)).into_response();
+    let reconciliation = registry
+        .map(RuntimeNadRegistry::snapshot)
+        .and_then(|snapshot| snapshot.statuses.get(&nad_id).cloned());
+    let mut response = (
+        status,
+        Json(NadResponse {
+            record,
+            reconciliation,
+        }),
+    )
+        .into_response();
     if let Ok(value) = HeaderValue::from_str(&format!("\"rv-{version}\"")) {
         response.headers_mut().insert(header::ETAG, value);
     }
@@ -1252,6 +1314,7 @@ mod tests {
             make_test_config(),
             None,
             None,
+            None,
         );
         (router, reload_rx, registry)
     }
@@ -1885,6 +1948,7 @@ mod tests {
             reload_tx,
             registry.clone(),
             make_test_config(),
+            None,
             None,
             None,
         );

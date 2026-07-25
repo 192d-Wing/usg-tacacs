@@ -350,8 +350,8 @@ pub(crate) struct AuthContext {
     pub jit_lease_store: Option<Arc<JitLeaseStore>>,
     /// Certificate identities that must use JIT authentication exclusively.
     pub jit_managed_nads: Arc<HashSet<String>>,
-    /// Reconciled certificate identity to canonical NAD identity mappings.
-    pub jit_tls_nads: Arc<HashMap<String, NadIdentity>>,
+    /// Atomically replaceable reconciled NAD runtime state.
+    pub runtime_nads: Option<Arc<crate::nad_reconciler::RuntimeNadRegistry>>,
     /// Trusted NAD identity selected from the authenticated client certificate.
     pub jit_nad_identity: Option<NadIdentity>,
 }
@@ -370,6 +370,8 @@ pub(crate) struct TlsIdentityConfig {
     pub allowed_cn: Vec<String>,
     /// Allowed Subject Alternative Names for client certificates
     pub allowed_san: Vec<String>,
+    /// Dynamic certificate identities from the reconciled NAD registry.
+    pub runtime_nads: Option<Arc<crate::nad_reconciler::RuntimeNadRegistry>>,
 }
 
 /// Extract X509 certificate from TLS stream.
@@ -458,12 +460,19 @@ fn check_cert_names_allowed(
     names: &[String],
     allowed_cn: &[String],
     allowed_san: &[String],
+    runtime_nads: Option<&crate::nad_reconciler::RuntimeNadRegistry>,
 ) -> Result<()> {
-    let allowed = names
+    let static_match = names
         .iter()
         .any(|n| allowed_cn.iter().any(|a| a == n) || allowed_san.iter().any(|a| a == n));
+    let runtime_match = runtime_nads.is_some_and(|registry| {
+        let snapshot = registry.snapshot();
+        names
+            .iter()
+            .any(|name| snapshot.tls_identities.contains_key(name))
+    });
 
-    if allowed {
+    if static_match || runtime_match {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
@@ -487,19 +496,30 @@ fn enforce_client_cert_policy(
     peer: &SocketAddr,
     allowed_cn: &[String],
     allowed_san: &[String],
+    runtime_nads: Option<&crate::nad_reconciler::RuntimeNadRegistry>,
 ) -> Result<Vec<String>> {
     let x509 = extract_cert_from_tls_stream(stream, peer)?;
     let names = extract_cert_names(&x509);
-    if !allowed_cn.is_empty() || !allowed_san.is_empty() {
-        check_cert_names_allowed(&names, allowed_cn, allowed_san)?;
+    if !allowed_cn.is_empty() || !allowed_san.is_empty() || runtime_nads.is_some() {
+        check_cert_names_allowed(&names, allowed_cn, allowed_san, runtime_nads)?;
     }
     Ok(names)
 }
 
 fn auth_ctx_with_nad_identity(base: AuthContext, cert_names: &[String]) -> Result<AuthContext> {
-    let jit_nad_identity = select_reconciled_nad_identity(cert_names, &base.jit_tls_nads)?.or(
-        select_managed_nad_identity(cert_names, &base.jit_managed_nads)?,
-    );
+    let runtime_snapshot = base
+        .runtime_nads
+        .as_ref()
+        .map(|registry| registry.snapshot());
+    let runtime_identity = runtime_snapshot
+        .as_ref()
+        .map(|snapshot| select_reconciled_nad_identity(cert_names, &snapshot.tls_identities))
+        .transpose()?
+        .flatten();
+    let jit_nad_identity = runtime_identity.or(select_managed_nad_identity(
+        cert_names,
+        &base.jit_managed_nads,
+    )?);
     Ok(AuthContext {
         // RFC 9887 protects the TACACS+ body with TLS and does not use the
         // legacy shared-secret transform. The legacy listener independently
@@ -1276,6 +1296,7 @@ pub async fn serve_tls(
                         &peer_addr,
                         &conn_tls_identity.allowed_cn,
                         &conn_tls_identity.allowed_san,
+                        conn_tls_identity.runtime_nads.as_deref(),
                     ) {
                         Ok(names) => names,
                         Err(err) => {
@@ -1350,7 +1371,7 @@ fn auth_ctx_with_legacy_nad(
         audit_hmac_key: base.audit_hmac_key.clone(),
         jit_lease_store: base.jit_lease_store.clone(),
         jit_managed_nads: base.jit_managed_nads.clone(),
-        jit_tls_nads: base.jit_tls_nads.clone(),
+        runtime_nads: base.runtime_nads.clone(),
         jit_nad_identity,
     }
 }
@@ -1361,6 +1382,7 @@ pub async fn serve_legacy(
     conn_cfg: ConnectionConfig,
     nad_secrets: Arc<HashMap<IpAddr, Arc<Vec<u8>>>>,
     jit_legacy_nads: Arc<HashMap<IpAddr, NadIdentity>>,
+    runtime_nads: Option<Arc<crate::nad_reconciler::RuntimeNadRegistry>>,
     registry: Arc<SessionRegistry>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
@@ -1373,6 +1395,7 @@ pub async fn serve_legacy(
         let conn_cfg = conn_cfg.clone();
         let conn_nad_secrets = nad_secrets.clone();
         let conn_jit_legacy_nads = jit_legacy_nads.clone();
+        let conn_runtime_nads = runtime_nads.clone();
         let conn_registry = registry.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip();
@@ -1383,17 +1406,25 @@ pub async fn serve_legacy(
                     return;
                 }
             };
-            // For legacy connections, use per-NAD secret if configured, otherwise default
-            let conn_secret = if conn_nad_secrets.is_empty() {
+            let runtime_snapshot = conn_runtime_nads.as_ref().map(|value| value.snapshot());
+            let active_secrets = runtime_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.legacy_secrets.as_ref())
+                .unwrap_or(conn_nad_secrets.as_ref());
+            let conn_secret = if active_secrets.is_empty() {
                 conn_auth_ctx.secret.clone()
             } else {
-                conn_nad_secrets.get(&normalize_ip(peer_addr.ip())).cloned()
+                active_secrets.get(&normalize_ip(peer_addr.ip())).cloned()
             };
             if conn_secret.is_none() {
                 warn!(peer = %peer_addr, "legacy connection rejected: NAD not in allowlist");
                 return;
             }
-            let jit_nad_identity = conn_jit_legacy_nads
+            let active_identities = runtime_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.legacy_identities.as_ref())
+                .unwrap_or(conn_jit_legacy_nads.as_ref());
+            let jit_nad_identity = active_identities
                 .get(&normalize_ip(peer_addr.ip()))
                 .cloned();
             let per_nad_auth_ctx =

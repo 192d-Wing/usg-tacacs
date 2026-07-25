@@ -2,8 +2,11 @@
 //! Fail-closed reconciliation of YAML-owned and API-owned NAD desired state.
 
 use crate::jit_lease::NadIdentity;
-use crate::nad_store::{NadAuthentication as ApiAuthentication, NadRecord};
+use crate::nad_store::{
+    NadAuthentication as ApiAuthentication, NadRecord, NadStore, NadStoreError,
+};
 use crate::server::normalize_ip;
+use arc_swap::ArcSwap;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -30,12 +33,13 @@ pub struct NadReconciliationStatus {
     pub reason: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RuntimeNadSnapshot {
     pub legacy_secrets: Arc<HashMap<IpAddr, Arc<Vec<u8>>>>,
     pub legacy_identities: Arc<HashMap<IpAddr, NadIdentity>>,
     pub tls_identities: Arc<HashMap<String, NadIdentity>>,
     pub statuses: Arc<HashMap<Uuid, NadReconciliationStatus>>,
+    pub reconciled_at: time::OffsetDateTime,
 }
 
 #[derive(Debug, Clone)]
@@ -43,11 +47,19 @@ pub struct NadReconciler {
     secret_root: PathBuf,
 }
 
+pub struct RuntimeNadRegistry {
+    store: Arc<NadStore>,
+    yaml: Arc<Vec<Nad>>,
+    reconciler: NadReconciler,
+    current: ArcSwap<RuntimeNadSnapshot>,
+}
+
 #[derive(Default)]
 struct SnapshotBuilder {
     names: HashSet<String>,
     addresses: HashSet<IpAddr>,
     certificate_identities: HashSet<String>,
+    api_certificate_conflicts: HashSet<String>,
     legacy_secrets: HashMap<IpAddr, Arc<Vec<u8>>>,
     legacy_identities: HashMap<IpAddr, NadIdentity>,
     tls_identities: HashMap<String, NadIdentity>,
@@ -60,7 +72,10 @@ impl NadReconciler {
     }
 
     pub fn reconcile(&self, yaml: &[Nad], api: &[NadRecord]) -> RuntimeNadSnapshot {
-        let mut builder = SnapshotBuilder::default();
+        let mut builder = SnapshotBuilder {
+            api_certificate_conflicts: duplicate_api_certificates(api),
+            ..SnapshotBuilder::default()
+        };
         for nad in yaml {
             builder.add_yaml(nad);
         }
@@ -69,6 +84,72 @@ impl NadReconciler {
         }
         builder.finish()
     }
+}
+
+impl RuntimeNadRegistry {
+    pub async fn initialize(
+        store: Arc<NadStore>,
+        yaml: Vec<Nad>,
+        secret_root: PathBuf,
+    ) -> Result<Self, NadStoreError> {
+        let reconciler = NadReconciler::new(secret_root);
+        let records = store.list().await?;
+        let snapshot = reconciler.reconcile(&yaml, &records);
+        observe_metrics(&snapshot);
+        Ok(Self {
+            store,
+            yaml: Arc::new(yaml),
+            reconciler,
+            current: ArcSwap::from_pointee(snapshot),
+        })
+    }
+
+    pub fn snapshot(&self) -> Arc<RuntimeNadSnapshot> {
+        self.current.load_full()
+    }
+
+    pub async fn refresh(&self) -> Result<Arc<RuntimeNadSnapshot>, NadStoreError> {
+        let records = match self.store.list().await {
+            Ok(records) => records,
+            Err(error) => {
+                crate::metrics::metrics()
+                    .nad_reconciliation_total
+                    .with_label_values(&["failure"])
+                    .inc();
+                return Err(error);
+            }
+        };
+        let snapshot = Arc::new(self.reconciler.reconcile(&self.yaml, &records));
+        observe_metrics(&snapshot);
+        self.current.store(snapshot.clone());
+        Ok(snapshot)
+    }
+}
+
+fn observe_metrics(snapshot: &RuntimeNadSnapshot) {
+    let metrics = crate::metrics::metrics();
+    metrics
+        .nad_reconciliation_total
+        .with_label_values(&["success"])
+        .inc();
+    for (label, state) in [
+        ("active", ReconciliationState::Active),
+        ("conflict", ReconciliationState::Conflict),
+        ("secret_unavailable", ReconciliationState::SecretUnavailable),
+    ] {
+        let count = snapshot
+            .statuses
+            .values()
+            .filter(|status| status.state == state)
+            .count();
+        metrics
+            .nad_reconciliation_resources
+            .with_label_values(&[label])
+            .set(count as f64);
+    }
+    metrics
+        .nad_reconciliation_timestamp
+        .set(snapshot.reconciled_at.unix_timestamp() as f64);
 }
 
 impl SnapshotBuilder {
@@ -125,9 +206,10 @@ impl SnapshotBuilder {
         else {
             return false;
         };
-        certificate_identities
-            .iter()
-            .any(|value| self.certificate_identities.contains(value))
+        certificate_identities.iter().any(|value| {
+            self.certificate_identities.contains(value)
+                || self.api_certificate_conflicts.contains(value)
+        })
     }
 
     fn activate_api(
@@ -188,8 +270,28 @@ impl SnapshotBuilder {
             legacy_identities: Arc::new(self.legacy_identities),
             tls_identities: Arc::new(self.tls_identities),
             statuses: Arc::new(self.statuses),
+            reconciled_at: time::OffsetDateTime::now_utc(),
         }
     }
+}
+
+fn duplicate_api_certificates(records: &[NadRecord]) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    let mut duplicates = HashSet::new();
+    for record in records {
+        let ApiAuthentication::Tls {
+            certificate_identities,
+        } = &record.authentication
+        else {
+            continue;
+        };
+        for identity in certificate_identities {
+            if !seen.insert(identity.clone()) {
+                duplicates.insert(identity.clone());
+            }
+        }
+    }
+    duplicates
 }
 
 fn resolve_api_secret(root: &Path, secret_ref: &str) -> Option<Vec<u8>> {
@@ -346,5 +448,73 @@ mod tests {
             snapshot.statuses[&api.nad_id].state,
             ReconciliationState::Conflict
         );
+    }
+
+    #[test]
+    fn all_api_owners_of_duplicate_certificate_fail_closed() {
+        let first = api_nad(
+            "oopl-an-001",
+            "192.0.2.10",
+            ApiAuthentication::Tls {
+                certificate_identities: vec!["router.example.mil".to_owned()],
+            },
+        );
+        let second = api_nad(
+            "oopl-an-002",
+            "192.0.2.11",
+            ApiAuthentication::Tls {
+                certificate_identities: vec!["router.example.mil".to_owned()],
+            },
+        );
+        let snapshot = NadReconciler::new(PathBuf::from("/run/secrets/nads"))
+            .reconcile(&[], &[first.clone(), second.clone()]);
+        assert_eq!(
+            snapshot.statuses[&first.nad_id].state,
+            ReconciliationState::Conflict
+        );
+        assert_eq!(
+            snapshot.statuses[&second.nad_id].state,
+            ReconciliationState::Conflict
+        );
+        assert!(!snapshot.tls_identities.contains_key("router.example.mil"));
+    }
+
+    #[sqlx::test]
+    async fn postgres_refresh_atomically_activates_api_nad(pool: sqlx::PgPool) {
+        let directory = TempDir::new().unwrap();
+        let secret_path = directory.path().join("oopl-an-001");
+        fs::write(&secret_path, "unique-shared-secret").unwrap();
+        let store = Arc::new(NadStore::new(pool, Arc::new(vec![0x42; 32])).unwrap());
+        let registry = RuntimeNadRegistry::initialize(
+            store.clone(),
+            Vec::new(),
+            directory.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+        assert!(registry.snapshot().legacy_secrets.is_empty());
+        let created = store
+            .create(crate::nad_store::CreateNadInput {
+                name: "oopl-an-001".to_owned(),
+                description: None,
+                source_address: "192.0.2.10".parse().unwrap(),
+                authentication: ApiAuthentication::Legacy {
+                    secret_ref: secret_path.display().to_string(),
+                },
+                actor: "CN=test".to_owned(),
+                correlation_id: Uuid::new_v4(),
+                idempotency_key: "nad-live-refresh-0001".to_owned(),
+            })
+            .await
+            .unwrap();
+        let crate::nad_store::CreateNadOutcome::Created(record) = created else {
+            panic!("first request must create");
+        };
+        let snapshot = registry.refresh().await.unwrap();
+        assert_eq!(
+            snapshot.statuses[&record.nad_id].state,
+            ReconciliationState::Active
+        );
+        assert!(snapshot.legacy_secrets.contains_key(&record.source_address));
     }
 }
