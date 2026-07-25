@@ -86,6 +86,17 @@ pub struct EffectiveConfigResponse {
     pub config: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationResponse {
+    pub operation_id: String,
+    pub kind: &'static str,
+    pub status: &'static str,
+    pub submitted_at: String,
+    pub completed_at: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateNadRequest {
@@ -229,13 +240,6 @@ pub struct ConfigResponse {
     pub policy_source: String,
     pub metrics_enabled: bool,
     pub api_enabled: bool,
-}
-
-/// Generic success response.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SuccessResponse {
-    pub success: bool,
-    pub message: String,
 }
 
 /// Generic error response.

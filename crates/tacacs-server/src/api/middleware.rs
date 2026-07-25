@@ -5,7 +5,7 @@ use axum::{
     Json,
     body::Body,
     extract::Request,
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -66,33 +66,14 @@ struct MiddlewareProblem {
 pub async fn request_context(mut request: Request<Body>, next: Next) -> Response {
     let method = request.method().as_str().to_owned();
     let started = Instant::now();
-    let correlation_id = match request.headers().get("x-correlation-id") {
-        Some(value) => match value
-            .to_str()
-            .ok()
-            .and_then(|raw| Uuid::parse_str(raw).ok())
-        {
-            Some(value) => value,
-            None => {
-                return record_metrics(
-                    secured_problem(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_correlation_id",
-                        Uuid::now_v7(),
-                    ),
-                    &method,
-                    started,
-                );
-            }
-        },
-        None => Uuid::now_v7(),
+    let correlation_id = match establish_correlation(request.headers_mut()) {
+        Ok(value) => value,
+        Err(value) => {
+            let response =
+                secured_problem(StatusCode::BAD_REQUEST, "invalid_correlation_id", value);
+            return record_metrics(response, &method, started);
+        }
     };
-
-    request.headers_mut().insert(
-        "x-correlation-id",
-        HeaderValue::from_str(&correlation_id.to_string())
-            .expect("UUID is always a valid HTTP header value"),
-    );
 
     if !RATE_WINDOW.lock().await.admit() {
         return record_metrics(
@@ -133,6 +114,22 @@ pub async fn request_context(mut request: Request<Body>, next: Next) -> Response
         ),
     };
     record_metrics(response, &method, started)
+}
+
+fn establish_correlation(headers: &mut HeaderMap) -> Result<Uuid, Uuid> {
+    let id = match headers.get("x-correlation-id") {
+        Some(value) => value
+            .to_str()
+            .ok()
+            .and_then(|raw| Uuid::parse_str(raw).ok())
+            .ok_or_else(Uuid::now_v7)?,
+        None => Uuid::now_v7(),
+    };
+    headers.insert(
+        "x-correlation-id",
+        HeaderValue::from_str(&id.to_string()).expect("UUID is a valid header value"),
+    );
+    Ok(id)
 }
 
 fn record_metrics(response: Response, method: &str, started: Instant) -> Response {

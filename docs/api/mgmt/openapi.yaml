@@ -104,11 +104,33 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Success"
+                $ref: "#/components/schemas/Operation"
         "403":
           $ref: "#/components/responses/Forbidden"
         "503":
           $ref: "#/components/responses/StoreUnavailable"
+  /operations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getOperation
+      summary: Get the current result of an asynchronous management operation
+      responses:
+        "200":
+          description: Operation state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /config:
     get:
       operationId: getRuntimeConfig
@@ -604,15 +626,34 @@ components:
           type: [string, "null"]
         message:
           type: string
-    Success:
+    Operation:
       type: object
       additionalProperties: false
-      required: [success, message]
+      required:
+        - operationId
+        - kind
+        - status
+        - submittedAt
+        - completedAt
+        - error
       properties:
-        success:
-          type: boolean
-        message:
+        operationId:
           type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [authorizationPolicyReload]
+        status:
+          type: string
+          enum: [running, succeeded, failed]
+        submittedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: [string, "null"]
+          format: date-time
+        error:
+          type: [string, "null"]
     NadAuthentication:
       oneOf:
         - $ref: "#/components/schemas/LegacyNadAuthentication"

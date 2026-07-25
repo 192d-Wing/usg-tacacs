@@ -884,7 +884,7 @@ async fn watch_declarative_policy(
     let Ok(mut sighup) = signal(SignalKind::hangup()) else {
         warn!("failed to install SIGHUP handler for declarative configuration");
         while let Some(request) = reload_rx.recv().await {
-            handle_declarative_reload(&config_path, &policy, &request).await;
+            handle_declarative_reload(&config_path, &policy, request).await;
         }
         return;
     };
@@ -897,14 +897,15 @@ async fn watch_declarative_policy(
                 let request = PolicyReloadRequest::FromDisk {
                     path: config_path.clone(),
                     schema: None,
+                    completion: None,
                 };
-                handle_declarative_reload(&config_path, &policy, &request).await;
+                handle_declarative_reload(&config_path, &policy, request).await;
             }
             request = reload_rx.recv() => {
                 let Some(request) = request else {
                     return;
                 };
-                handle_declarative_reload(&config_path, &policy, &request).await;
+                handle_declarative_reload(&config_path, &policy, request).await;
             }
         }
     }
@@ -913,12 +914,20 @@ async fn watch_declarative_policy(
 async fn handle_declarative_reload(
     config_path: &Path,
     policy: &Arc<RwLock<PolicyEngine>>,
-    request: &PolicyReloadRequest,
+    request: PolicyReloadRequest,
 ) {
-    if matches!(request, PolicyReloadRequest::FromJson { .. }) {
-        warn!("policy JSON upload rejected while authoritative YAML configuration is active");
-        return;
-    }
+    let completion = match request {
+        PolicyReloadRequest::FromDisk { completion, .. } => completion,
+        PolicyReloadRequest::FromJson { completion, .. } => {
+            warn!("policy JSON upload rejected while authoritative YAML configuration is active");
+            if let Some(sender) = completion {
+                let _ = sender.send(Err(
+                    "policy JSON upload is disabled by declarative configuration".to_string(),
+                ));
+            }
+            return;
+        }
+    };
     let result = ServerConfiguration::from_path(config_path).and_then(|config| {
         config.validate(true)?;
         declarative_policy(&config)
@@ -930,6 +939,9 @@ async fn handle_declarative_reload(
                 config = %config_path.display(),
                 "authorization policy reloaded from declarative configuration"
             );
+            if let Some(sender) = completion {
+                let _ = sender.send(Ok(()));
+            }
         }
         Err(error) => {
             error!(
@@ -937,6 +949,9 @@ async fn handle_declarative_reload(
                 error = %error,
                 "declarative policy reload rejected; retaining previous policy"
             );
+            if let Some(sender) = completion {
+                let _ = sender.send(Err(error.to_string()));
+            }
         }
     }
 }

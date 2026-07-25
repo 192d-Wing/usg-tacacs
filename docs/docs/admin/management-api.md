@@ -22,6 +22,11 @@ the submitted YAML. The effective endpoint returns the YAML-owned configuration
 as JSON with a stable SHA-256 hash. Authorized administrators can see secret
 references, but secret file contents are never included.
 
+Policy reload returns `202 Accepted` with an `operationId`. Poll
+`GET /api/mgmt/v1/operations/{operationId}` until its status is `succeeded` or
+`failed`. A failed reload preserves the previous active policy. Static listener,
+RBAC, NAD baseline, and secret-mount changes require a rolling restart.
+
 ## Overview
 
 The API is disabled by default and must be explicitly enabled with `--api-enabled`. For production use, TLS with mutual authentication (mTLS) is strongly recommended.
@@ -41,10 +46,9 @@ The Management API implements the following NIST SP 800-53 security controls:
 
 ## Production Deployment
 
-!!! tip "Reverse Proxy Recommended"
-    For production deployments, use a reverse proxy (Nginx or HAProxy) with mTLS instead of direct TLS mode. This provides better security, flexibility, and follows industry best practices.
-
-    See the **[Reverse Proxy with mTLS Guide](reverse-proxy-mtls.md)** for complete setup instructions.
+Production deployments must use the server's TLS 1.3 mutual-authentication
+listener. A proxy may be used only when it preserves the authenticated client
+certificate boundary defined by the deployment architecture.
 
 ## Enabling the API
 
@@ -80,19 +84,13 @@ When API TLS is configured, authentication is performed via client certificate C
 
 ```sh
 curl --cert client.pem --key client-key.pem \
-  https://localhost:8443/api/v1/status
+  https://localhost:8443/api/mgmt/v1/status
 ```
 
 The CN from the client certificate is extracted and mapped to a role via the RBAC configuration.
 
-### X-User-CN Header (Development Only)
-
-When TLS is not configured (plaintext mode), the `X-User-CN` header can be used:
-
-```sh
-curl -H "X-User-CN: CN=admin.example.com" \
-  http://localhost:8443/api/v1/status
-```
+`X-User-CN` exists only in compiled test code. Runtime requests cannot select
+their identity with an HTTP header.
 
 > **Warning**: Plaintext mode should only be used for development/testing.
 
@@ -168,7 +166,7 @@ New TACACS connections use the latest atomically published snapshot.
 
 ## API Endpoints
 
-### GET /api/v1/status
+### GET /api/mgmt/v1/status
 
 Returns server status and statistics.
 
@@ -192,7 +190,7 @@ Returns server status and statistics.
 }
 ```
 
-### GET /api/v1/sessions
+### GET /api/mgmt/v1/sessions
 
 Lists all active TACACS+ sessions.
 
@@ -215,7 +213,7 @@ Lists all active TACACS+ sessions.
 }
 ```
 
-### DELETE /api/v1/sessions/:id
+### DELETE /api/mgmt/v1/sessions/:id
 
 Terminates an active session by ID.
 
@@ -242,7 +240,7 @@ Terminates an active session by ID.
 
 **Note**: Session termination is asynchronous. The session will close on its next activity check.
 
-### GET /api/v1/policy
+### GET /api/mgmt/v1/policy
 
 Returns current policy information.
 
@@ -257,7 +255,7 @@ Returns current policy information.
 }
 ```
 
-### POST /api/v1/policy/reload
+### POST /api/mgmt/v1/policy/reload
 
 Triggers a policy hot reload from disk.
 
@@ -273,7 +271,7 @@ Triggers a policy hot reload from disk.
 
 This endpoint queues a policy reload request. The reload is processed asynchronously by the same mechanism that handles SIGHUP.
 
-### GET /api/v1/config
+### GET /api/mgmt/v1/config
 
 Returns the running configuration (sanitized, no secrets).
 
@@ -291,7 +289,7 @@ Returns the running configuration (sanitized, no secrets).
 }
 ```
 
-### GET /api/v1/metrics
+### GET /api/mgmt/v1/metrics
 
 Returns Prometheus-format metrics.
 
@@ -339,21 +337,21 @@ Returned when an internal error occurs (e.g., policy reload channel closed).
 ### List Active Sessions
 
 ```sh
-curl -s https://localhost:8443/api/v1/sessions \
+curl -s https://localhost:8443/api/mgmt/v1/sessions \
   --cert admin.pem --key admin-key.pem | jq
 ```
 
 ### Terminate a Session
 
 ```sh
-curl -X DELETE https://localhost:8443/api/v1/sessions/42 \
+curl -X DELETE https://localhost:8443/api/mgmt/v1/sessions/42 \
   --cert admin.pem --key admin-key.pem
 ```
 
 ### Trigger Policy Reload
 
 ```sh
-curl -X POST https://localhost:8443/api/v1/policy/reload \
+curl -X POST https://localhost:8443/api/mgmt/v1/policy/reload \
   --cert admin.pem --key admin-key.pem
 ```
 
@@ -371,7 +369,7 @@ scrape_configs:
       ca_file: /path/to/ca.pem
     static_configs:
       - targets: ['tacacs-server:8443']
-    metrics_path: /api/v1/metrics
+    metrics_path: /api/mgmt/v1/metrics
 ```
 
 ## Metrics Reference

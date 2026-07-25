@@ -4423,11 +4423,13 @@ pub enum PolicyReloadRequest {
     FromDisk {
         path: PathBuf,
         schema: Option<PathBuf>,
+        completion: Option<tokio::sync::oneshot::Sender<std::result::Result<(), String>>>,
     },
     /// Load policy from JSON content (API upload)
     FromJson {
         content: String,
         schema: Option<PathBuf>,
+        completion: Option<tokio::sync::oneshot::Sender<std::result::Result<(), String>>>,
     },
 }
 
@@ -4613,7 +4615,7 @@ async fn reload_policy_from_disk(
     schema: &Option<PathBuf>,
     policy: &Arc<RwLock<PolicyEngine>>,
     source: &str,
-) {
+) -> std::result::Result<(), String> {
     match PolicyEngine::from_path(path, schema.as_ref()) {
         Ok(new_policy) => {
             let rule_count = new_policy.rule_count();
@@ -4624,10 +4626,12 @@ async fn reload_policy_from_disk(
                 rules = rule_count,
                 "policy reloaded successfully"
             );
+            Ok(())
         }
         Err(err) => {
             record_policy_failure();
             warn!(source = source, error = %err, "failed to reload policy");
+            Err(err.to_string())
         }
     }
 }
@@ -4644,7 +4648,7 @@ async fn reload_policy_from_json(
     schema: &Option<PathBuf>,
     policy: &Arc<RwLock<PolicyEngine>>,
     source: &str,
-) {
+) -> std::result::Result<(), String> {
     match PolicyEngine::from_json_str(content, schema.as_ref()) {
         Ok(new_policy) => {
             let rule_count = new_policy.rule_count();
@@ -4655,10 +4659,12 @@ async fn reload_policy_from_json(
                 rules = rule_count,
                 "policy uploaded successfully from JSON"
             );
+            Ok(())
         }
         Err(err) => {
             record_policy_failure();
             warn!(source = source, error = %err, "failed to load policy from JSON");
+            Err(err.to_string())
         }
     }
 }
@@ -4671,17 +4677,30 @@ async fn reload_policy_from_json(
 /// |---------|------|----------------|
 /// | CM-3 | Configuration Change Control | Dispatch reload to appropriate handler |
 async fn handle_policy_reload(
-    request: &PolicyReloadRequest,
+    request: PolicyReloadRequest,
     policy: &Arc<RwLock<PolicyEngine>>,
     source: &str,
 ) {
-    match request {
-        PolicyReloadRequest::FromDisk { path, schema } => {
-            reload_policy_from_disk(path, schema, policy, source).await;
-        }
-        PolicyReloadRequest::FromJson { content, schema } => {
-            reload_policy_from_json(content, schema, policy, source).await;
-        }
+    let (result, completion) = match request {
+        PolicyReloadRequest::FromDisk {
+            path,
+            schema,
+            completion,
+        } => (
+            reload_policy_from_disk(&path, &schema, policy, source).await,
+            completion,
+        ),
+        PolicyReloadRequest::FromJson {
+            content,
+            schema,
+            completion,
+        } => (
+            reload_policy_from_json(&content, &schema, policy, source).await,
+            completion,
+        ),
+    };
+    if let Some(sender) = completion {
+        let _ = sender.send(result);
     }
 }
 
@@ -4704,15 +4723,16 @@ async fn run_policy_watch_loop(
         tokio::select! {
             // Handle channel-based reload requests from API
             Some(request) = reload_rx.recv() => {
-                handle_policy_reload(&request, &policy, "api").await;
+                handle_policy_reload(request, &policy, "api").await;
             }
             // Handle SIGHUP for backward compatibility
             Some(_) = sighup_stream.recv() => {
                 let request = PolicyReloadRequest::FromDisk {
                     path: initial_path.clone(),
                     schema: schema.clone(),
+                    completion: None,
                 };
-                handle_policy_reload(&request, &policy, "sighup").await;
+                handle_policy_reload(request, &policy, "sighup").await;
             }
         }
     }
@@ -4744,7 +4764,7 @@ pub async fn watch_policy_changes(
             warn!(error = %err, "failed to install SIGHUP handler, using channel-only mode");
             // Fall back to channel-only mode
             while let Some(request) = reload_rx.recv().await {
-                handle_policy_reload(&request, &policy, "api").await;
+                handle_policy_reload(request, &policy, "api").await;
             }
         }
     }

@@ -69,6 +69,13 @@ These operations require `read:config`. They never rewrite the source file or
 a mounted ConfigMap. The effective view contains secret references only; the
 service never reads referenced secret contents to populate an API response.
 
+Policy reload is asynchronous. `POST /policy/reload` returns an operation
+resource, and `GET /operations/{operationId}` reports `running`, `succeeded`, or
+`failed`. Success is published only after the replacement policy passes
+validation and is atomically installed. On failure, the previous policy remains
+active. Listener, RBAC, NAD baseline, and secret-mount changes require a rolling
+restart; the reload operation does not claim to activate those static fields.
+
 Dynamic NAD records created through management API operations are stored
 transactionally in PostgreSQL, with an immutable audit record. The management
 API does not rewrite a mounted ConfigMap or local YAML file. Git-managed YAML is

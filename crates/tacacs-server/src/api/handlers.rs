@@ -72,6 +72,7 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -142,6 +143,8 @@ pub struct ApiState {
     pub nad_store: Option<Arc<NadStore>>,
     /// Atomically published runtime NAD registry.
     pub runtime_nads: Option<Arc<RuntimeNadRegistry>>,
+    /// Observable asynchronous management operations.
+    pub operations: Arc<RwLock<HashMap<Uuid, OperationResponse>>>,
 }
 
 /// Build the API router with all endpoints.
@@ -186,6 +189,7 @@ pub fn build_api_router(
         jit_lease_store,
         nad_store,
         runtime_nads,
+        operations: Arc::new(RwLock::new(HashMap::new())),
     });
 
     Router::new()
@@ -244,6 +248,14 @@ pub fn build_api_router(
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "write:policy",
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/mgmt/v1/operations/{id}", get(get_operation))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    "read:operations",
                 ))),
         )
         .merge(
@@ -1042,22 +1054,53 @@ async fn reload_policy(State(state): State<Arc<ApiState>>, headers: HeaderMap) -
     info!("API request to reload policy");
 
     // NIST CM-3: Send reload request through internal channel
+    let operation_id = Uuid::now_v7();
+    let operation = OperationResponse {
+        operation_id: operation_id.to_string(),
+        kind: "authorizationPolicyReload",
+        status: "running",
+        submitted_at: current_timestamp(),
+        completed_at: None,
+        error: None,
+    };
+    if !register_operation(&state.operations, operation_id, operation.clone()).await {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "operation_capacity_exceeded",
+            mutation_correlation(&headers),
+        );
+    }
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
     let request = PolicyReloadRequest::FromDisk {
         path: PathBuf::from(&state.policy_path),
         schema: state.schema_path.clone(),
+        completion: Some(completion_tx),
     };
 
     match state.reload_tx.send(request).await {
         Ok(_) => {
             info!("Policy reload request queued successfully");
-            let response = SuccessResponse {
-                success: true,
-                message: "Policy reload triggered".to_string(),
-            };
-            (StatusCode::ACCEPTED, Json(response)).into_response()
+            let operations = Arc::clone(&state.operations);
+            tokio::spawn(async move {
+                let result = completion_rx
+                    .await
+                    .unwrap_or_else(|_| Err("policy reload worker stopped".to_string()));
+                if let Some(operation) = operations.write().await.get_mut(&operation_id) {
+                    operation.completed_at = Some(current_timestamp());
+                    match result {
+                        Ok(()) => operation.status = "succeeded",
+                        Err(error) => {
+                            operation.status = "failed";
+                            operation.error = Some(error);
+                        }
+                    }
+                }
+            });
+            (StatusCode::ACCEPTED, Json(operation)).into_response()
         }
         Err(e) => {
             warn!(error = %e, "Failed to queue policy reload request");
+            state.operations.write().await.remove(&operation_id);
             problem(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "policy_reload_unavailable",
@@ -1065,6 +1108,49 @@ async fn reload_policy(State(state): State<Arc<ApiState>>, headers: HeaderMap) -
             )
         }
     }
+}
+
+async fn register_operation(
+    operations: &RwLock<HashMap<Uuid, OperationResponse>>,
+    id: Uuid,
+    operation: OperationResponse,
+) -> bool {
+    const MAX_OPERATIONS: usize = 1024;
+    let mut records = operations.write().await;
+    if records.len() >= MAX_OPERATIONS {
+        let completed = records
+            .iter()
+            .filter(|(_, value)| value.completed_at.is_some())
+            .min_by_key(|(_, value)| &value.submitted_at)
+            .map(|(id, _)| *id);
+        let Some(completed) = completed else {
+            return false;
+        };
+        records.remove(&completed);
+    }
+    records.insert(id, operation);
+    true
+}
+
+async fn get_operation(
+    State(state): State<Arc<ApiState>>,
+    Path(operation_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Response {
+    match state.operations.read().await.get(&operation_id).cloned() {
+        Some(operation) => Json(operation).into_response(),
+        None => problem(
+            StatusCode::NOT_FOUND,
+            "operation_not_found",
+            mutation_correlation(&headers),
+        ),
+    }
+}
+
+fn current_timestamp() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("UTC timestamp is RFC 3339 representable")
 }
 
 /// POST /api/v1/policy - Upload new policy from JSON.
@@ -1132,6 +1218,7 @@ async fn queue_policy_upload(
     let request = PolicyReloadRequest::FromJson {
         content: policy_json,
         schema: schema_path,
+        completion: None,
     };
 
     match reload_tx.send(request).await {
@@ -1871,11 +1958,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_reload_policy_with_auth() {
+        use http_body_util::BodyExt;
+
         let rbac = make_test_rbac();
         // Use the channel variant to keep the receiver alive during the test
         let (app, mut reload_rx, _registry) = make_test_router_with_channel(rbac);
 
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1888,18 +1978,42 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let operation_id = body["operationId"].as_str().unwrap();
 
         // Verify the reload request was sent to the channel
         let reload_request = reload_rx.try_recv().expect("should receive reload request");
         match reload_request {
-            PolicyReloadRequest::FromDisk { path, schema } => {
+            PolicyReloadRequest::FromDisk {
+                path,
+                schema,
+                completion,
+            } => {
                 assert_eq!(path.to_string_lossy(), "test-policy.json");
                 assert!(schema.is_none());
+                completion.unwrap().send(Ok(())).unwrap();
             }
             PolicyReloadRequest::FromJson { .. } => {
                 panic!("Expected FromDisk, got FromJson");
             }
         }
+        tokio::task::yield_now().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/mgmt/v1/operations/{operation_id}"))
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["status"], "succeeded");
     }
 
     // ==================== Session Registry Integration Tests ====================
