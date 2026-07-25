@@ -52,8 +52,8 @@
 //!   detecting anomalies and security incidents.
 
 use prometheus::{
-    CounterVec, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
-    core::Collector,
+    CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
+    TextEncoder, core::Collector,
 };
 use std::sync::OnceLock;
 
@@ -93,6 +93,9 @@ pub struct Metrics {
     // Policy metrics
     pub policy_reload_total: CounterVec,
     pub policy_rules_count: Gauge,
+    pub nad_reconciliation_total: CounterVec,
+    pub nad_reconciliation_resources: GaugeVec,
+    pub nad_reconciliation_timestamp: Gauge,
 
     // Rate limiting metrics
     pub ratelimit_rejections_total: CounterVec,
@@ -246,6 +249,31 @@ fn create_policy_metrics() -> (CounterVec, Gauge) {
     (policy_reload_total, policy_rules_count)
 }
 
+fn create_nad_reconciliation_metrics() -> (CounterVec, GaugeVec, Gauge) {
+    let total = CounterVec::new(
+        Opts::new(
+            "tacacs_nad_reconciliation_total",
+            "NAD reconciliation attempts by result",
+        ),
+        &["result"],
+    )
+    .expect("metric can be created");
+    let resources = GaugeVec::new(
+        Opts::new(
+            "tacacs_nad_reconciliation_resources",
+            "API-owned NAD resources by reconciliation state",
+        ),
+        &["state"],
+    )
+    .expect("metric can be created");
+    let timestamp = Gauge::with_opts(Opts::new(
+        "tacacs_nad_reconciliation_timestamp_seconds",
+        "Unix timestamp of the last published NAD snapshot",
+    ))
+    .expect("metric can be created");
+    (total, resources, timestamp)
+}
+
 /// Create rate limiting metrics.
 ///
 /// # NIST SP 800-53 Controls
@@ -324,6 +352,8 @@ impl Metrics {
         let (authz_requests_total, authz_duration_seconds) = create_authz_metrics();
         let (acct_records_total, sessions_active) = create_acct_session_metrics();
         let (policy_reload_total, policy_rules_count) = create_policy_metrics();
+        let (nad_reconciliation_total, nad_reconciliation_resources, nad_reconciliation_timestamp) =
+            create_nad_reconciliation_metrics();
         let ratelimit_rejections_total = create_ratelimit_metrics();
         let (certificate_expiry_timestamp, certificate_renewal_total, certificate_validity_days) =
             create_certificate_metrics();
@@ -340,6 +370,9 @@ impl Metrics {
         register_metric(&registry, &sessions_active);
         register_metric(&registry, &policy_reload_total);
         register_metric(&registry, &policy_rules_count);
+        register_metric(&registry, &nad_reconciliation_total);
+        register_metric(&registry, &nad_reconciliation_resources);
+        register_metric(&registry, &nad_reconciliation_timestamp);
         register_metric(&registry, &ratelimit_rejections_total);
         register_metric(&registry, &certificate_expiry_timestamp);
         register_metric(&registry, &certificate_renewal_total);
@@ -358,6 +391,9 @@ impl Metrics {
             sessions_active,
             policy_reload_total,
             policy_rules_count,
+            nad_reconciliation_total,
+            nad_reconciliation_resources,
+            nad_reconciliation_timestamp,
             ratelimit_rejections_total,
             certificate_expiry_timestamp,
             certificate_renewal_total,

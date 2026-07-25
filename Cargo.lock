@@ -4927,6 +4927,7 @@ name = "usg-tacacs-server"
 version = "0.81.13"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "argon2",
  "aws-lc-rs",
  "axum",

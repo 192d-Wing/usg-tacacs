@@ -106,6 +106,7 @@ time = { version = "0.3", features = [
   "formatting",
   "parsing",
 ] }
+arc-swap = "1"
 
 # Archive handling
 flate2 = "1"

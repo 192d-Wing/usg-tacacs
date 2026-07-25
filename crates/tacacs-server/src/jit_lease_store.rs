@@ -738,6 +738,7 @@ mod tests {
                 "router-a.example.mil".to_owned(),
                 "router-b.example.mil".to_owned(),
             ])),
+            runtime_nads: None,
             jit_nad_identity: None,
         }
     }
@@ -880,6 +881,7 @@ mod tests {
                     "router-a.example.mil".to_owned(),
                     "router-b.example.mil".to_owned(),
                 ],
+                runtime_nads: None,
             },
             Arc::new(SessionRegistry::new()),
         ));
@@ -969,6 +971,7 @@ mod tests {
                 Ipv4Addr::LOCALHOST.into(),
                 NadIdentity::parse("router-a.example.mil").unwrap(),
             )])),
+            None,
             Arc::new(SessionRegistry::new()),
         ));
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1036,6 +1039,7 @@ mod tests {
                 Ipv4Addr::LOCALHOST.into(),
                 NadIdentity::parse("router-a.example.mil").unwrap(),
             )])),
+            None,
             Arc::new(SessionRegistry::new()),
         ));
         tokio::time::sleep(Duration::from_millis(50)).await;

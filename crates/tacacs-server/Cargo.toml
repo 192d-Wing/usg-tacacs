@@ -46,6 +46,7 @@ sqlx.workspace = true
 url = "2"
 uuid.workspace = true
 time.workspace = true
+arc-swap.workspace = true
 
 # HTTP server for metrics and health endpoints
 axum.workspace = true

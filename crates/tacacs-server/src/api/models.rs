@@ -57,6 +57,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use zeroize::Zeroizing;
 
+use crate::nad_reconciler::NadReconciliationStatus;
 use crate::nad_store::{NadAuthentication, NadRecord};
 
 #[derive(Debug, Deserialize)]
@@ -79,7 +80,15 @@ pub struct UpdateNadRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NadListResponse {
-    pub items: Vec<NadRecord>,
+    pub items: Vec<NadResponse>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadResponse {
+    #[serde(flatten)]
+    pub record: NadRecord,
+    pub reconciliation: Option<NadReconciliationStatus>,
 }
 
 /// A create request whose password buffer is erased when the handler returns.

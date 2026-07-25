@@ -62,6 +62,7 @@ pub use handlers::{RuntimeConfig, build_api_router};
 pub use rbac::{RbacConfig, TlsClientIdentity};
 
 use crate::jit_lease_store::JitLeaseStore;
+use crate::nad_reconciler::RuntimeNadRegistry;
 use crate::nad_store::NadStore;
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
@@ -94,8 +95,8 @@ fn extract_client_cn(
     let leaf = certs.first()?;
     let x509 = X509::from_der(leaf.as_ref()).ok()?;
     for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
-        if let Ok(val) = entry.data().as_utf8() {
-            return Some(val.to_string());
+        if let Ok(value) = entry.data().to_string() {
+            return Some(value);
         }
     }
     None
@@ -196,6 +197,7 @@ pub async fn serve_api(
     config: RuntimeConfig,
     jit_lease_store: Option<Arc<JitLeaseStore>>,
     nad_store: Option<Arc<NadStore>>,
+    runtime_nads: Option<Arc<RuntimeNadRegistry>>,
 ) -> anyhow::Result<()> {
     let app = build_api_router(
         rbac,
@@ -207,6 +209,7 @@ pub async fn serve_api(
         config,
         jit_lease_store,
         nad_store,
+        runtime_nads,
     );
     let listener = TcpListener::bind(addr).await?;
 

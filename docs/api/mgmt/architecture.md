@@ -71,8 +71,11 @@ Mutation operations apply only to `api` resources.
 PostgreSQL partial unique indexes protect API resources from concurrent name
 and source-address conflicts. Runtime activation and cross-source conflict
 checking against the current YAML snapshot are a separate reconciliation step;
-until that succeeds, a database record is desired state and does not alter a
-live TACACS listener.
+until that succeeds, a database record remains inactive desired state.
+Successful API mutations trigger immediate reconciliation, and every replica
+also refreshes periodically to observe peer updates and mounted-secret
+rotation. New TACACS connections use the latest atomically published snapshot.
+If refresh fails, the server retains its last valid snapshot.
 
 API resources use a positive `resourceVersion`. Updates and soft deletes require
 `If-Match` with the current ETag so concurrent administrators cannot silently
