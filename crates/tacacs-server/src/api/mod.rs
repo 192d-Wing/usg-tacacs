@@ -201,9 +201,8 @@ async fn serve_tls_api_connection(
 /// | CM-3 | Configuration Change Control | Policy reload channel for controlled updates |
 /// | SC-8 | Transmission Confidentiality | TLS 1.3 with mTLS when acceptor is provided |
 ///
-/// # Security Warning
-/// When `acceptor` is `None`, the API runs in plaintext mode which should only
-/// be used for development/testing. Production deployments must use TLS.
+/// The network listener is always TLS 1.3 with mandatory client
+/// authentication. Router tests do not use this network entry point.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_api(
     addr: SocketAddr,
@@ -219,6 +218,7 @@ pub async fn serve_api(
     nad_store: Option<Arc<NadStore>>,
     runtime_nads: Option<Arc<RuntimeNadRegistry>>,
 ) -> anyhow::Result<()> {
+    let tls_acceptor = require_mtls_acceptor(acceptor)?;
     let app = build_api_router(
         rbac,
         policy,
@@ -232,38 +232,25 @@ pub async fn serve_api(
         runtime_nads,
     );
     let listener = TcpListener::bind(addr).await?;
-
-    if let Some(tls_acceptor) = acceptor {
-        info!(addr = %addr, tls = true, "Management API server listening (TLS enabled)");
-
-        loop {
-            let (stream, peer_addr) = match listener.accept().await {
-                Ok(conn) => conn,
-                Err(e) => {
-                    error!(error = %e, "failed to accept API connection");
-                    continue;
-                }
-            };
-
-            let acceptor = tls_acceptor.clone();
-            let app = app.clone();
-
-            tokio::spawn(async move {
-                handle_tls_connection(stream, peer_addr, acceptor, app).await;
-            });
-        }
-    } else {
-        warn!(
-            addr = %addr,
-            "Management API server listening in PLAINTEXT mode - NOT RECOMMENDED FOR PRODUCTION"
-        );
-        if let Err(e) = axum::serve(listener, app).await {
-            error!(error = %e, "API server error");
-            return Err(e.into());
-        }
+    info!(addr = %addr, tls = true, "Management API server listening");
+    loop {
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                error!(error = %e, "failed to accept API connection");
+                continue;
+            }
+        };
+        let acceptor = tls_acceptor.clone();
+        let app = app.clone();
+        tokio::spawn(async move {
+            handle_tls_connection(stream, peer_addr, acceptor, app).await;
+        });
     }
+}
 
-    Ok(())
+fn require_mtls_acceptor(acceptor: Option<TlsAcceptor>) -> anyhow::Result<TlsAcceptor> {
+    acceptor.ok_or_else(|| anyhow::anyhow!("management API requires TLS 1.3 client authentication"))
 }
 
 #[cfg(test)]
@@ -282,5 +269,11 @@ mod tests {
                 .iter()
                 .any(|prefix| identity.starts_with(prefix))
         }));
+    }
+
+    #[test]
+    fn plaintext_management_listener_is_rejected() {
+        let result = require_mtls_acceptor(None);
+        assert!(result.is_err());
     }
 }

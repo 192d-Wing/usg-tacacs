@@ -25,6 +25,8 @@ certificate identities are extracted into typed `cn:`, `dns:`, `email:`, and
 in production. RBAC requires exactly one configured candidate to match. Zero or
 multiple matches fail closed before the selected identity is inserted into the
 request for authorization and audit attribution.
+There is no plaintext management network-listener mode; startup fails when an
+mTLS acceptor is unavailable.
 
 The management API must:
 

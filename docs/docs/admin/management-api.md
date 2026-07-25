@@ -79,7 +79,7 @@ usg-tacacs-server \
 |--------|-------------|---------|
 | `--api-enabled` | Enable the Management API | `false` |
 | `--api-listen` | Address and port to listen on | Required when enabled |
-| `--api-tls-cert` | API server TLS certificate | None (plaintext if not set) |
+| `--api-tls-cert` | API server TLS certificate | Required |
 | `--api-tls-key` | API server TLS private key | None |
 | `--api-client-ca` | Client CA for mTLS authentication | None |
 | `--api-rbac-config` | Path to RBAC configuration file | Uses defaults |
@@ -104,7 +104,8 @@ identities map to the same role.
 `X-User-CN` exists only in compiled test code. Runtime requests cannot select
 their identity with an HTTP header.
 
-> **Warning**: Plaintext mode should only be used for development/testing.
+The server refuses to start the management network listener unless the TLS
+certificate, private key, and client CA produce a TLS 1.3 mTLS acceptor.
 
 ## RBAC Configuration
 
