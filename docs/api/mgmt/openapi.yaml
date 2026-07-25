@@ -285,6 +285,49 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "503":
           $ref: "#/components/responses/StoreUnavailable"
+  /nads/reconciliation:
+    get:
+      operationId: getNadReconciliation
+      summary: Query API-owned NAD runtime reconciliation
+      description: >
+        Returns aggregate counts for the complete current snapshot and a
+        bounded page of statuses. When state is supplied, total and items
+        describe only the matching statuses.
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [active, conflict, secretUnavailable]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        "200":
+          description: Current reconciliation snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NadReconciliationPage"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/InvalidResource"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
   /nads/{nadId}:
     parameters:
       - name: nadId
@@ -797,6 +840,41 @@ components:
           enum: [active, conflict, secretUnavailable]
         reason:
           type: [string, "null"]
+    NadReconciliationPage:
+      type: object
+      additionalProperties: false
+      required:
+        - reconciledAt
+        - total
+        - active
+        - conflict
+        - secretUnavailable
+        - items
+        - nextOffset
+      properties:
+        reconciledAt:
+          type: string
+          format: date-time
+        total:
+          type: integer
+          minimum: 0
+        active:
+          type: integer
+          minimum: 0
+        conflict:
+          type: integer
+          minimum: 0
+        secretUnavailable:
+          type: integer
+          minimum: 0
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/NadReconciliation"
+        nextOffset:
+          type: [integer, "null"]
+          minimum: 0
     NadList:
       type: object
       additionalProperties: false

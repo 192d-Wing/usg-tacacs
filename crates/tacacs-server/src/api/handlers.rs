@@ -67,7 +67,7 @@ use crate::session_registry::SessionRegistry;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Extension, Path, State},
+    extract::{DefaultBodyLimit, Extension, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
@@ -199,6 +199,10 @@ pub fn build_api_router(
             Router::new()
                 .route("/api/mgmt/v1/nads", get(list_nads))
                 .route("/api/mgmt/v1/nads/inventory", get(list_nad_inventory))
+                .route(
+                    "/api/mgmt/v1/nads/reconciliation",
+                    get(get_nad_reconciliation),
+                )
                 .route("/api/mgmt/v1/nads/{id}", get(get_nad))
                 .route_layer(middleware::from_fn(require_permission(&rbac, "read:nads"))),
         )
@@ -447,6 +451,68 @@ fn yaml_authentication(value: &usg_tacacs_config::NadAuthentication) -> NadAuthe
             certificate_identities: certificate_identities.clone(),
         },
     }
+}
+
+async fn get_nad_reconciliation(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<NadReconciliationQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some(registry) = state.runtime_nads.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_reconciliation_unavailable",
+            correlation_id,
+        );
+    };
+    let Some((limit, offset)) = reconciliation_page(&query) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_pagination",
+            correlation_id,
+        );
+    };
+    let snapshot = registry.snapshot();
+    let mut all = snapshot.statuses.values().cloned().collect::<Vec<_>>();
+    all.sort_by_key(|status| status.nad_id);
+    let counts = reconciliation_counts(&all);
+    if let Some(state) = query.state {
+        all.retain(|status| status.state == state);
+    }
+    let total = all.len();
+    let items = all.into_iter().skip(offset).take(limit).collect();
+    let next_offset = (offset.saturating_add(limit) < total).then_some(offset + limit);
+    Json(NadReconciliationResponse {
+        reconciled_at: snapshot.reconciled_at,
+        total,
+        active: counts[0],
+        conflict: counts[1],
+        secret_unavailable: counts[2],
+        items,
+        next_offset,
+    })
+    .into_response()
+}
+
+fn reconciliation_page(query: &NadReconciliationQuery) -> Option<(usize, usize)> {
+    let limit = query.limit.unwrap_or(100);
+    let offset = query.offset.unwrap_or(0);
+    (limit > 0 && limit <= 200 && offset <= 1_000_000).then_some((limit, offset))
+}
+
+fn reconciliation_counts(
+    statuses: &[crate::nad_reconciler::NadReconciliationStatus],
+) -> [usize; 3] {
+    let mut counts = [0; 3];
+    for status in statuses {
+        match status.state {
+            crate::nad_reconciler::ReconciliationState::Active => counts[0] += 1,
+            crate::nad_reconciler::ReconciliationState::Conflict => counts[1] += 1,
+            crate::nad_reconciler::ReconciliationState::SecretUnavailable => counts[2] += 1,
+        }
+    }
+    counts
 }
 
 async fn get_nad(
@@ -1644,6 +1710,43 @@ mod tests {
                 secret_ref: "/run/secrets/nads/oopl-an-001".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn reconciliation_queries_are_bounded_and_count_all_states() {
+        assert_eq!(
+            reconciliation_page(&NadReconciliationQuery {
+                state: None,
+                limit: None,
+                offset: None,
+            }),
+            Some((100, 0))
+        );
+        assert_eq!(
+            reconciliation_page(&NadReconciliationQuery {
+                state: None,
+                limit: Some(201),
+                offset: None,
+            }),
+            None
+        );
+        let statuses = [
+            reconciliation_status(crate::nad_reconciler::ReconciliationState::Active),
+            reconciliation_status(crate::nad_reconciler::ReconciliationState::Conflict),
+            reconciliation_status(crate::nad_reconciler::ReconciliationState::SecretUnavailable),
+        ];
+        assert_eq!(reconciliation_counts(&statuses), [1, 1, 1]);
+    }
+
+    fn reconciliation_status(
+        state: crate::nad_reconciler::ReconciliationState,
+    ) -> crate::nad_reconciler::NadReconciliationStatus {
+        crate::nad_reconciler::NadReconciliationStatus {
+            nad_id: Uuid::new_v4(),
+            resource_version: 1,
+            state,
+            reason: None,
+        }
     }
 
     // ==================== Authentication Tests ====================

@@ -120,6 +120,8 @@ The management API exposes:
 - `GET /api/mgmt/v1/nads` and `GET /api/mgmt/v1/nads/{nadId}` with `read:nads`;
 - `GET /api/mgmt/v1/nads/inventory` with `read:nads` for the unified YAML and
   API-owned view;
+- `GET /api/mgmt/v1/nads/reconciliation` with `read:nads` for bounded,
+  optionally state-filtered runtime status and aggregate health counts;
 - `POST /api/mgmt/v1/nads` with `write:nads`, `X-Correlation-ID`, and
   `Idempotency-Key`;
 - `PATCH /api/mgmt/v1/nads/{nadId}` and

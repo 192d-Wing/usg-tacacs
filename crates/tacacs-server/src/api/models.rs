@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use zeroize::Zeroizing;
 
-use crate::nad_reconciler::NadReconciliationStatus;
+use crate::nad_reconciler::{NadReconciliationStatus, ReconciliationState};
 use crate::nad_store::{NadAuthentication, NadRecord};
 
 #[derive(Debug, Serialize)]
@@ -138,6 +138,26 @@ pub struct NadInventoryItem {
     pub mutable: bool,
     pub resource_version: Option<i64>,
     pub reconciliation: Option<NadReconciliationStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NadReconciliationQuery {
+    pub state: Option<ReconciliationState>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadReconciliationResponse {
+    pub reconciled_at: time::OffsetDateTime,
+    pub total: usize,
+    pub active: usize,
+    pub conflict: usize,
+    pub secret_unavailable: usize,
+    pub items: Vec<NadReconciliationStatus>,
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
