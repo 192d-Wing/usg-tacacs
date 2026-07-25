@@ -1,0 +1,64 @@
+apiVersion: tacacs.usg.mil/v1alpha1
+kind: TacacsServer
+metadata:
+  name: lab
+  description: Lab TACACS service
+spec:
+  listeners:
+    legacy: 0.0.0.0:49
+    tls:
+      address: 0.0.0.0:300
+      certificateFile: /run/secrets/tls/tls.crt
+      privateKeyFile: /run/secrets/tls/tls.key
+      clientCaFile: /run/secrets/tls/client-ca.crt
+      minimumVersion: "1.3"
+    health: 0.0.0.0:8080
+  nads:
+    - name: oopl-an-001
+      description: IOS-XE lab switch
+      sourceAddress: 192.0.2.10
+      mode: legacy
+      secretFile: /run/secrets/nads/oopl-an-001
+    - name: tls-nad-001
+      sourceAddress: 192.0.2.11
+      mode: tls
+      certificateIdentities:
+        - tls-nad-001.example.mil
+  authorization:
+    defaultAllow: false
+    rules:
+      - id: network-admin-show
+        priority: 100
+        effect: allow
+        groups:
+          - network-admins
+        command: "^show(?: .*)?$"
+  management:
+    listener:
+      address: 0.0.0.0:8443
+      certificateFile: /run/secrets/management/tls.crt
+      privateKeyFile: /run/secrets/management/tls.key
+      clientCaFile: /run/secrets/management/client-ca.crt
+      minimumVersion: "1.3"
+    rbac:
+      roles:
+        admin:
+          description: Full TACACS management
+          permissions:
+            - "read:*"
+            - "write:*"
+        viewer:
+          permissions:
+            - read:status
+            - read:metrics
+      subjects:
+        - certificateIdentity: tacacs-admin.example.mil
+          role: admin
+  audit:
+    hmacKeyFile: /run/secrets/audit/hmac-key
+  jit:
+    storeUrl: postgres://tacacs-db.example.mil/tacacs
+    storePasswordFile: /run/secrets/postgres/password
+    storeCaFile: /run/secrets/postgres/ca.crt
+    verifierKeyFile: /run/secrets/jit/verifier-key
+    maximumTtlSeconds: 900
