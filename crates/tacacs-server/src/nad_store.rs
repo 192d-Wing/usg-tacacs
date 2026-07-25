@@ -95,6 +95,29 @@ pub struct NadPage {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NadAuditEvent {
+    pub event_id: Uuid,
+    pub occurred_at: OffsetDateTime,
+    pub correlation_id: Uuid,
+    pub actor: String,
+    pub action: String,
+    pub nad_id: Uuid,
+    pub resource_version: i64,
+    pub before_state: Option<serde_json::Value>,
+    pub after_state: serde_json::Value,
+    pub previous_event_hash: Option<String>,
+    pub event_hash: String,
+    pub hmac_signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NadAuditPage {
+    pub items: Vec<NadAuditEvent>,
+    pub has_more: bool,
+}
+
 #[derive(Clone)]
 pub struct NadStore {
     pool: PgPool,
@@ -151,6 +174,36 @@ impl NadStore {
             .map_err(map_database_error)?
             .ok_or(NadStoreError::NotFound)?;
         decode_nad(&row)
+    }
+
+    pub async fn list_audit(
+        &self,
+        nad_id: Option<Uuid>,
+        correlation_id: Option<Uuid>,
+        action: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<NadAuditPage, NadStoreError> {
+        let fetch_limit = i64::try_from(limit.saturating_add(1))
+            .map_err(|_| NadStoreError::InvalidInput("invalid_pagination"))?;
+        let offset =
+            i64::try_from(offset).map_err(|_| NadStoreError::InvalidInput("invalid_pagination"))?;
+        let rows = sqlx::query(NAD_AUDIT_SELECT_PAGE)
+            .bind(nad_id)
+            .bind(correlation_id)
+            .bind(action)
+            .bind(fetch_limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_database_error)?;
+        let has_more = rows.len() > limit;
+        let items = rows
+            .iter()
+            .take(limit)
+            .map(decode_audit_event)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(NadAuditPage { items, has_more })
     }
 
     pub async fn create(&self, input: CreateNadInput) -> Result<CreateNadOutcome, NadStoreError> {
@@ -251,6 +304,16 @@ const NAD_SELECT_ACTIVE_PAGE: &str = "
        AND ($1::text IS NULL OR name LIKE $1 || '%')
      ORDER BY name, nad_id
      LIMIT $2 OFFSET $3";
+const NAD_AUDIT_SELECT_PAGE: &str = "
+    SELECT event_id, occurred_at, correlation_id, actor, action, nad_id,
+           resource_version, before_state, after_state, previous_event_hash,
+           event_hash, hmac_signature
+      FROM tacacs_management.nad_audit_events
+     WHERE ($1::uuid IS NULL OR nad_id = $1)
+       AND ($2::uuid IS NULL OR correlation_id = $2)
+       AND ($3::text IS NULL OR action = $3)
+     ORDER BY occurred_at, event_id
+     LIMIT $4 OFFSET $5";
 
 fn validate_create(input: &CreateNadInput) -> Result<(), NadStoreError> {
     validate_name(&input.name)?;
@@ -654,6 +717,35 @@ fn decode_nad(row: &sqlx::postgres::PgRow) -> Result<NadRecord, NadStoreError> {
         updated_by: row.get("updated_by"),
         deleted_at: row.get("deleted_at"),
         deleted_by: row.get("deleted_by"),
+    })
+}
+
+fn decode_audit_event(row: &sqlx::postgres::PgRow) -> Result<NadAuditEvent, NadStoreError> {
+    let previous_hash = row
+        .try_get::<Option<Vec<u8>>, _>("previous_event_hash")
+        .map_err(|_| NadStoreError::CorruptRecord)?
+        .map(hex::encode);
+    let event_hash = row
+        .try_get::<Vec<u8>, _>("event_hash")
+        .map(hex::encode)
+        .map_err(|_| NadStoreError::CorruptRecord)?;
+    let hmac_signature = row
+        .try_get::<Vec<u8>, _>("hmac_signature")
+        .map(hex::encode)
+        .map_err(|_| NadStoreError::CorruptRecord)?;
+    Ok(NadAuditEvent {
+        event_id: row.get("event_id"),
+        occurred_at: row.get("occurred_at"),
+        correlation_id: row.get("correlation_id"),
+        actor: row.get("actor"),
+        action: row.get("action"),
+        nad_id: row.get("nad_id"),
+        resource_version: row.get("resource_version"),
+        before_state: row.get("before_state"),
+        after_state: row.get("after_state"),
+        previous_event_hash: previous_hash,
+        event_hash,
+        hmac_signature,
     })
 }
 

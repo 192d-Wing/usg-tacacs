@@ -197,6 +197,11 @@ pub fn build_api_router(
     Router::new()
         .merge(
             Router::new()
+                .route("/api/mgmt/v1/audit/nads", get(list_nad_audit))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "read:audit"))),
+        )
+        .merge(
+            Router::new()
                 .route("/api/mgmt/v1/nads", get(list_nads))
                 .route("/api/mgmt/v1/nads/inventory", get(list_nad_inventory))
                 .route(
@@ -392,6 +397,55 @@ async fn list_nads(
         }
         Err(error) => nad_problem(error, correlation_id),
     }
+}
+
+async fn list_nad_audit(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<NadAuditQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some((limit, offset)) = nad_audit_page(&query) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_audit_query",
+            correlation_id,
+        );
+    };
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        );
+    };
+    match store
+        .list_audit(
+            query.nad_id,
+            query.correlation_id,
+            query.action.as_deref(),
+            limit,
+            offset,
+        )
+        .await
+    {
+        Ok(page) => Json(NadAuditResponse {
+            items: page.items,
+            next_offset: page.has_more.then_some(offset + limit),
+        })
+        .into_response(),
+        Err(error) => nad_problem(error, correlation_id),
+    }
+}
+
+fn nad_audit_page(query: &NadAuditQuery) -> Option<(usize, usize)> {
+    let limit = query.limit.unwrap_or(100);
+    let offset = query.offset.unwrap_or(0);
+    let valid_action = query
+        .action
+        .as_deref()
+        .is_none_or(|value| matches!(value, "create" | "update" | "delete"));
+    (valid_action && limit > 0 && limit <= 200 && offset <= 1_000_000).then_some((limit, offset))
 }
 
 fn nad_list_page(query: &NadListQuery) -> Option<(usize, usize)> {
@@ -1792,6 +1846,30 @@ mod tests {
             nad_list_page(&NadListQuery {
                 name_prefix: None,
                 limit: Some(201),
+                offset: None,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn audit_queries_are_bounded_and_actions_are_allowlisted() {
+        assert_eq!(
+            nad_audit_page(&NadAuditQuery {
+                nad_id: None,
+                correlation_id: None,
+                action: Some("delete".to_owned()),
+                limit: None,
+                offset: None,
+            }),
+            Some((100, 0))
+        );
+        assert_eq!(
+            nad_audit_page(&NadAuditQuery {
+                nad_id: None,
+                correlation_id: None,
+                action: Some("truncate".to_owned()),
+                limit: Some(10),
                 offset: None,
             }),
             None

@@ -207,6 +207,58 @@ paths:
                 type: string
         "403":
           $ref: "#/components/responses/Forbidden"
+  /audit/nads:
+    get:
+      operationId: listNadAuditEvents
+      summary: Export NAD management audit evidence
+      description: >
+        Returns a bounded chronological page from the append-only,
+        hash-chained, HMAC-authenticated NAD mutation log.
+      parameters:
+        - name: nadId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: correlationId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: action
+          in: query
+          schema:
+            type: string
+            enum: [create, update, delete]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        "200":
+          description: NAD audit evidence
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NadAuditPage"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/InvalidResource"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
   /nads:
     get:
       operationId: listNads
@@ -910,6 +962,71 @@ components:
           maxItems: 200
           items:
             $ref: "#/components/schemas/Nad"
+        nextOffset:
+          type: [integer, "null"]
+          minimum: 0
+    NadAuditEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventId
+        - occurredAt
+        - correlationId
+        - actor
+        - action
+        - nadId
+        - resourceVersion
+        - beforeState
+        - afterState
+        - previousEventHash
+        - eventHash
+        - hmacSignature
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        occurredAt:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+          format: uuid
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 512
+        action:
+          type: string
+          enum: [create, update, delete]
+        nadId:
+          type: string
+          format: uuid
+        resourceVersion:
+          type: integer
+          minimum: 1
+        beforeState:
+          type: [object, "null"]
+        afterState:
+          type: object
+        previousEventHash:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{64}$"
+        eventHash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        hmacSignature:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+    NadAuditPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextOffset]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/NadAuditEvent"
         nextOffset:
           type: [integer, "null"]
           minimum: 0

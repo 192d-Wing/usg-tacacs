@@ -174,6 +174,15 @@ counts for the current snapshot and returns at most 200 statuses per request.
 The `state`, `limit`, and `offset` query parameters support bounded queries such
 as `?state=conflict&limit=100`.
 
+### Forensic NAD Audit
+
+`GET /api/mgmt/v1/audit/nads` requires `read:audit` and exports at most 200
+chronologically ordered events. Filters are available for `nadId`,
+`correlationId`, and `action`; use `nextOffset` to continue. Each event contains
+the certificate actor, before/after resource state, previous and current
+SHA-256 chain hashes, and the HMAC-SHA-256 signature. The endpoint never returns
+the HMAC key or resolved TACACS shared secrets.
+
 An accepted NAD record becomes active only after runtime reconciliation
 validates secret resolution and conflicts against the YAML-owned baseline.
 Successful mutations trigger immediate reconciliation; each replica also

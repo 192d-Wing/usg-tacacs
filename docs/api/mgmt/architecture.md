@@ -118,6 +118,12 @@ event containing the certificate actor, UUID correlation identifier, before
 and after state, and resource version. Database triggers reject updates and
 deletes against the audit table.
 
+The evidence log is readable through `GET /api/mgmt/v1/audit/nads` with the
+dedicated `read:audit` permission. Reads are chronological, bounded to 200
+events, and filterable by NAD, correlation identifier, or action. Evidence
+includes the chain hashes and HMAC output, but never the HMAC key or resolved
+TACACS secret material.
+
 ## NAD management operations
 
 The management API exposes:

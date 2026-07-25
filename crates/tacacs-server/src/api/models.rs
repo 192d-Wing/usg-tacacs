@@ -58,7 +58,7 @@ use std::net::IpAddr;
 use zeroize::Zeroizing;
 
 use crate::nad_reconciler::{NadReconciliationStatus, ReconciliationState};
-use crate::nad_store::{NadAuthentication, NadRecord};
+use crate::nad_store::{NadAuditEvent, NadAuthentication, NadRecord};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -166,6 +166,23 @@ pub struct NadReconciliationResponse {
     pub conflict: usize,
     pub secret_unavailable: usize,
     pub items: Vec<NadReconciliationStatus>,
+    pub next_offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NadAuditQuery {
+    pub nad_id: Option<uuid::Uuid>,
+    pub correlation_id: Option<uuid::Uuid>,
+    pub action: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadAuditResponse {
+    pub items: Vec<NadAuditEvent>,
     pub next_offset: Option<usize>,
 }
 
