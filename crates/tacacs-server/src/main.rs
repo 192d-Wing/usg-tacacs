@@ -90,7 +90,7 @@ use crate::session_registry::{SessionLimits, SessionRegistry, run_idle_sweep_tas
 use crate::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal::unix::{SignalKind, signal};
@@ -880,7 +880,7 @@ async fn watch_declarative_policy(
 }
 
 async fn handle_declarative_reload(
-    config_path: &PathBuf,
+    config_path: &Path,
     policy: &Arc<RwLock<PolicyEngine>>,
     request: &PolicyReloadRequest,
 ) {
