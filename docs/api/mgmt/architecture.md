@@ -85,9 +85,10 @@ and reconciliation policy must reject conflicting NAD identities.
 ### NAD ownership and reconciliation
 
 YAML NADs have `yaml` ownership and remain Git-managed. PostgreSQL NADs have
-`api` ownership. The `/nads` collection currently exposes API-owned records;
-the sanitized configuration endpoint remains the view of the YAML baseline.
-Mutation operations apply only to `api` resources.
+`api` ownership. The `/nads` collection exposes API-owned records, while
+`/nads/inventory` provides a unified read-only view of both ownership sources.
+Every inventory item explicitly reports whether it is mutable. Mutation
+operations apply only to `api` resources.
 
 PostgreSQL partial unique indexes protect API resources from concurrent name
 and source-address conflicts. Runtime activation and cross-source conflict
@@ -117,6 +118,8 @@ deletes against the audit table.
 The management API exposes:
 
 - `GET /api/mgmt/v1/nads` and `GET /api/mgmt/v1/nads/{nadId}` with `read:nads`;
+- `GET /api/mgmt/v1/nads/inventory` with `read:nads` for the unified YAML and
+  API-owned view;
 - `POST /api/mgmt/v1/nads` with `write:nads`, `X-Correlation-ID`, and
   `Idempotency-Key`;
 - `PATCH /api/mgmt/v1/nads/{nadId}` and

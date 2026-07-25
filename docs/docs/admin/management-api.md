@@ -148,6 +148,7 @@ API-owned NAD desired state is managed through:
 | Method | Path | Permission | Concurrency requirement |
 | --- | --- | --- | --- |
 | `GET` | `/api/mgmt/v1/nads` | `read:nads` | none |
+| `GET` | `/api/mgmt/v1/nads/inventory` | `read:nads` | none |
 | `GET` | `/api/mgmt/v1/nads/{nadId}` | `read:nads` | none |
 | `POST` | `/api/mgmt/v1/nads` | `write:nads` | `Idempotency-Key` |
 | `PATCH` | `/api/mgmt/v1/nads/{nadId}` | `write:nads` | current `If-Match` ETag |
@@ -157,6 +158,11 @@ All mutations also require `X-Correlation-ID` containing a UUID. Legacy NAD
 requests contain only an opaque `secretRef`; provision the actual shared secret
 through the deployment's approved secret provider. Neither the secret value nor
 an idempotency key is stored in plaintext.
+
+Use `/nads/inventory` when an operator needs the complete view. Its entries
+identify `yaml` or `api` ownership and include a `mutable` flag. YAML-owned
+entries must be changed through the declarative configuration delivery
+workflow, not through NAD mutation endpoints.
 
 An accepted NAD record becomes active only after runtime reconciliation
 validates secret resolution and conflicts against the YAML-owned baseline.

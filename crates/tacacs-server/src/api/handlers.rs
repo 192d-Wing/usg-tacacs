@@ -59,7 +59,9 @@ use crate::jit_lease_store::{
 };
 use crate::metrics::metrics;
 use crate::nad_reconciler::RuntimeNadRegistry;
-use crate::nad_store::{CreateNadInput, CreateNadOutcome, NadStore, NadStoreError, UpdateNadInput};
+use crate::nad_store::{
+    CreateNadInput, CreateNadOutcome, NadAuthentication, NadStore, NadStoreError, UpdateNadInput,
+};
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
 use axum::{
@@ -196,6 +198,7 @@ pub fn build_api_router(
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/nads", get(list_nads))
+                .route("/api/mgmt/v1/nads/inventory", get(list_nad_inventory))
                 .route("/api/mgmt/v1/nads/{id}", get(get_nad))
                 .route_layer(middleware::from_fn(require_permission(&rbac, "read:nads"))),
         )
@@ -368,6 +371,81 @@ async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Re
             (StatusCode::OK, Json(NadListResponse { items })).into_response()
         }
         Err(error) => nad_problem(error, correlation_id),
+    }
+}
+
+async fn list_nad_inventory(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        );
+    };
+    let api_records = match store.list().await {
+        Ok(records) => records,
+        Err(error) => return nad_problem(error, correlation_id),
+    };
+    let snapshot = state.runtime_nads.as_ref().map(|value| value.snapshot());
+    let mut items = yaml_inventory(&state.config);
+    items.extend(api_records.into_iter().map(|record| {
+        let reconciliation = snapshot
+            .as_ref()
+            .and_then(|value| value.statuses.get(&record.nad_id).cloned());
+        NadInventoryItem {
+            nad_id: Some(record.nad_id),
+            name: record.name,
+            description: record.description,
+            source_address: record.source_address,
+            authentication: record.authentication,
+            ownership: "api",
+            mutable: true,
+            resource_version: Some(record.resource_version),
+            reconciliation,
+        }
+    }));
+    items.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.ownership.cmp(right.ownership))
+            .then_with(|| left.source_address.cmp(&right.source_address))
+    });
+    (StatusCode::OK, Json(NadInventoryResponse { items })).into_response()
+}
+
+fn yaml_inventory(config: &RuntimeConfig) -> Vec<NadInventoryItem> {
+    let Some(source) = &config.source_config else {
+        return Vec::new();
+    };
+    source
+        .spec
+        .nads
+        .iter()
+        .map(|nad| NadInventoryItem {
+            nad_id: None,
+            name: nad.name.clone(),
+            description: nad.description.clone(),
+            source_address: nad.source_address,
+            authentication: yaml_authentication(&nad.authentication),
+            ownership: "yaml",
+            mutable: false,
+            resource_version: None,
+            reconciliation: None,
+        })
+        .collect()
+}
+
+fn yaml_authentication(value: &usg_tacacs_config::NadAuthentication) -> NadAuthentication {
+    match value {
+        usg_tacacs_config::NadAuthentication::Legacy { secret_file } => NadAuthentication::Legacy {
+            secret_ref: secret_file.display().to_string(),
+        },
+        usg_tacacs_config::NadAuthentication::Tls {
+            certificate_identities,
+        } => NadAuthentication::Tls {
+            certificate_identities: certificate_identities.clone(),
+        },
     }
 }
 
@@ -1544,6 +1622,28 @@ mod tests {
         assert_eq!(uuid_header(&headers, "x-correlation-id"), Some(expected));
         headers.insert("x-correlation-id", HeaderValue::from_static("not-a-uuid"));
         assert_eq!(uuid_header(&headers, "x-correlation-id"), None);
+    }
+
+    #[test]
+    fn yaml_inventory_is_read_only_and_contains_only_secret_references() {
+        let items = yaml_inventory(&make_test_config());
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| {
+            item.ownership == "yaml"
+                && !item.mutable
+                && item.nad_id.is_none()
+                && item.resource_version.is_none()
+        }));
+        let legacy = items
+            .iter()
+            .find(|item| item.name == "oopl-an-001")
+            .expect("example legacy NAD must be present");
+        assert_eq!(
+            legacy.authentication,
+            NadAuthentication::Legacy {
+                secret_ref: "/run/secrets/nads/oopl-an-001".to_owned(),
+            }
+        );
     }
 
     // ==================== Authentication Tests ====================

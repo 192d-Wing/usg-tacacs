@@ -122,6 +122,26 @@ pub struct NadListResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NadInventoryResponse {
+    pub items: Vec<NadInventoryItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadInventoryItem {
+    pub nad_id: Option<uuid::Uuid>,
+    pub name: String,
+    pub description: Option<String>,
+    pub source_address: IpAddr,
+    pub authentication: NadAuthentication,
+    pub ownership: &'static str,
+    pub mutable: bool,
+    pub resource_version: Option<i64>,
+    pub reconciliation: Option<NadReconciliationStatus>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NadResponse {
     #[serde(flatten)]
     pub record: NadRecord,

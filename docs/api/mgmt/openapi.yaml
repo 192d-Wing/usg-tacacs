@@ -266,6 +266,25 @@ paths:
           $ref: "#/components/responses/InvalidResource"
         "503":
           $ref: "#/components/responses/StoreUnavailable"
+  /nads/inventory:
+    get:
+      operationId: listNadInventory
+      summary: List YAML-owned and API-owned network access devices
+      description: >
+        Returns a unified read-only inventory. YAML-owned entries are immutable
+        through this API; API-owned entries include their runtime reconciliation
+        status.
+      responses:
+        "200":
+          description: Unified NAD inventory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NadInventory"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
   /nads/{nadId}:
     parameters:
       - name: nadId
@@ -787,6 +806,56 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Nad"
+    NadInventory:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/NadInventoryItem"
+    NadInventoryItem:
+      type: object
+      additionalProperties: false
+      required:
+        - nadId
+        - name
+        - description
+        - sourceAddress
+        - authentication
+        - ownership
+        - mutable
+        - resourceVersion
+        - reconciliation
+      properties:
+        nadId:
+          type: [string, "null"]
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 253
+        description:
+          type: [string, "null"]
+          maxLength: 1024
+        sourceAddress:
+          type: string
+          format: ip
+        authentication:
+          $ref: "#/components/schemas/NadAuthentication"
+        ownership:
+          type: string
+          enum: [yaml, api]
+        mutable:
+          type: boolean
+        resourceVersion:
+          type: [integer, "null"]
+          minimum: 1
+        reconciliation:
+          oneOf:
+            - $ref: "#/components/schemas/NadReconciliation"
+            - type: "null"
     Problem:
       type: object
       additionalProperties: false
