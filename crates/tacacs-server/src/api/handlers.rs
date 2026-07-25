@@ -175,7 +175,7 @@ pub fn build_api_router(
     Router::new()
         .merge(
             Router::new()
-                .route("/api/v1/status", get(get_status))
+                .route("/api/mgmt/v1/status", get(get_status))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:status",
@@ -183,7 +183,7 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
-                .route("/api/v1/sessions", get(get_sessions))
+                .route("/api/mgmt/v1/sessions", get(get_sessions))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:sessions",
@@ -191,7 +191,7 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
-                .route("/api/v1/sessions/{id}", delete(delete_session))
+                .route("/api/mgmt/v1/sessions/{id}", delete(delete_session))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "write:sessions",
@@ -199,7 +199,7 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
-                .route("/api/v1/policy", get(get_policy))
+                .route("/api/mgmt/v1/policy", get(get_policy))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:policy",
@@ -207,8 +207,8 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
-                .route("/api/v1/policy/reload", post(reload_policy))
-                .route("/api/v1/policy", post(upload_policy))
+                .route("/api/mgmt/v1/policy/reload", post(reload_policy))
+                .route("/api/mgmt/v1/policy", post(upload_policy))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "write:policy",
@@ -216,7 +216,7 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
-                .route("/api/v1/config", get(get_config))
+                .route("/api/mgmt/v1/config", get(get_config))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:config",
@@ -224,7 +224,7 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
-                .route("/api/v1/metrics", get(get_metrics))
+                .route("/api/mgmt/v1/metrics", get(get_metrics))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:metrics",
@@ -232,6 +232,9 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
+                .route("/api/jit/v1/leases", post(create_jit_lease))
+                .route("/api/jit/v1/leases/{lease_id}", delete(revoke_jit_lease))
+                // Compatibility aliases for JITPW clients using the original contract.
                 .route("/api/v1/jit-leases", post(create_jit_lease))
                 .route("/api/v1/jit-leases/{lease_id}", delete(revoke_jit_lease))
                 .route_layer(DefaultBodyLimit::max(16 * 1024))
@@ -242,10 +245,23 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
+                .route("/api/jit/v1/leases/{lease_id}", get(get_jit_lease))
                 .route("/api/v1/jit-leases/{lease_id}", get(get_jit_lease))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:jit-leases",
+                ))),
+        )
+        .merge(
+            Router::new()
+                .merge(
+                    SwaggerUi::new("/api/docs/mgmt")
+                        .config(SwaggerConfig::new(["/api/docs/mgmt/openapi.yaml"])),
+                )
+                .route("/api/docs/mgmt/openapi.yaml", get(get_mgmt_openapi))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    "read:config",
                 ))),
         )
         .merge(
@@ -261,6 +277,14 @@ pub fn build_api_router(
                 ))),
         )
         .with_state(state)
+}
+
+/// Return the version-controlled management OpenAPI 3.1.1 contract.
+async fn get_mgmt_openapi() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/yaml; charset=utf-8")],
+        include_str!("../../../../docs/api/mgmt/openapi.yaml"),
+    )
 }
 
 /// Return the version-controlled JIT lease OpenAPI 3.1.1 contract.
@@ -1029,7 +1053,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/mgmt/v1/status")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1048,7 +1072,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/mgmt/v1/status")
                     .header("X-User-CN", "CN=unknown.user")
                     .body(Body::empty())
                     .unwrap(),
@@ -1068,7 +1092,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/mgmt/v1/status")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1095,6 +1119,50 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn mgmt_openapi_requires_config_read_permission() {
+        let app = make_test_router(make_test_rbac());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/docs/mgmt/openapi.yaml")
+                    .header("X-User-CN", "CN=viewer.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn mgmt_openapi_serves_oas_3_1_1_contract() {
+        use http_body_util::BodyExt;
+
+        let app = make_test_router(make_test_rbac());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/docs/mgmt/openapi.yaml")
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.starts_with(b"openapi: 3.1.1"));
+        assert!(
+            !body
+                .windows(b"jit-leases".len())
+                .any(|w| w == b"jit-leases")
+        );
     }
 
     #[tokio::test]
