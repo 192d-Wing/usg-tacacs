@@ -48,42 +48,10 @@ spec:
           image: {{ include "usg-tacacs.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - --listen-legacy
-            - 0.0.0.0:49
-            - --listen-http
-            - 0.0.0.0:8080
+            - --config
+            - /etc/usg-tacacs/server.yaml
             - --log-format
             - json
-            - --policy
-            - /etc/usg-tacacs/policy.json
-            - --legacy-nad-secrets-file
-            - /run/secrets/tacacs/legacy-nad-secrets
-            - --audit-hmac-key-file
-            - /run/secrets/tacacs/audit-hmac-key
-            - --api-enabled
-            - --api-listen
-            - 0.0.0.0:8443
-            - --api-tls-cert
-            - /run/tls/api/server.crt
-            - --api-tls-key
-            - /run/tls/api/server.key
-            - --api-client-ca
-            - /run/tls/api/client-ca.crt
-            - --api-rbac-config
-            - /etc/usg-tacacs/rbac.json
-          env:
-            - name: JIT_LEASE_STORE_URL
-              value: {{ .Values.postgres.url | quote }}
-            - name: JIT_LEASE_STORE_PASSWORD_FILE
-              value: /run/secrets/tacacs/postgres-password
-            - name: JIT_LEASE_STORE_CA_FILE
-              value: /run/tls/postgres/ca.crt
-            - name: JIT_LEASE_VERIFIER_KEY_FILE
-              value: /run/secrets/tacacs/verifier-key
-            - name: JIT_MANAGED_NADS
-              value: {{ include "usg-tacacs.managedNads" . | quote }}
-            - name: JIT_LEGACY_NADS
-              value: {{ include "usg-tacacs.legacyNads" . | quote }}
           ports:
             - { name: tacacs, containerPort: 49 }
             - { name: management, containerPort: 8443 }

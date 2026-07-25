@@ -26,7 +26,8 @@ and certificate files are mounted. This additionally verifies that every file
 reference exists. Keep it disabled only while initially provisioning those
 Secrets.
 
-During the configuration migration, the chart also renders the legacy
-`policy.json` and `rbac.json` consumed by the server runtime. They are derived
-from the same Helm values. They will be removed after `usg-tacacs` consumes
-`server.yaml` directly.
+The server consumes `server.yaml` directly. Each legacy NAD `secretFile` must
+refer to a file containing only that NAD's TACACS shared secret; do not point it
+at the former aggregate `IP=secret` file. JIT store settings, authorization, and
+management RBAC are no longer supplied through separate environment variables
+or JSON files when `--config` is used.
