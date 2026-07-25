@@ -49,14 +49,7 @@ data:
             jitpw-auditor:
               permissions: ["read:jit-leases"]
           subjects:
-            {{- range .Values.management.adminCommonNames }}
-            - certificateIdentity: {{ . | quote }}
-              role: admin
-            {{- end }}
-            - certificateIdentity: {{ .Values.management.issuerCommonName | quote }}
-              role: jitpw-issuer
-            - certificateIdentity: {{ .Values.management.auditorCommonName | quote }}
-              role: jitpw-auditor
+            {{- toYaml .Values.management.subjects | nindent 12 }}
       audit:
         hmacKeyFile: /run/secrets/tacacs/audit-hmac-key
       jit:

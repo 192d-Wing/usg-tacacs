@@ -48,6 +48,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  helm-management-security:
+    name: Helm Management Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+      - run: ./scripts/ci/validate-management-chart.sh
+
   # ==========================================================================
   # Stage 2: Build
   # ==========================================================================

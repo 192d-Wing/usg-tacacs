@@ -19,10 +19,13 @@ spec:
       ports:
         - { protocol: TCP, port: 49 }
     - from:
-        {{- range .Values.networkPolicy.managementPodNames }}
-        - podSelector:
+        {{- range .Values.networkPolicy.managementPeers }}
+        - namespaceSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ . }}
+              kubernetes.io/metadata.name: {{ .namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podLabels | nindent 14 }}
         {{- end }}
       ports:
         - { protocol: TCP, port: 8443 }

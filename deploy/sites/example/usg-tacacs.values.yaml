@@ -7,9 +7,29 @@ image:
 nads:
   - identity: oopl-an-001
     sourceIp: 192.0.2.1
+    description: IOS-XE lab switch
+    secretFile: /run/secrets/tacacs/oopl-an-001
 
 postgres:
   url: postgresql://tacacs_jit@postgres.example.invalid:5432/tacacs?sslmode=verify-full
 
 service:
   loadBalancerIP: 192.0.2.2
+
+management:
+  subjects:
+    - certificateIdentity: cn:tacacs-admin.example.mil
+      role: admin
+    - certificateIdentity: dns:jitpw-api.jitpw-system.svc
+      role: jitpw-issuer
+    - certificateIdentity: dns:jitpw-audit.jitpw-system.svc
+      role: jitpw-auditor
+
+networkPolicy:
+  managementPeers:
+    - namespace: jitpw-system
+      podLabels:
+        app.kubernetes.io/name: jitpw-api
+    - namespace: jitpw-system
+      podLabels:
+        app.kubernetes.io/name: jitpw-recovery-worker
