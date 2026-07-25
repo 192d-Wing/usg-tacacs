@@ -1,0 +1,46 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/192d-wing/usg-tacacs-server
+  tag: REPLACE_WITH_RELEASE
+  digest: ""
+  pullPolicy: IfNotPresent
+
+nads:
+  - identity: oopl-an-001
+    sourceIp: 192.0.2.1
+
+postgres:
+  url: postgresql://tacacs_jit@REPLACE_POSTGRES_HOST:5432/tacacs?sslmode=verify-full
+
+secrets:
+  runtime: tacacs-runtime
+  apiTls: tacacs-api-tls
+  postgresCa: tacacs-postgres-ca
+
+service:
+  type: LoadBalancer
+  loadBalancerIP: ""
+  annotations: {}
+
+management:
+  issuerCommonName: jitpw-api.jitpw-system.svc
+  auditorCommonName: jitpw-audit.jitpw-system.svc
+
+authorization:
+  privilegedGroups:
+    - netops
+
+networkPolicy:
+  enabled: true
+  managementPodNames:
+    - jitpw-api
+    - jitpw-recovery-worker
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi

@@ -27,3 +27,8 @@ ui/bff/target/
 
 # Cluster rollback captures (live specs, do not commit)
 deploy/k3s/rollback/
+
+# Site-specific deployment values may contain sensitive infrastructure data.
+/deploy/sites/*
+!/deploy/sites/example/
+!/deploy/sites/example/**

@@ -1,0 +1,15 @@
+# Copy this directory to deploy/sites/<site-name>. Real site directories are
+# ignored by Git because they contain infrastructure identifiers.
+image:
+  tag: REPLACE_WITH_RELEASE
+  digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+nads:
+  - identity: oopl-an-001
+    sourceIp: 192.0.2.1
+
+postgres:
+  url: postgresql://tacacs_jit@postgres.example.invalid:5432/tacacs?sslmode=verify-full
+
+service:
+  loadBalancerIP: 192.0.2.2

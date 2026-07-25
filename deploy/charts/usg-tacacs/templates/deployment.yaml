@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "usg-tacacs.name" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "usg-tacacs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "usg-tacacs.selectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tacacs
+          image: {{ include "usg-tacacs.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --listen-legacy
+            - 0.0.0.0:49
+            - --listen-http
+            - 0.0.0.0:8080
+            - --log-format
+            - json
+            - --policy
+            - /etc/usg-tacacs/policy.json
+            - --legacy-nad-secrets-file
+            - /run/secrets/tacacs/legacy-nad-secrets
+            - --audit-hmac-key-file
+            - /run/secrets/tacacs/audit-hmac-key
+            - --api-enabled
+            - --api-listen
+            - 0.0.0.0:8443
+            - --api-tls-cert
+            - /run/tls/api/server.crt
+            - --api-tls-key
+            - /run/tls/api/server.key
+            - --api-client-ca
+            - /run/tls/api/client-ca.crt
+            - --api-rbac-config
+            - /etc/usg-tacacs/rbac.json
+          env:
+            - name: JIT_LEASE_STORE_URL
+              value: {{ .Values.postgres.url | quote }}
+            - name: JIT_LEASE_STORE_PASSWORD_FILE
+              value: /run/secrets/tacacs/postgres-password
+            - name: JIT_LEASE_STORE_CA_FILE
+              value: /run/tls/postgres/ca.crt
+            - name: JIT_LEASE_VERIFIER_KEY_FILE
+              value: /run/secrets/tacacs/verifier-key
+            - name: JIT_MANAGED_NADS
+              value: {{ include "usg-tacacs.managedNads" . | quote }}
+            - name: JIT_LEGACY_NADS
+              value: {{ include "usg-tacacs.legacyNads" . | quote }}
+          ports:
+            - { name: tacacs, containerPort: 49 }
+            - { name: management, containerPort: 8443 }
+            - { name: health, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /ready, port: health }
+          livenessProbe:
+            httpGet: { path: /live, port: health }
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          volumeMounts:
+            - { name: configuration, mountPath: /etc/usg-tacacs, readOnly: true }
+            - { name: runtime-secrets, mountPath: /run/secrets/tacacs, readOnly: true }
+            - { name: api-tls, mountPath: /run/tls/api, readOnly: true }
+            - { name: postgres-ca, mountPath: /run/tls/postgres, readOnly: true }
+            - { name: temporary, mountPath: /tmp }
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "usg-tacacs.name" . }}-configuration
+        - name: runtime-secrets
+          secret:
+            secretName: {{ .Values.secrets.runtime }}
+        - name: api-tls
+          secret:
+            secretName: {{ .Values.secrets.apiTls }}
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.secrets.postgresCa }}
+        - name: temporary
+          emptyDir: {}
