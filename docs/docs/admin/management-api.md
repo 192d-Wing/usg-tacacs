@@ -165,6 +165,10 @@ identify `yaml` or `api` ownership and include a `mutable` flag. YAML-owned
 entries must be changed through the declarative configuration delivery
 workflow, not through NAD mutation endpoints.
 
+The API-owned `/nads` collection accepts `namePrefix`, `limit`, and `offset`.
+The default page size is 100 and the maximum is 200. Follow `nextOffset` until
+it is `null`; do not assume a single request contains every API-owned NAD.
+
 Use `/nads/reconciliation` for monitoring and automation. It reports aggregate
 counts for the current snapshot and returns at most 200 statuses per request.
 The `state`, `limit`, and `offset` query parameters support bounded queries such

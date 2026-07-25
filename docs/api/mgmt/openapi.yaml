@@ -211,6 +211,29 @@ paths:
     get:
       operationId: listNads
       summary: List API-owned network access devices
+      parameters:
+        - name: namePrefix
+          in: query
+          description: Canonical lowercase NAD name prefix.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 253
+            pattern: "^[a-z0-9.-]+$"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
       responses:
         "200":
           description: Active API-owned NADs
@@ -283,6 +306,8 @@ paths:
                 $ref: "#/components/schemas/NadInventory"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/InvalidResource"
         "503":
           $ref: "#/components/responses/StoreUnavailable"
   /nads/reconciliation:
@@ -878,12 +903,16 @@ components:
     NadList:
       type: object
       additionalProperties: false
-      required: [items]
+      required: [items, nextOffset]
       properties:
         items:
           type: array
+          maxItems: 200
           items:
             $ref: "#/components/schemas/Nad"
+        nextOffset:
+          type: [integer, "null"]
+          minimum: 0
     NadInventory:
       type: object
       additionalProperties: false

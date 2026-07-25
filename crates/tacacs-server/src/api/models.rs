@@ -114,10 +114,19 @@ pub struct UpdateNadRequest {
     pub authentication: NadAuthentication,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NadListQuery {
+    pub name_prefix: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NadListResponse {
     pub items: Vec<NadResponse>,
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]

@@ -104,6 +104,11 @@ API resources use a positive `resourceVersion`. Updates and soft deletes require
 overwrite one another. Creates require an idempotency key; only its keyed token
 and request fingerprint are retained.
 
+API-owned collection reads are bounded to 200 records and support canonical
+name-prefix filtering plus limit/offset pagination. The repository fetches only
+one additional row to determine `nextOffset`; it does not materialize the full
+table for a management response.
+
 The database stores an opaque `secretRef`, never a TACACS shared secret.
 Resolution is performed by the approved secret provider. A NAD cannot become
 active until that reference resolves successfully.

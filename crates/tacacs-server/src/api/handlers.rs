@@ -351,8 +351,19 @@ async fn get_jit_openapi() -> impl IntoResponse {
     )
 }
 
-async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
+async fn list_nads(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<NadListQuery>,
+    headers: HeaderMap,
+) -> Response {
     let correlation_id = mutation_correlation(&headers);
+    let Some((limit, offset)) = nad_list_page(&query) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_pagination",
+            correlation_id,
+        );
+    };
     let Some(store) = state.nad_store.as_ref() else {
         return problem(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -360,10 +371,14 @@ async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Re
             correlation_id,
         );
     };
-    match store.list().await {
-        Ok(items) => {
+    match store
+        .list_page(query.name_prefix.as_deref(), limit, offset)
+        .await
+    {
+        Ok(page) => {
             let snapshot = state.runtime_nads.as_ref().map(|value| value.snapshot());
-            let items = items
+            let items = page
+                .items
                 .into_iter()
                 .map(|record| NadResponse {
                     reconciliation: snapshot
@@ -372,10 +387,27 @@ async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Re
                     record,
                 })
                 .collect();
-            (StatusCode::OK, Json(NadListResponse { items })).into_response()
+            let next_offset = page.has_more.then_some(offset + limit);
+            (StatusCode::OK, Json(NadListResponse { items, next_offset })).into_response()
         }
         Err(error) => nad_problem(error, correlation_id),
     }
+}
+
+fn nad_list_page(query: &NadListQuery) -> Option<(usize, usize)> {
+    let limit = query.limit.unwrap_or(100);
+    let offset = query.offset.unwrap_or(0);
+    let valid_prefix = query.name_prefix.as_deref().is_none_or(valid_nad_prefix);
+    (valid_prefix && limit > 0 && limit <= 200 && offset <= 1_000_000).then_some((limit, offset))
+}
+
+fn valid_nad_prefix(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value == value.to_ascii_lowercase()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
 }
 
 async fn list_nad_inventory(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
@@ -1736,6 +1768,34 @@ mod tests {
             reconciliation_status(crate::nad_reconciler::ReconciliationState::SecretUnavailable),
         ];
         assert_eq!(reconciliation_counts(&statuses), [1, 1, 1]);
+    }
+
+    #[test]
+    fn nad_collection_queries_are_bounded_and_prefixes_are_canonical() {
+        assert_eq!(
+            nad_list_page(&NadListQuery {
+                name_prefix: Some("oopl-an-".to_owned()),
+                limit: None,
+                offset: None,
+            }),
+            Some((100, 0))
+        );
+        assert_eq!(
+            nad_list_page(&NadListQuery {
+                name_prefix: Some("OOPL".to_owned()),
+                limit: Some(10),
+                offset: None,
+            }),
+            None
+        );
+        assert_eq!(
+            nad_list_page(&NadListQuery {
+                name_prefix: None,
+                limit: Some(201),
+                offset: None,
+            }),
+            None
+        );
     }
 
     fn reconciliation_status(

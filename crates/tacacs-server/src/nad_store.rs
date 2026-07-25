@@ -89,6 +89,12 @@ pub enum CreateNadOutcome {
     Replay(NadRecord),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NadPage {
+    pub items: Vec<NadRecord>,
+    pub has_more: bool,
+}
+
 #[derive(Clone)]
 pub struct NadStore {
     pool: PgPool,
@@ -109,6 +115,32 @@ impl NadStore {
             .await
             .map_err(map_database_error)?;
         rows.iter().map(decode_nad).collect()
+    }
+
+    pub async fn list_page(
+        &self,
+        name_prefix: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<NadPage, NadStoreError> {
+        let fetch_limit = i64::try_from(limit.saturating_add(1))
+            .map_err(|_| NadStoreError::InvalidInput("invalid_pagination"))?;
+        let offset =
+            i64::try_from(offset).map_err(|_| NadStoreError::InvalidInput("invalid_pagination"))?;
+        let rows = sqlx::query(NAD_SELECT_ACTIVE_PAGE)
+            .bind(name_prefix)
+            .bind(fetch_limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_database_error)?;
+        let has_more = rows.len() > limit;
+        let items = rows
+            .iter()
+            .take(limit)
+            .map(decode_nad)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(NadPage { items, has_more })
     }
 
     pub async fn get(&self, nad_id: Uuid) -> Result<NadRecord, NadStoreError> {
@@ -207,8 +239,18 @@ const NAD_SELECT_ONE: &str = "
            authentication_mode, secret_ref, certificate_identities, ownership,
            resource_version, created_at, created_by, updated_at, updated_by,
            deleted_at, deleted_by
-      FROM tacacs_management.nads
+     FROM tacacs_management.nads
      WHERE nad_id = $1 AND deleted_at IS NULL";
+const NAD_SELECT_ACTIVE_PAGE: &str = "
+    SELECT nad_id, name, description, host(source_address) AS source_address,
+           authentication_mode, secret_ref, certificate_identities, ownership,
+           resource_version, created_at, created_by, updated_at, updated_by,
+           deleted_at, deleted_by
+      FROM tacacs_management.nads
+     WHERE deleted_at IS NULL
+       AND ($1::text IS NULL OR name LIKE $1 || '%')
+     ORDER BY name, nad_id
+     LIMIT $2 OFFSET $3";
 
 fn validate_create(input: &CreateNadInput) -> Result<(), NadStoreError> {
     validate_name(&input.name)?;
