@@ -123,6 +123,31 @@ If no RBAC config is provided, the following default roles are used:
 | `operator` | All read permissions, `write:sessions` |
 | `viewer` | `read:status`, `read:metrics` |
 
+NAD automation should receive only `read:nads` and/or `write:nads` unless it
+also operates other server resources. The wildcard permissions used by the
+default `admin` role include both.
+
+### NAD Management
+
+API-owned NAD desired state is managed through:
+
+| Method | Path | Permission | Concurrency requirement |
+| --- | --- | --- | --- |
+| `GET` | `/api/mgmt/v1/nads` | `read:nads` | none |
+| `GET` | `/api/mgmt/v1/nads/{nadId}` | `read:nads` | none |
+| `POST` | `/api/mgmt/v1/nads` | `write:nads` | `Idempotency-Key` |
+| `PATCH` | `/api/mgmt/v1/nads/{nadId}` | `write:nads` | current `If-Match` ETag |
+| `DELETE` | `/api/mgmt/v1/nads/{nadId}` | `write:nads` | current `If-Match` ETag |
+
+All mutations also require `X-Correlation-ID` containing a UUID. Legacy NAD
+requests contain only an opaque `secretRef`; provision the actual shared secret
+through the deployment's approved secret provider. Neither the secret value nor
+an idempotency key is stored in plaintext.
+
+An accepted NAD record is PostgreSQL desired state. It does not affect a live
+listener until runtime reconciliation validates secret resolution and conflicts
+against the YAML-owned baseline.
+
 ## API Endpoints
 
 ### GET /api/v1/status

@@ -128,6 +128,7 @@ struct AppState {
     /// HMAC-SHA256 key for audit event signing (`None` = disabled).
     audit_hmac_key: Option<Arc<Vec<u8>>>,
     jit_lease_store: Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
+    nad_store: Option<Arc<crate::nad_store::NadStore>>,
     jit_managed_nads: Arc<std::collections::HashSet<String>>,
     jit_legacy_nads: JitLegacyNads,
     legacy_nad_secrets: LegacyNadSecrets,
@@ -727,6 +728,7 @@ fn setup_management_api(
     let api_schema_path = args.schema.clone();
     let api_registry = state.session_registry.clone();
     let jit_lease_store = state.jit_lease_store.clone();
+    let nad_store = state.nad_store.clone();
 
     handles.push(tokio::spawn(async move {
         if let Err(err) = crate::api::serve_api(
@@ -740,6 +742,7 @@ fn setup_management_api(
             api_registry,
             runtime_config,
             jit_lease_store,
+            nad_store,
         )
         .await
         {
@@ -1144,17 +1147,9 @@ async fn build_app_state(
     if jit_lease_store.is_some() && audit_hmac_key.is_none() {
         bail!("JIT lease management requires AUDIT_HMAC_KEY_FILE for signed audit records");
     }
-    let username_limiter = crate::username_limiter::UsernameRateLimiter::new(
-        args.username_lockout_window_secs,
-        args.username_lockout_limit,
-        args.username_lockout_secs,
-    );
-    let ip_limiter = crate::ip_limiter::IpRateLimiter::new(
-        args.ip_lockout_window_secs,
-        args.ip_lockout_limit,
-        args.ip_lockout_secs,
-    );
+    let (username_limiter, ip_limiter) = setup_request_limiters(args);
     let (est_provider, est_config) = setup_est_provider(args).await?;
+    let nad_store = setup_nad_store(&jit_lease_store, &audit_hmac_key)?;
 
     let policy_engine = build_initial_policy(args, &policy_path, declarative_config.as_deref())?;
     Ok(AppState {
@@ -1171,6 +1166,7 @@ async fn build_app_state(
         ip_limiter,
         audit_hmac_key,
         jit_lease_store,
+        nad_store,
         jit_managed_nads,
         jit_legacy_nads,
         legacy_nad_secrets,
@@ -1181,6 +1177,37 @@ async fn build_app_state(
         policy_path,
         declarative_config,
     })
+}
+
+fn setup_request_limiters(
+    args: &Args,
+) -> (
+    Arc<crate::username_limiter::UsernameRateLimiter>,
+    Arc<crate::ip_limiter::IpRateLimiter>,
+) {
+    let username = crate::username_limiter::UsernameRateLimiter::new(
+        args.username_lockout_window_secs,
+        args.username_lockout_limit,
+        args.username_lockout_secs,
+    );
+    let ip = crate::ip_limiter::IpRateLimiter::new(
+        args.ip_lockout_window_secs,
+        args.ip_lockout_limit,
+        args.ip_lockout_secs,
+    );
+    (username, ip)
+}
+
+fn setup_nad_store(
+    jit_store: &Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
+    audit_key: &Option<Arc<Vec<u8>>>,
+) -> Result<Option<Arc<crate::nad_store::NadStore>>> {
+    let (Some(store), Some(key)) = (jit_store, audit_key) else {
+        return Ok(None);
+    };
+    let store = crate::nad_store::NadStore::new(store.pool(), key.clone())
+        .map_err(|error| anyhow::anyhow!("initializing NAD store: {error}"))?;
+    Ok(Some(Arc::new(store)))
 }
 
 fn resolve_policy_path(args: &Args) -> Result<PathBuf> {
@@ -1493,6 +1520,7 @@ mod ip_limiter;
 mod jit_lease;
 mod jit_lease_store;
 mod metrics;
+mod nad_store;
 mod policy;
 mod server;
 mod session;
