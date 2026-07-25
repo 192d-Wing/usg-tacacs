@@ -50,6 +50,12 @@ The version-controlled OpenAPI 3.1.1 contract is
 Both endpoints are protected by mTLS and the `read:config` RBAC permission.
 The contract deliberately excludes JIT lease operations.
 
+Release security gates are tracked in
+[`adversarial-test-matrix.md`](adversarial-test-matrix.md). Deterministic
+authorization, concurrency, reconciliation, and audit failures are automated
+in Rust and PostgreSQL tests. Deployment-only TLS, NetworkPolicy, failover, and
+load cases remain explicit instead of being represented as unit-test coverage.
+
 ## Configuration lifecycle
 
 The desired configuration model is a single, typed YAML server configuration.

@@ -446,4 +446,32 @@ mod tests {
             .insert("admin.example.mil".to_owned(), "admin".to_owned());
         assert_eq!(config.validate(), Err("invalid_certificate_identity"));
     }
+
+    #[test]
+    fn peer_certificate_identity_precedes_test_header_fallback() {
+        let mut config = RbacConfig::default();
+        config
+            .users
+            .insert("cn:admin.example.mil".to_owned(), "admin".to_owned());
+        let middleware = RbacMiddleware::new(config, "read:status");
+        let mut request = Request::new(Body::empty());
+        request.headers_mut().insert(
+            "X-User-CN",
+            HeaderValue::from_static("cn:admin.example.mil"),
+        );
+        request.extensions_mut().insert(TlsPeerIdentity {
+            candidates: vec!["cn:untrusted.example.mil".to_owned()],
+        });
+        assert_eq!(middleware.extract_user_identity(&request), "anonymous");
+    }
+
+    #[test]
+    fn rbac_validation_rejects_broad_or_malformed_wildcards() {
+        let mut config = RbacConfig::default();
+        config.roles.insert(
+            "bad".to_owned(),
+            vec!["read:status*".to_owned(), "admin".to_owned()],
+        );
+        assert_eq!(config.validate(), Err("invalid_rbac_permission"));
+    }
 }
