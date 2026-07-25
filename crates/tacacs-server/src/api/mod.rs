@@ -256,6 +256,132 @@ fn require_mtls_acceptor(acceptor: Option<TlsAcceptor>) -> anyhow::Result<TlsAcc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Router, routing::get};
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+        KeyUsagePurpose,
+    };
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
+    use rustls::{ClientConfig, RootCertStore, ServerConfig};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use tokio_rustls::TlsConnector;
+
+    struct TestPki {
+        ca: CertificateDer<'static>,
+        server: CertificateDer<'static>,
+        server_key: Vec<u8>,
+        client: CertificateDer<'static>,
+        client_key: Vec<u8>,
+    }
+
+    fn signed_leaf(
+        name: &str,
+        usage: ExtendedKeyUsagePurpose,
+        issuer: &Issuer<'_, KeyPair>,
+    ) -> (CertificateDer<'static>, Vec<u8>) {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec![name.to_owned()]).unwrap();
+        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        params.extended_key_usages.push(usage);
+        let cert = params.signed_by(&key, issuer).unwrap();
+        (cert.der().clone(), key.serialize_der())
+    }
+
+    fn test_pki() -> TestPki {
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages.extend([
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ]);
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = Issuer::new(ca_params, ca_key);
+        let (server, server_key) =
+            signed_leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth, &issuer);
+        let (client, client_key) = signed_leaf(
+            "admin.example.mil",
+            ExtendedKeyUsagePurpose::ClientAuth,
+            &issuer,
+        );
+        TestPki {
+            ca: ca.der().clone(),
+            server,
+            server_key,
+            client,
+            client_key,
+        }
+    }
+
+    fn server_acceptor(pki: &TestPki) -> TlsAcceptor {
+        let mut roots = RootCertStore::empty();
+        roots.add(pki.ca.clone()).unwrap();
+        let verifier = rustls::server::WebPkiClientVerifier::builder(roots.into())
+            .build()
+            .unwrap();
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pki.server_key.clone()));
+        let config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(vec![pki.server.clone()], key)
+            .unwrap();
+        TlsAcceptor::from(Arc::new(config))
+    }
+
+    fn client_connector(pki: &TestPki, authenticate: bool, tls13: bool) -> TlsConnector {
+        let mut roots = RootCertStore::empty();
+        roots.add(pki.ca.clone()).unwrap();
+        let versions = if tls13 {
+            &[&rustls::version::TLS13][..]
+        } else {
+            &[&rustls::version::TLS12][..]
+        };
+        let builder =
+            ClientConfig::builder_with_protocol_versions(versions).with_root_certificates(roots);
+        let config = if authenticate {
+            let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pki.client_key.clone()));
+            builder
+                .with_client_auth_cert(vec![pki.client.clone()], key)
+                .unwrap()
+        } else {
+            builder.with_no_client_auth()
+        };
+        TlsConnector::from(Arc::new(config))
+    }
+
+    async fn run_one_connection(acceptor: TlsAcceptor) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            let app = Router::new().route("/probe", get(|| async { "ok" }));
+            handle_tls_connection(stream, peer, acceptor, app).await;
+        });
+        address
+    }
+
+    async fn connect(
+        address: SocketAddr,
+        connector: TlsConnector,
+    ) -> anyhow::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+        let stream = TcpStream::connect(address).await?;
+        let name = ServerName::try_from("localhost")?;
+        Ok(connector.connect(name, stream).await?)
+    }
+
+    async fn assert_connection_rejected(address: SocketAddr, connector: TlsConnector) {
+        let Ok(mut stream) = connect(address, connector).await else {
+            return;
+        };
+        let request = b"GET /probe HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        if stream.write_all(request).await.is_err() {
+            return;
+        }
+        let mut response = Vec::new();
+        let read_result = stream.read_to_end(&mut response).await;
+        assert!(read_result.is_err() || response.is_empty());
+    }
 
     #[test]
     fn certificate_candidates_are_typed_and_dns_is_canonical() {
@@ -275,5 +401,29 @@ mod tests {
     fn plaintext_management_listener_is_rejected() {
         let result = require_mtls_acceptor(None);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn management_socket_requires_mtls_and_tls13() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let pki = test_pki();
+
+        let address = run_one_connection(server_acceptor(&pki)).await;
+        let mut stream = connect(address, client_connector(&pki, true, true))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /probe HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+
+        let address = run_one_connection(server_acceptor(&pki)).await;
+        assert_connection_rejected(address, client_connector(&pki, false, true)).await;
+
+        let address = run_one_connection(server_acceptor(&pki)).await;
+        assert_connection_rejected(address, client_connector(&pki, true, false)).await;
     }
 }
