@@ -6,9 +6,16 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
+configuration:
+  description: Site TACACS service
+  # Enable after all referenced Secret keys are present in the mounted volumes.
+  checkFiles: false
+
 nads:
   - identity: oopl-an-001
     sourceIp: 192.0.2.1
+    description: IOS-XE lab switch
+    secretFile: /run/secrets/tacacs/oopl-an-001
 
 postgres:
   url: postgresql://tacacs_jit@REPLACE_POSTGRES_HOST:5432/tacacs?sslmode=verify-full
@@ -24,6 +31,8 @@ service:
   annotations: {}
 
 management:
+  adminCommonNames:
+    - tacacs-admin.example.mil
   issuerCommonName: jitpw-api.jitpw-system.svc
   auditorCommonName: jitpw-audit.jitpw-system.svc
 

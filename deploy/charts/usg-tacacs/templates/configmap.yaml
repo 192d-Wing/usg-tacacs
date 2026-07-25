@@ -5,33 +5,63 @@ metadata:
   labels:
     {{- include "usg-tacacs.labels" . | nindent 4 }}
 data:
-  policy.json: |
-    {
-      "default_allow": false,
-      "shell_start": {},
-      "shell_start_groups": {
-        {{- range $index, $group := .Values.authorization.privilegedGroups }}
-        {{ $group | quote }}: ["priv-lvl=15"]{{ if lt (add1 $index) (len $.Values.authorization.privilegedGroups) }},{{ end }}
+  server.yaml: |
+    apiVersion: tacacs.usg.mil/v1alpha1
+    kind: TacacsServer
+    metadata:
+      name: {{ include "usg-tacacs.name" . | quote }}
+      description: {{ .Values.configuration.description | quote }}
+    spec:
+      listeners:
+        legacy: "0.0.0.0:49"
+        health: "0.0.0.0:8080"
+      nads:
+        {{- range .Values.nads }}
+        - name: {{ .identity | quote }}
+          description: {{ .description | default "" | quote }}
+          sourceAddress: {{ .sourceIp | quote }}
+          mode: legacy
+          secretFile: {{ .secretFile | quote }}
         {{- end }}
-      },
-      "rules": [
-        {
-          "id": "allow-privileged-groups",
-          "priority": 10,
-          "effect": "allow",
-          "groups": {{ .Values.authorization.privilegedGroups | toJson }},
-          "pattern": ".*"
-        }
-      ]
-    }
-  rbac.json: |
-    {
-      "roles": {
-        "jitpw-issuer": ["write:jit-leases"],
-        "jitpw-auditor": ["read:jit-leases"]
-      },
-      "users": {
-        {{ .Values.management.issuerCommonName | quote }}: "jitpw-issuer",
-        {{ .Values.management.auditorCommonName | quote }}: "jitpw-auditor"
-      }
-    }
+      authorization:
+        defaultAllow: false
+        rules:
+          - id: allow-privileged-groups
+            priority: 10
+            effect: allow
+            groups:
+              {{- toYaml .Values.authorization.privilegedGroups | nindent 14 }}
+            command: ".*"
+      management:
+        listener:
+          address: "0.0.0.0:8443"
+          certificateFile: /run/tls/api/server.crt
+          privateKeyFile: /run/tls/api/server.key
+          clientCaFile: /run/tls/api/client-ca.crt
+          minimumVersion: "1.3"
+        rbac:
+          roles:
+            admin:
+              description: Full TACACS management access
+              permissions: ["read:*", "write:*"]
+            jitpw-issuer:
+              permissions: ["write:jit-leases"]
+            jitpw-auditor:
+              permissions: ["read:jit-leases"]
+          subjects:
+            {{- range .Values.management.adminCommonNames }}
+            - certificateIdentity: {{ . | quote }}
+              role: admin
+            {{- end }}
+            - certificateIdentity: {{ .Values.management.issuerCommonName | quote }}
+              role: jitpw-issuer
+            - certificateIdentity: {{ .Values.management.auditorCommonName | quote }}
+              role: jitpw-auditor
+      audit:
+        hmacKeyFile: /run/secrets/tacacs/audit-hmac-key
+      jit:
+        storeUrl: {{ .Values.postgres.url | quote }}
+        storePasswordFile: /run/secrets/tacacs/postgres-password
+        storeCaFile: /run/tls/postgres/ca.crt
+        verifierKeyFile: /run/secrets/tacacs/verifier-key
+        maximumTtlSeconds: 900

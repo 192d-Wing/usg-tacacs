@@ -9,6 +9,7 @@ members = [
   "crates/tacacs-client-tls",
   "crates/tacacs-openssh",
   "crates/tacacs-audit",
+  "crates/tacacs-config",
 ]
 exclude = ["crates/tacacs-proto/fuzz"]
 
@@ -22,6 +23,7 @@ license = "Apache-2.0"
 usg-tacacs-proto = { path = "crates/tacacs-proto" }
 usg-tacacs-policy = { path = "crates/tacacs-policy" }
 usg-tacacs-secrets = { path = "crates/tacacs-secrets" }
+usg-tacacs-config = { path = "crates/tacacs-config" }
 usg-tacacs-client-tls = { path = "crates/tacacs-client-tls" }
 usg-tacacs-openssh = { path = "crates/tacacs-openssh" }
 usg-tacacs-audit = { path = "crates/tacacs-audit" }
@@ -36,6 +38,7 @@ thiserror = "2"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+yaml_serde = "0.10.4"
 
 # Logging/tracing
 tracing = "0.1"

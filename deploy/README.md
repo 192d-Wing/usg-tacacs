@@ -11,3 +11,23 @@ chart.
 
 The existing k3s manifests remain reference baselines while their workloads
 are migrated into Helm charts.
+
+## Typed server configuration
+
+The `usg-tacacs` chart renders the declarative configuration to
+`/etc/usg-tacacs/server.yaml`. A non-root init container runs
+`usg-tacacs-config-check` before the server container starts. Invalid syntax,
+unknown top-level fields, duplicate NADs or rules, invalid RBAC bindings,
+non-TLS-1.3 management settings, and JIT lease durations over 15 minutes cause
+the Pod to remain in the init phase.
+
+Set `configuration.checkFiles=true` after the referenced Kubernetes Secret keys
+and certificate files are mounted. This additionally verifies that every file
+reference exists. Keep it disabled only while initially provisioning those
+Secrets.
+
+The server consumes `server.yaml` directly. Each legacy NAD `secretFile` must
+refer to a file containing only that NAD's TACACS shared secret; do not point it
+at the former aggregate `IP=secret` file. JIT store settings, authorization, and
+management RBAC are no longer supplied through separate environment variables
+or JSON files when `--config` is used.

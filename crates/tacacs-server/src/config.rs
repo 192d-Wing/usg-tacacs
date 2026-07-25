@@ -88,6 +88,14 @@ pub enum LogFormat {
 #[derive(Parser, Debug)]
 #[command(name = "usg-tacacs", version, about = "Rust TACACS+ server")]
 pub struct Args {
+    /// Authoritative typed YAML server configuration.
+    #[arg(long, conflicts_with = "check_config")]
+    pub config: Option<PathBuf>,
+
+    /// Validate a typed YAML server configuration and exit.
+    #[arg(long, value_name = "CONFIG")]
+    pub check_config: Option<PathBuf>,
+
     /// Validate a policy file and exit.
     #[arg(long)]
     pub check_policy: Option<PathBuf>,
@@ -1299,6 +1307,8 @@ mod tests {
     #[test]
     fn credentials_map_empty_allowed() {
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -1424,6 +1434,8 @@ mod tests {
     #[test]
     fn credentials_map_inline_passwords() {
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -1553,6 +1565,8 @@ mod tests {
     #[test]
     fn credentials_map_disabled_without_flag() {
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -1679,6 +1693,8 @@ mod tests {
         writeln!(file, "user:pass").unwrap();
 
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -1806,6 +1822,8 @@ mod tests {
         writeln!(file, "operator:operpass").unwrap();
 
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -1932,6 +1950,8 @@ mod tests {
     #[test]
     fn credentials_map_argon_inline() {
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -2162,6 +2182,8 @@ mod tests {
         writeln!(file, "file-based-secret").unwrap();
 
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -2285,6 +2307,8 @@ mod tests {
     #[test]
     fn resolve_tacacs_secret_from_cli() {
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -2408,6 +2432,8 @@ mod tests {
     #[test]
     fn resolve_tacacs_secret_none() {
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,
@@ -2536,6 +2562,8 @@ mod tests {
         writeln!(file, "ldap-file-password").unwrap();
 
         let args = Args {
+            config: None,
+            check_config: None,
             check_policy: None,
             schema: None,
             policy: None,

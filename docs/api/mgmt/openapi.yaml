@@ -1,0 +1,132 @@
+openapi: 3.1.1
+info:
+  title: USG TACACS Management API
+  version: 1.0.0
+  description: Administrative API for operating a USG TACACS server. This contract does not expose JIT password lease operations.
+servers:
+  - url: https://tacacs.example.mil:8443/api/mgmt/v1
+security:
+  - mutualTLS: []
+paths:
+  /status:
+    get:
+      operationId: getStatus
+      summary: Get server status
+      responses:
+        "200":
+          description: Server status
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /sessions:
+    get:
+      operationId: listSessions
+      summary: List active TACACS sessions
+      responses:
+        "200":
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteSession
+      summary: Terminate an active TACACS session
+      responses:
+        "204":
+          description: Session terminated
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Session not found
+  /policy:
+    get:
+      operationId: getPolicy
+      summary: Get the active authorization policy
+      responses:
+        "200":
+          description: Active policy
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: replacePolicy
+      summary: Validate and replace the authorization policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Policy replaced
+        "400":
+          description: Invalid policy
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /policy/reload:
+    post:
+      operationId: reloadPolicy
+      summary: Reload the policy from its configured source
+      responses:
+        "202":
+          description: Reload requested
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /config:
+    get:
+      operationId: getRuntimeConfig
+      summary: Get the redacted runtime configuration
+      responses:
+        "200":
+          description: Redacted configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Get Prometheus metrics
+      responses:
+        "200":
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema:
+                type: string
+        "403":
+          $ref: "#/components/responses/Forbidden"
+components:
+  securitySchemes:
+    mutualTLS:
+      type: mutualTLS
+      description: Client certificate identity is mapped to an RBAC subject.
+  responses:
+    Forbidden:
+      description: The authenticated client lacks the required permission.
