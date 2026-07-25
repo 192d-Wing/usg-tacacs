@@ -2119,12 +2119,13 @@ mod tests {
     fn resolve_legacy_nad_secrets_reads_protected_file() {
         use std::io::Write;
 
+        const TEST_SECRET_LEN: usize = 32;
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(
             file,
             "# one secret per NAD\n192.0.2.10:{}\n[2001:db8::10]:{}",
-            "a".repeat(MIN_SECRET_LEN),
-            "b".repeat(MIN_SECRET_LEN)
+            "a".repeat(TEST_SECRET_LEN),
+            "b".repeat(TEST_SECRET_LEN)
         )
         .unwrap();
         let mut args = Args::try_parse_from(["usg-tacacs"]).unwrap();
@@ -2140,13 +2141,14 @@ mod tests {
     fn resolve_legacy_nad_secrets_rejects_normalized_duplicate() {
         use std::io::Write;
 
+        const TEST_SECRET_LEN: usize = 32;
         let mut file = tempfile::NamedTempFile::new().unwrap();
-        writeln!(file, "192.0.2.10:{}", "a".repeat(MIN_SECRET_LEN)).unwrap();
+        writeln!(file, "192.0.2.10:{}", "a".repeat(TEST_SECRET_LEN)).unwrap();
         let mut args = Args::try_parse_from(["usg-tacacs"]).unwrap();
         args.legacy_nad_secrets_file = Some(file.path().to_path_buf());
         args.legacy_nad_secret = vec![(
             "::ffff:192.0.2.10".parse().unwrap(),
-            "b".repeat(MIN_SECRET_LEN),
+            "b".repeat(TEST_SECRET_LEN),
         )];
 
         assert!(resolve_legacy_nad_secrets(&args).is_err());
