@@ -438,6 +438,26 @@ components:
               format: date-time
             deletedBy:
               type: [string, "null"]
+            reconciliation:
+              oneOf:
+                - $ref: "#/components/schemas/NadReconciliation"
+                - type: "null"
+    NadReconciliation:
+      type: object
+      additionalProperties: false
+      required: [nadId, resourceVersion, state, reason]
+      properties:
+        nadId:
+          type: string
+          format: uuid
+        resourceVersion:
+          type: integer
+          minimum: 1
+        state:
+          type: string
+          enum: [active, conflict, secretUnavailable]
+        reason:
+          type: [string, "null"]
     NadList:
       type: object
       additionalProperties: false

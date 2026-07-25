@@ -144,9 +144,11 @@ requests contain only an opaque `secretRef`; provision the actual shared secret
 through the deployment's approved secret provider. Neither the secret value nor
 an idempotency key is stored in plaintext.
 
-An accepted NAD record is PostgreSQL desired state. It does not affect a live
-listener until runtime reconciliation validates secret resolution and conflicts
-against the YAML-owned baseline.
+An accepted NAD record becomes active only after runtime reconciliation
+validates secret resolution and conflicts against the YAML-owned baseline.
+Successful mutations trigger immediate reconciliation; each replica also
+refreshes periodically to observe peer updates and mounted-secret rotation.
+New TACACS connections use the latest atomically published snapshot.
 
 ## API Endpoints
 
