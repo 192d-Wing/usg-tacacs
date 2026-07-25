@@ -22,6 +22,27 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: validate-configuration
+          image: {{ include "usg-tacacs.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/usg-tacacs-config-check
+          args:
+            - /etc/usg-tacacs/server.yaml
+            {{- if .Values.configuration.checkFiles }}
+            - --check-files
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - { name: configuration, mountPath: /etc/usg-tacacs, readOnly: true }
+            - { name: runtime-secrets, mountPath: /run/secrets/tacacs, readOnly: true }
+            - { name: api-tls, mountPath: /run/tls/api, readOnly: true }
+            - { name: postgres-ca, mountPath: /run/tls/postgres, readOnly: true }
       containers:
         - name: tacacs
           image: {{ include "usg-tacacs.image" . | quote }}

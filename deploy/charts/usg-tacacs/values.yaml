@@ -6,6 +6,11 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
+configuration:
+  description: Site TACACS service
+  # Enable after all referenced Secret keys are present in the mounted volumes.
+  checkFiles: false
+
 nads:
   - identity: oopl-an-001
     sourceIp: 192.0.2.1
@@ -24,6 +29,8 @@ service:
   annotations: {}
 
 management:
+  adminCommonNames:
+    - tacacs-admin.example.mil
   issuerCommonName: jitpw-api.jitpw-system.svc
   auditorCommonName: jitpw-audit.jitpw-system.svc
 
