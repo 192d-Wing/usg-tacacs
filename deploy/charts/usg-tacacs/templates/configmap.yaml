@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "usg-tacacs.name" . }}-configuration
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+data:
+  policy.json: |
+    {
+      "default_allow": false,
+      "shell_start": {},
+      "shell_start_groups": {
+        {{- range $index, $group := .Values.authorization.privilegedGroups }}
+        {{ $group | quote }}: ["priv-lvl=15"]{{ if lt (add1 $index) (len $.Values.authorization.privilegedGroups) }},{{ end }}
+        {{- end }}
+      },
+      "rules": [
+        {
+          "id": "allow-privileged-groups",
+          "priority": 10,
+          "effect": "allow",
+          "groups": {{ .Values.authorization.privilegedGroups | toJson }},
+          "pattern": ".*"
+        }
+      ]
+    }
+  rbac.json: |
+    {
+      "roles": {
+        "jitpw-issuer": ["write:jit-leases"],
+        "jitpw-auditor": ["read:jit-leases"]
+      },
+      "users": {
+        {{ .Values.management.issuerCommonName | quote }}: "jitpw-issuer",
+        {{ .Values.management.auditorCommonName | quote }}: "jitpw-auditor"
+      }
+    }

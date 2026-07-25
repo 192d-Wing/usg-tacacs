@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "usg-tacacs.name" . }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  externalTrafficPolicy: Local
+  {{- with .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  selector:
+    {{- include "usg-tacacs.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: tacacs, port: 49, targetPort: tacacs }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "usg-tacacs.name" . }}-management
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "usg-tacacs.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: https, port: 8443, targetPort: management }

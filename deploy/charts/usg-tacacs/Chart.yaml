@@ -1,0 +1,6 @@
+apiVersion: v2
+name: usg-tacacs
+description: JITPW-managed USG TACACS deployment
+type: application
+version: 0.1.0
+appVersion: "0.81.13"
