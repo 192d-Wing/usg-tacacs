@@ -4951,6 +4951,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "usg-tacacs-client-tls",
+ "usg-tacacs-config",
  "usg-tacacs-policy",
  "usg-tacacs-proto",
  "usg-tacacs-secrets",

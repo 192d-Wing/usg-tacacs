@@ -22,6 +22,7 @@ x509-cert = { version = "0.2", features = ["pem"] }
 usg-tacacs-policy.workspace = true
 usg-tacacs-proto.workspace = true
 usg-tacacs-secrets.workspace = true
+usg-tacacs-config.workspace = true
 openssl.workspace = true
 hex.workspace = true
 ldap3.workspace = true

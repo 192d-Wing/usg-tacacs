@@ -93,6 +93,8 @@ pub struct RuntimeConfig {
     pub ldap_enabled: bool,
     /// Policy file path
     pub policy_source: String,
+    /// True when policy is owned by the typed YAML server configuration.
+    pub declarative_config: bool,
 }
 
 /// Shared state for API handlers.
@@ -884,6 +886,15 @@ async fn upload_policy(
     Json(payload): Json<PolicyUploadRequest>,
 ) -> impl IntoResponse {
     info!(validate = payload.validate, "API request to upload policy");
+    if state.config.declarative_config {
+        let response = PolicyUploadResponse {
+            success: false,
+            message: "Policy upload is disabled while authoritative YAML configuration is active"
+                .to_string(),
+            rule_count: None,
+        };
+        return (StatusCode::CONFLICT, Json(response));
+    }
 
     let policy_doc: Result<usg_tacacs_policy::PolicyDocument, _> =
         serde_json::from_str(&payload.policy);
@@ -1009,6 +1020,7 @@ mod tests {
             tls_enabled: false,
             ldap_enabled: false,
             policy_source: "test-policy.json".to_string(),
+            declarative_config: false,
         }
     }
 

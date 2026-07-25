@@ -100,6 +100,9 @@ use tracing::{error, info, warn};
 use tracing_subscriber::fmt::time::UtcTime;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use usg_tacacs_config::{
+    NadAuthentication, RuleEffect as DeclarativeRuleEffect, ServerConfiguration,
+};
 use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::MIN_SECRET_LEN;
 use usg_tacacs_secrets::SecretsProvider;
@@ -133,6 +136,7 @@ struct AppState {
     est_provider: Option<Arc<usg_tacacs_secrets::EstProvider>>,
     est_config: Option<usg_tacacs_secrets::EstConfig>,
     policy_path: PathBuf,
+    declarative_config: Option<Arc<ServerConfiguration>>,
 }
 
 // ============================================================================
@@ -197,6 +201,12 @@ fn init_tracing(args: &Args) -> Result<bool> {
 
 /// Handle --check-policy CLI mode. Returns Ok(true) if validation was performed.
 fn handle_check_policy_mode(args: &Args) -> Result<bool> {
+    if let Some(config_path) = args.check_config.as_ref() {
+        let config = ServerConfiguration::from_path(config_path)?;
+        config.validate(false)?;
+        println!("configuration validated: {}", config_path.display());
+        return Ok(true);
+    }
     if let Some(policy_path) = args.check_policy.as_ref() {
         let schema = args
             .schema
@@ -207,6 +217,73 @@ fn handle_check_policy_mode(args: &Args) -> Result<bool> {
         return Ok(true);
     }
     Ok(false)
+}
+
+fn apply_declarative_config(args: &mut Args, config: &ServerConfiguration) -> Result<()> {
+    config.validate(true)?;
+    args.listen_legacy = config.spec.listeners.legacy;
+    args.listen_http = Some(config.spec.listeners.health);
+    if let Some(tls) = &config.spec.listeners.tls {
+        args.listen_tls = Some(tls.address);
+        args.tls_cert = Some(tls.certificate_file.clone());
+        args.tls_key = Some(tls.private_key_file.clone());
+        args.client_ca = Some(tls.client_ca_file.clone());
+    }
+    args.api_enabled = true;
+    args.api_listen = Some(config.spec.management.listener.address);
+    args.api_tls_cert = Some(config.spec.management.listener.certificate_file.clone());
+    args.api_tls_key = Some(config.spec.management.listener.private_key_file.clone());
+    args.api_client_ca = Some(config.spec.management.listener.client_ca_file.clone());
+    args.audit_hmac_key_file = Some(config.spec.audit.hmac_key_file.clone());
+    args.legacy_nad_secret.clear();
+    args.legacy_nad_secrets_file = None;
+    args.tls_allowed_client_cn.clear();
+    for nad in &config.spec.nads {
+        match &nad.authentication {
+            NadAuthentication::Legacy { secret_file } => {
+                let secret = read_secret_file(secret_file)
+                    .with_context(|| format!("reading secret for declarative NAD {}", nad.name))?;
+                args.legacy_nad_secret.push((nad.source_address, secret));
+            }
+            NadAuthentication::Tls {
+                certificate_identities,
+            } => args
+                .tls_allowed_client_cn
+                .extend(certificate_identities.iter().cloned()),
+        }
+    }
+    Ok(())
+}
+
+fn declarative_policy(config: &ServerConfiguration) -> Result<PolicyEngine> {
+    let rules: Vec<serde_json::Value> = config
+        .spec
+        .authorization
+        .rules
+        .iter()
+        .map(|rule| {
+            let effect = match rule.effect {
+                DeclarativeRuleEffect::Allow => "allow",
+                DeclarativeRuleEffect::Deny => "deny",
+            };
+            serde_json::json!({
+                "id": rule.id,
+                "priority": rule.priority,
+                "effect": effect,
+                "pattern": rule.command.as_deref().unwrap_or(".*"),
+                "users": rule.users,
+                "groups": rule.groups,
+                "nad_groups": rule.nad_groups,
+                "schedule": null
+            })
+        })
+        .collect();
+    let document = serde_json::from_value(serde_json::json!({
+        "default_allow": config.spec.authorization.default_allow,
+        "rules": rules
+    }))
+    .context("converting declarative authorization policy")?;
+    PolicyEngine::from_document(document)
 }
 
 /// Validate secrets and build LDAP configuration.
@@ -630,7 +707,7 @@ fn setup_management_api(
     let api_addr = args
         .api_listen
         .context("--api-listen is required when --api-enabled is set")?;
-    let rbac_config = load_rbac_config(args)?;
+    let rbac_config = load_rbac_config(args, state.declarative_config.as_deref())?;
     let api_tls_acceptor = build_api_tls_acceptor(args)?;
     if state.jit_lease_store.is_some() && api_tls_acceptor.is_none() {
         bail!("JIT lease management requires TLS 1.3 mutual authentication");
@@ -642,6 +719,7 @@ fn setup_management_api(
         tls_enabled: args.listen_tls.is_some(),
         ldap_enabled: state.ldap_config.is_some(),
         policy_source: state.policy_path.display().to_string(),
+        declarative_config: state.declarative_config.is_some(),
     };
 
     let api_policy = state.shared_policy.clone();
@@ -672,8 +750,29 @@ fn setup_management_api(
 }
 
 /// Load RBAC configuration from file or use defaults.
-fn load_rbac_config(args: &Args) -> Result<crate::api::RbacConfig> {
-    if let Some(rbac_path) = args.api_rbac_config.as_ref() {
+fn load_rbac_config(
+    args: &Args,
+    declarative: Option<&ServerConfiguration>,
+) -> Result<crate::api::RbacConfig> {
+    if let Some(config) = declarative {
+        let roles = config
+            .spec
+            .management
+            .rbac
+            .roles
+            .iter()
+            .map(|(name, role)| (name.clone(), role.permissions.clone()))
+            .collect();
+        let users = config
+            .spec
+            .management
+            .rbac
+            .subjects
+            .iter()
+            .map(|subject| (subject.certificate_identity.clone(), subject.role.clone()))
+            .collect();
+        Ok(crate::api::RbacConfig { roles, users })
+    } else if let Some(rbac_path) = args.api_rbac_config.as_ref() {
         let rbac_json = std::fs::read_to_string(rbac_path)
             .with_context(|| format!("failed to read RBAC config from {}", rbac_path.display()))?;
         serde_json::from_str(&rbac_json)
@@ -726,11 +825,17 @@ fn setup_policy_watcher_and_shutdown(
     handles: &mut Vec<JoinHandle<()>>,
 ) {
     let policy = state.shared_policy.clone();
-    let schema_path = args.schema.clone();
     let policy_path = state.policy_path.clone();
-    handles.push(tokio::spawn(async move {
-        watch_policy_changes(policy_path, schema_path, policy, reload_rx).await;
-    }));
+    if state.declarative_config.is_some() {
+        handles.push(tokio::spawn(async move {
+            watch_declarative_policy(policy_path, policy, reload_rx).await;
+        }));
+    } else {
+        let schema_path = args.schema.clone();
+        handles.push(tokio::spawn(async move {
+            watch_policy_changes(policy_path, schema_path, policy, reload_rx).await;
+        }));
+    }
 
     let shutdown_state = server_state.clone();
     let drain_timeout = args.shutdown_drain_timeout_secs;
@@ -738,6 +843,71 @@ fn setup_policy_watcher_and_shutdown(
     tokio::spawn(async move {
         handle_graceful_shutdown(shutdown_state, drain_timeout, force_timeout).await;
     });
+}
+
+async fn watch_declarative_policy(
+    config_path: PathBuf,
+    policy: Arc<RwLock<PolicyEngine>>,
+    mut reload_rx: mpsc::Receiver<PolicyReloadRequest>,
+) {
+    let Ok(mut sighup) = signal(SignalKind::hangup()) else {
+        warn!("failed to install SIGHUP handler for declarative configuration");
+        while let Some(request) = reload_rx.recv().await {
+            handle_declarative_reload(&config_path, &policy, &request).await;
+        }
+        return;
+    };
+    loop {
+        tokio::select! {
+            signal = sighup.recv() => {
+                if signal.is_none() {
+                    return;
+                }
+                let request = PolicyReloadRequest::FromDisk {
+                    path: config_path.clone(),
+                    schema: None,
+                };
+                handle_declarative_reload(&config_path, &policy, &request).await;
+            }
+            request = reload_rx.recv() => {
+                let Some(request) = request else {
+                    return;
+                };
+                handle_declarative_reload(&config_path, &policy, &request).await;
+            }
+        }
+    }
+}
+
+async fn handle_declarative_reload(
+    config_path: &PathBuf,
+    policy: &Arc<RwLock<PolicyEngine>>,
+    request: &PolicyReloadRequest,
+) {
+    if matches!(request, PolicyReloadRequest::FromJson { .. }) {
+        warn!("policy JSON upload rejected while authoritative YAML configuration is active");
+        return;
+    }
+    let result = ServerConfiguration::from_path(config_path).and_then(|config| {
+        config.validate(true)?;
+        declarative_policy(&config)
+    });
+    match result {
+        Ok(engine) => {
+            *policy.write().await = engine;
+            info!(
+                config = %config_path.display(),
+                "authorization policy reloaded from declarative configuration"
+            );
+        }
+        Err(error) => {
+            error!(
+                config = %config_path.display(),
+                error = %error,
+                "declarative policy reload rejected; retaining previous policy"
+            );
+        }
+    }
 }
 
 /// Handle SIGTERM for graceful shutdown.
@@ -951,24 +1121,32 @@ async fn setup_group_cache(args: &Args) -> Result<()> {
 }
 
 /// Build application state from parsed arguments.
-async fn build_app_state(args: &Args) -> Result<AppState> {
-    let policy_path = args
-        .policy
-        .as_ref()
-        .context("a --policy path is required to start the server")?
-        .clone();
+async fn build_app_state(
+    args: &Args,
+    declarative_config: Option<Arc<ServerConfiguration>>,
+) -> Result<AppState> {
+    let policy_path = if let Some(path) = args.config.as_ref() {
+        path.clone()
+    } else {
+        args.policy
+            .as_ref()
+            .context("a --policy path or --config is required to start the server")?
+            .clone()
+    };
     let legacy_nad_secret_entries = resolve_legacy_nad_secrets(args).map_err(anyhow::Error::msg)?;
     let ldap_config = validate_secrets_and_build_ldap(args, &legacy_nad_secret_entries)?;
     let icam_config = build_icam_config(args)?;
     let device_flow_config = build_device_flow_config(args, icam_config.as_deref())?;
     let audit_hmac_key = resolve_audit_hmac_key(args).map_err(anyhow::Error::msg)?;
     setup_group_cache(args).await?;
-    let jit_lease_store = setup_jit_lease_store(args).await?;
-    let jit_managed_nads = resolve_jit_managed_nads(jit_lease_store.is_some())?;
+    let jit_lease_store = setup_jit_lease_store(args, declarative_config.as_deref()).await?;
+    let jit_managed_nads =
+        resolve_jit_managed_nads(jit_lease_store.is_some(), declarative_config.as_deref())?;
     let (legacy_nad_secrets, jit_legacy_nads) = build_jit_legacy_config(
         &legacy_nad_secret_entries,
         jit_lease_store.is_some(),
         jit_managed_nads.as_ref(),
+        declarative_config.as_deref(),
     )?;
     if jit_lease_store.is_some() && audit_hmac_key.is_none() {
         bail!("JIT lease management requires AUDIT_HMAC_KEY_FILE for signed audit records");
@@ -985,11 +1163,13 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
     );
     let (est_provider, est_config) = setup_est_provider(args).await?;
 
+    let policy_engine = if let Some(config) = declarative_config.as_deref() {
+        declarative_policy(config)?
+    } else {
+        PolicyEngine::from_path(&policy_path, args.schema.as_ref())?
+    };
     Ok(AppState {
-        shared_policy: Arc::new(RwLock::new(PolicyEngine::from_path(
-            &policy_path,
-            args.schema.as_ref(),
-        )?)),
+        shared_policy: Arc::new(RwLock::new(policy_engine)),
         shared_secret: args
             .secret
             .as_ref()
@@ -1010,6 +1190,7 @@ async fn build_app_state(args: &Args) -> Result<AppState> {
         est_provider,
         est_config,
         policy_path,
+        declarative_config,
     })
 }
 
@@ -1017,6 +1198,7 @@ fn build_jit_legacy_config(
     legacy_nad_secret_entries: &[(std::net::IpAddr, String)],
     enabled: bool,
     managed_nads: &std::collections::HashSet<String>,
+    declarative: Option<&ServerConfiguration>,
 ) -> Result<(LegacyNadSecrets, JitLegacyNads)> {
     let legacy_nad_secrets: LegacyNadSecrets = Arc::new(
         legacy_nad_secret_entries
@@ -1024,16 +1206,33 @@ fn build_jit_legacy_config(
             .map(|(ip, secret)| (normalize_ip(*ip), Arc::new(secret.clone().into_bytes())))
             .collect(),
     );
-    let jit_legacy_nads =
-        resolve_jit_legacy_nads(enabled, managed_nads, legacy_nad_secrets.as_ref())?;
+    let jit_legacy_nads = resolve_jit_legacy_nads(
+        enabled,
+        managed_nads,
+        legacy_nad_secrets.as_ref(),
+        declarative,
+    )?;
     Ok((legacy_nad_secrets, jit_legacy_nads))
 }
 
-fn resolve_jit_managed_nads(enabled: bool) -> Result<Arc<std::collections::HashSet<String>>> {
+fn resolve_jit_managed_nads(
+    enabled: bool,
+    declarative: Option<&ServerConfiguration>,
+) -> Result<Arc<std::collections::HashSet<String>>> {
     if !enabled {
         return Ok(Arc::new(std::collections::HashSet::new()));
     }
-    let raw = std::env::var("JIT_MANAGED_NADS").context("JIT_MANAGED_NADS is required")?;
+    let raw = if let Some(config) = declarative {
+        config
+            .spec
+            .nads
+            .iter()
+            .map(|nad| nad.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        std::env::var("JIT_MANAGED_NADS").context("JIT_MANAGED_NADS is required")?
+    };
     let mut identities = std::collections::HashSet::new();
     for value in raw
         .split(',')
@@ -1054,8 +1253,20 @@ fn resolve_jit_legacy_nads(
     enabled: bool,
     managed_nads: &std::collections::HashSet<String>,
     legacy_nad_secrets: &std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>,
+    declarative: Option<&ServerConfiguration>,
 ) -> Result<JitLegacyNads> {
-    let Some(raw) = std::env::var("JIT_LEGACY_NADS").ok() else {
+    let raw = declarative.map(|config| {
+        config
+            .spec
+            .nads
+            .iter()
+            .filter(|nad| matches!(nad.authentication, NadAuthentication::Legacy { .. }))
+            .map(|nad| format!("{}={}", nad.source_address, nad.name))
+            .collect::<Vec<_>>()
+            .join(",")
+    });
+    let raw = raw.or_else(|| std::env::var("JIT_LEGACY_NADS").ok());
+    let Some(raw) = raw else {
         return Ok(Arc::new(std::collections::HashMap::new()));
     };
     if !enabled {
@@ -1120,10 +1331,36 @@ fn parse_jit_legacy_nads(
 /// and verifier key must all be present or startup fails.
 async fn setup_jit_lease_store(
     args: &Args,
+    declarative: Option<&ServerConfiguration>,
 ) -> Result<Option<Arc<crate::jit_lease_store::JitLeaseStore>>> {
-    let Ok(url) = std::env::var("JIT_LEASE_STORE_URL") else {
-        return Ok(None);
-    };
+    let (url, password_path, ca_path, verifier_path) =
+        if let Some(jit) = declarative.and_then(|config| config.spec.jit.as_ref()) {
+            (
+                jit.store_url.clone(),
+                jit.store_password_file.clone(),
+                jit.store_ca_file.clone(),
+                jit.verifier_key_file.clone(),
+            )
+        } else {
+            let Ok(url) = std::env::var("JIT_LEASE_STORE_URL") else {
+                return Ok(None);
+            };
+            (
+                url,
+                PathBuf::from(
+                    std::env::var("JIT_LEASE_STORE_PASSWORD_FILE")
+                        .context("JIT_LEASE_STORE_PASSWORD_FILE is required")?,
+                ),
+                PathBuf::from(
+                    std::env::var("JIT_LEASE_STORE_CA_FILE")
+                        .context("JIT_LEASE_STORE_CA_FILE is required")?,
+                ),
+                PathBuf::from(
+                    std::env::var("JIT_LEASE_VERIFIER_KEY_FILE")
+                        .context("JIT_LEASE_VERIFIER_KEY_FILE is required")?,
+                ),
+            )
+        };
     if !args.api_enabled
         || args.api_tls_cert.is_none()
         || args.api_tls_key.is_none()
@@ -1133,19 +1370,11 @@ async fn setup_jit_lease_store(
     }
     aws_lc_rs::try_fips_mode()
         .map_err(|error| anyhow::anyhow!("AWS-LC FIPS self-test failed: {error}"))?;
-    let password_path = std::env::var("JIT_LEASE_STORE_PASSWORD_FILE")
-        .context("JIT_LEASE_STORE_PASSWORD_FILE is required")?;
-    let ca_path =
-        std::env::var("JIT_LEASE_STORE_CA_FILE").context("JIT_LEASE_STORE_CA_FILE is required")?;
-    let verifier_path = std::env::var("JIT_LEASE_VERIFIER_KEY_FILE")
-        .context("JIT_LEASE_VERIFIER_KEY_FILE is required")?;
     let password = zeroize::Zeroizing::new(
-        read_secret_file(&PathBuf::from(password_path))
-            .context("reading JIT lease store password")?,
+        read_secret_file(&password_path).context("reading JIT lease store password")?,
     );
     let key_hex = zeroize::Zeroizing::new(
-        read_secret_file(&PathBuf::from(verifier_path))
-            .context("reading JIT lease verifier key")?,
+        read_secret_file(&verifier_path).context("reading JIT lease verifier key")?,
     );
     let key_bytes =
         hex::decode(key_hex.as_bytes()).context("JIT lease verifier key must be hex")?;
@@ -1156,7 +1385,7 @@ async fn setup_jit_lease_store(
     let store = crate::jit_lease_store::JitLeaseStore::connect(
         &url,
         Some(password.as_str()),
-        &PathBuf::from(ca_path),
+        &ca_path,
         verifier_key,
     )
     .await
@@ -1218,14 +1447,21 @@ async fn main() -> Result<()> {
     // installed, which is fine.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+    let declarative_config = if let Some(config_path) = args.config.clone() {
+        let config = Arc::new(ServerConfiguration::from_path(&config_path)?);
+        apply_declarative_config(&mut args, &config)?;
+        Some(config)
+    } else {
+        None
+    };
     let otel_enabled = init_tracing(&args)?;
 
     if handle_check_policy_mode(&args)? {
         return Ok(());
     }
 
-    let state = build_app_state(&args).await?;
+    let state = build_app_state(&args, declarative_config).await?;
     run_server(&args, &state, otel_enabled).await
 }
 
