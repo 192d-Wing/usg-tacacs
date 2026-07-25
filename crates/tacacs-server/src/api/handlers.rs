@@ -198,6 +198,7 @@ pub fn build_api_router(
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/audit/nads", get(list_nad_audit))
+                .route("/api/mgmt/v1/audit/nads/verify", get(verify_nad_audit))
                 .route_layer(middleware::from_fn(require_permission(&rbac, "read:audit"))),
         )
         .merge(
@@ -436,6 +437,38 @@ async fn list_nad_audit(
         .into_response(),
         Err(error) => nad_problem(error, correlation_id),
     }
+}
+
+async fn verify_nad_audit(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<NadAuditVerificationQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some((limit, offset)) = nad_audit_verification_page(&query) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_audit_query",
+            correlation_id,
+        );
+    };
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        );
+    };
+    match store.verify_audit_page(limit, offset).await {
+        Ok(report) => Json(report).into_response(),
+        Err(error) => nad_problem(error, correlation_id),
+    }
+}
+
+fn nad_audit_verification_page(query: &NadAuditVerificationQuery) -> Option<(usize, usize)> {
+    let limit = query.limit.unwrap_or(1_000);
+    let offset = query.offset.unwrap_or(0);
+    (limit > 0 && limit <= 5_000 && offset <= 1_000_000).then_some((limit, offset))
 }
 
 fn nad_audit_page(query: &NadAuditQuery) -> Option<(usize, usize)> {
@@ -1870,6 +1903,20 @@ mod tests {
                 correlation_id: None,
                 action: Some("truncate".to_owned()),
                 limit: Some(10),
+                offset: None,
+            }),
+            None
+        );
+        assert_eq!(
+            nad_audit_verification_page(&NadAuditVerificationQuery {
+                limit: None,
+                offset: None,
+            }),
+            Some((1_000, 0))
+        );
+        assert_eq!(
+            nad_audit_verification_page(&NadAuditVerificationQuery {
+                limit: Some(5_001),
                 offset: None,
             }),
             None

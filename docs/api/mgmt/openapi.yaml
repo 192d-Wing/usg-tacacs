@@ -259,6 +259,44 @@ paths:
           $ref: "#/components/responses/InvalidResource"
         "503":
           $ref: "#/components/responses/StoreUnavailable"
+  /audit/nads/verify:
+    get:
+      operationId: verifyNadAuditEvents
+      summary: Verify a page of the NAD audit chain
+      description: >
+        Recomputes event hashes, verifies HMAC signatures in constant time,
+        validates chain continuity across the page boundary, and checks signed
+        resource metadata. Continue at the next offset until complete is true.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5000
+            default: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        "200":
+          description: Verification report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NadAuditVerification"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/InvalidResource"
+        "503":
+          $ref: "#/components/responses/StoreUnavailable"
   /nads:
     get:
       operationId: listNads
@@ -1030,6 +1068,45 @@ components:
         nextOffset:
           type: [integer, "null"]
           minimum: 0
+    NadAuditVerification:
+      type: object
+      additionalProperties: false
+      required:
+        - valid
+        - checkedEvents
+        - offset
+        - complete
+        - firstEventId
+        - lastEventId
+        - lastEventHash
+        - failureEventId
+        - failureCode
+      properties:
+        valid:
+          type: boolean
+        checkedEvents:
+          type: integer
+          minimum: 0
+          maximum: 5000
+        offset:
+          type: integer
+          minimum: 0
+        complete:
+          type: boolean
+        firstEventId:
+          type: [string, "null"]
+          format: uuid
+        lastEventId:
+          type: [string, "null"]
+          format: uuid
+        lastEventHash:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{64}$"
+        failureEventId:
+          type: [string, "null"]
+          format: uuid
+        failureCode:
+          type: [string, "null"]
     NadInventory:
       type: object
       additionalProperties: false

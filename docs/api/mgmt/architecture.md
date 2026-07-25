@@ -124,6 +124,14 @@ events, and filterable by NAD, correlation identifier, or action. Evidence
 includes the chain hashes and HMAC output, but never the HMAC key or resolved
 TACACS secret material.
 
+`GET /api/mgmt/v1/audit/nads/verify` verifies up to 5,000 events per request.
+It checks the first event against the immediately preceding database event,
+then validates every chain link, recomputes each event hash, verifies its HMAC
+in constant time, and compares duplicated actor and resource metadata with the
+authenticated after-state. Callers continue by offset until `complete` is
+true. A report with `valid: false` identifies the first failing event and a
+stable failure code.
+
 ## NAD management operations
 
 The management API exposes:

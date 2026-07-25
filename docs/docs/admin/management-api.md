@@ -183,6 +183,13 @@ the certificate actor, before/after resource state, previous and current
 SHA-256 chain hashes, and the HMAC-SHA-256 signature. The endpoint never returns
 the HMAC key or resolved TACACS shared secrets.
 
+Use `GET /api/mgmt/v1/audit/nads/verify` to verify the evidence in bounded
+pages. The default verification page is 1,000 events and the maximum is 5,000.
+Continue with `offset + checkedEvents` until `complete` is true. Any
+`valid: false` response includes the first failing event and a stable failure
+code; treat it as an integrity incident and preserve the database and service
+logs before remediation.
+
 An accepted NAD record becomes active only after runtime reconciliation
 validates secret resolution and conflicts against the YAML-owned baseline.
 Successful mutations trigger immediate reconciliation; each replica also

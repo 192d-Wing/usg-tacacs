@@ -118,6 +118,20 @@ pub struct NadAuditPage {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NadAuditVerification {
+    pub valid: bool,
+    pub checked_events: usize,
+    pub offset: usize,
+    pub complete: bool,
+    pub first_event_id: Option<Uuid>,
+    pub last_event_id: Option<Uuid>,
+    pub last_event_hash: Option<String>,
+    pub failure_event_id: Option<Uuid>,
+    pub failure_code: Option<&'static str>,
+}
+
 #[derive(Clone)]
 pub struct NadStore {
     pool: PgPool,
@@ -204,6 +218,37 @@ impl NadStore {
             .map(decode_audit_event)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(NadAuditPage { items, has_more })
+    }
+
+    pub async fn verify_audit_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<NadAuditVerification, NadStoreError> {
+        let page = self.list_audit(None, None, None, limit, offset).await?;
+        let previous_hash = self.audit_page_anchor(offset).await?;
+        Ok(verify_audit_events(
+            &page.items,
+            previous_hash.as_deref(),
+            &self.audit_key,
+            offset,
+            !page.has_more,
+        ))
+    }
+
+    async fn audit_page_anchor(&self, offset: usize) -> Result<Option<Vec<u8>>, NadStoreError> {
+        if offset == 0 {
+            return Ok(None);
+        }
+        let page = self
+            .list_audit(None, None, None, 1, offset.saturating_sub(1))
+            .await?;
+        let Some(event) = page.items.first() else {
+            return Err(NadStoreError::InvalidInput("audit_offset_out_of_range"));
+        };
+        hex::decode(&event.event_hash)
+            .map(Some)
+            .map_err(|_| NadStoreError::CorruptRecord)
     }
 
     pub async fn create(&self, input: CreateNadInput) -> Result<CreateNadOutcome, NadStoreError> {
@@ -678,6 +723,112 @@ fn audit_signature(key: &[u8], hash: &[u8]) -> Result<Vec<u8>, NadStoreError> {
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
+fn verify_audit_events(
+    events: &[NadAuditEvent],
+    anchor: Option<&[u8]>,
+    key: &[u8],
+    offset: usize,
+    complete: bool,
+) -> NadAuditVerification {
+    let mut expected_previous = anchor.map(<[u8]>::to_vec);
+    for (index, event) in events.iter().enumerate() {
+        match verify_audit_event(event, expected_previous.as_deref(), key) {
+            Ok(hash) => expected_previous = Some(hash),
+            Err(code) => {
+                return failed_audit_verification(events, offset, index, event.event_id, code);
+            }
+        }
+    }
+    NadAuditVerification {
+        valid: true,
+        checked_events: events.len(),
+        offset,
+        complete,
+        first_event_id: events.first().map(|event| event.event_id),
+        last_event_id: events.last().map(|event| event.event_id),
+        last_event_hash: events.last().map(|event| event.event_hash.clone()),
+        failure_event_id: None,
+        failure_code: None,
+    }
+}
+
+fn failed_audit_verification(
+    events: &[NadAuditEvent],
+    offset: usize,
+    checked_events: usize,
+    event_id: Uuid,
+    code: &'static str,
+) -> NadAuditVerification {
+    NadAuditVerification {
+        valid: false,
+        checked_events,
+        offset,
+        complete: false,
+        first_event_id: events.first().map(|event| event.event_id),
+        last_event_id: None,
+        last_event_hash: None,
+        failure_event_id: Some(event_id),
+        failure_code: Some(code),
+    }
+}
+
+fn verify_audit_event(
+    event: &NadAuditEvent,
+    expected_previous: Option<&[u8]>,
+    key: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    let previous = decode_optional_hash(event.previous_event_hash.as_deref())?;
+    if previous.as_deref() != expected_previous {
+        return Err("chain_discontinuity");
+    }
+    let after: NadRecord =
+        serde_json::from_value(event.after_state.clone()).map_err(|_| "invalid_after_state")?;
+    verify_audit_metadata(event, &after)?;
+    let calculated = audit_hash(
+        previous.as_deref(),
+        &event.action,
+        event.correlation_id,
+        &after,
+        event.before_state.as_ref(),
+        &event.after_state,
+    )
+    .map_err(|_| "hash_calculation_failed")?;
+    let stored = hex::decode(&event.event_hash).map_err(|_| "invalid_event_hash")?;
+    if calculated != stored {
+        return Err("event_hash_mismatch");
+    }
+    verify_audit_hmac(key, &stored, &event.hmac_signature)?;
+    Ok(stored)
+}
+
+fn verify_audit_metadata(event: &NadAuditEvent, after: &NadRecord) -> Result<(), &'static str> {
+    if event.actor != after.updated_by {
+        return Err("actor_mismatch");
+    }
+    if event.nad_id != after.nad_id || event.resource_version != after.resource_version {
+        return Err("resource_metadata_mismatch");
+    }
+    match (event.action.as_str(), event.before_state.as_ref()) {
+        ("create", None) | ("update" | "delete", Some(_)) => Ok(()),
+        ("create" | "update" | "delete", _) => Err("invalid_state_transition"),
+        _ => Err("invalid_action"),
+    }
+}
+
+fn decode_optional_hash(value: Option<&str>) -> Result<Option<Vec<u8>>, &'static str> {
+    value
+        .map(|hash| hex::decode(hash).map_err(|_| "invalid_previous_event_hash"))
+        .transpose()
+}
+
+fn verify_audit_hmac(key: &[u8], hash: &[u8], signature: &str) -> Result<(), &'static str> {
+    let signature = hex::decode(signature).map_err(|_| "invalid_hmac_signature")?;
+    let mut mac = HmacSha256::new_from_slice(key).map_err(|_| "invalid_hmac_key")?;
+    mac.update(hash);
+    mac.verify_slice(&signature)
+        .map_err(|_| "hmac_signature_mismatch")
+}
+
 fn encode_authentication(
     authentication: &NadAuthentication,
 ) -> Result<(&'static str, Option<&str>, serde_json::Value), NadStoreError> {
@@ -792,6 +943,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn audit_verification_detects_metadata_and_hmac_tampering() {
+        let key = vec![0x42; 32];
+        let record = test_record();
+        let after_state = serde_json::to_value(&record).unwrap();
+        let correlation_id = Uuid::new_v4();
+        let hash = audit_hash(None, "create", correlation_id, &record, None, &after_state).unwrap();
+        let signature = audit_signature(&key, &hash).unwrap();
+        let mut event = NadAuditEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: OffsetDateTime::UNIX_EPOCH,
+            correlation_id,
+            actor: record.updated_by.clone(),
+            action: "create".to_owned(),
+            nad_id: record.nad_id,
+            resource_version: record.resource_version,
+            before_state: None,
+            after_state,
+            previous_event_hash: None,
+            event_hash: hex::encode(hash),
+            hmac_signature: hex::encode(signature),
+        };
+        assert!(verify_audit_events(&[event.clone()], None, &key, 0, true).valid);
+        event.actor = "CN=attacker.example.mil".to_owned();
+        let report = verify_audit_events(&[event], None, &key, 0, true);
+        assert!(!report.valid);
+        assert_eq!(report.failure_code, Some("actor_mismatch"));
+    }
+
+    fn test_record() -> NadRecord {
+        NadRecord {
+            nad_id: Uuid::new_v4(),
+            name: "oopl-an-001".to_owned(),
+            description: None,
+            source_address: "192.0.2.10".parse().unwrap(),
+            authentication: NadAuthentication::Legacy {
+                secret_ref: "/run/secrets/nads/oopl-an-001".to_owned(),
+            },
+            ownership: "api".to_owned(),
+            resource_version: 1,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            created_by: "CN=tacacs-admin.example.mil".to_owned(),
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: "CN=tacacs-admin.example.mil".to_owned(),
+            deleted_at: None,
+            deleted_by: None,
+        }
+    }
+
     fn test_store(pool: PgPool) -> NadStore {
         NadStore::new(pool, Arc::new(vec![0x42; 32])).unwrap()
     }
@@ -885,6 +1085,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(signed_count, 3);
+        let verification = store.verify_audit_page(10, 0).await.unwrap();
+        assert!(verification.valid);
+        assert_eq!(verification.checked_events, 3);
+        assert!(verification.complete);
     }
 
     #[sqlx::test]
