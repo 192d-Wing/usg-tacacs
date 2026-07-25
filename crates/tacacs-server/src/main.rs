@@ -1125,14 +1125,7 @@ async fn build_app_state(
     args: &Args,
     declarative_config: Option<Arc<ServerConfiguration>>,
 ) -> Result<AppState> {
-    let policy_path = if let Some(path) = args.config.as_ref() {
-        path.clone()
-    } else {
-        args.policy
-            .as_ref()
-            .context("a --policy path or --config is required to start the server")?
-            .clone()
-    };
+    let policy_path = resolve_policy_path(args)?;
     let legacy_nad_secret_entries = resolve_legacy_nad_secrets(args).map_err(anyhow::Error::msg)?;
     let ldap_config = validate_secrets_and_build_ldap(args, &legacy_nad_secret_entries)?;
     let icam_config = build_icam_config(args)?;
@@ -1163,11 +1156,7 @@ async fn build_app_state(
     );
     let (est_provider, est_config) = setup_est_provider(args).await?;
 
-    let policy_engine = if let Some(config) = declarative_config.as_deref() {
-        declarative_policy(config)?
-    } else {
-        PolicyEngine::from_path(&policy_path, args.schema.as_ref())?
-    };
+    let policy_engine = build_initial_policy(args, &policy_path, declarative_config.as_deref())?;
     Ok(AppState {
         shared_policy: Arc::new(RwLock::new(policy_engine)),
         shared_secret: args
@@ -1192,6 +1181,27 @@ async fn build_app_state(
         policy_path,
         declarative_config,
     })
+}
+
+fn resolve_policy_path(args: &Args) -> Result<PathBuf> {
+    if let Some(path) = args.config.as_ref() {
+        return Ok(path.clone());
+    }
+    args.policy
+        .as_ref()
+        .context("a --policy path or --config is required to start the server")
+        .cloned()
+}
+
+fn build_initial_policy(
+    args: &Args,
+    policy_path: &Path,
+    declarative: Option<&ServerConfiguration>,
+) -> Result<PolicyEngine> {
+    match declarative {
+        Some(config) => declarative_policy(config),
+        None => PolicyEngine::from_path(policy_path, args.schema.as_ref()),
+    }
 }
 
 fn build_jit_legacy_config(
@@ -1333,34 +1343,10 @@ async fn setup_jit_lease_store(
     args: &Args,
     declarative: Option<&ServerConfiguration>,
 ) -> Result<Option<Arc<crate::jit_lease_store::JitLeaseStore>>> {
-    let (url, password_path, ca_path, verifier_path) =
-        if let Some(jit) = declarative.and_then(|config| config.spec.jit.as_ref()) {
-            (
-                jit.store_url.clone(),
-                jit.store_password_file.clone(),
-                jit.store_ca_file.clone(),
-                jit.verifier_key_file.clone(),
-            )
-        } else {
-            let Ok(url) = std::env::var("JIT_LEASE_STORE_URL") else {
-                return Ok(None);
-            };
-            (
-                url,
-                PathBuf::from(
-                    std::env::var("JIT_LEASE_STORE_PASSWORD_FILE")
-                        .context("JIT_LEASE_STORE_PASSWORD_FILE is required")?,
-                ),
-                PathBuf::from(
-                    std::env::var("JIT_LEASE_STORE_CA_FILE")
-                        .context("JIT_LEASE_STORE_CA_FILE is required")?,
-                ),
-                PathBuf::from(
-                    std::env::var("JIT_LEASE_VERIFIER_KEY_FILE")
-                        .context("JIT_LEASE_VERIFIER_KEY_FILE is required")?,
-                ),
-            )
-        };
+    let Some((url, password_path, ca_path, verifier_path)) = resolve_jit_store_paths(declarative)?
+    else {
+        return Ok(None);
+    };
     if !args.api_enabled
         || args.api_tls_cert.is_none()
         || args.api_tls_key.is_none()
@@ -1392,6 +1378,36 @@ async fn setup_jit_lease_store(
     .map_err(|error| anyhow::anyhow!("initializing JIT lease store: {error}"))?;
     info!("authoritative JIT lease store enabled");
     Ok(Some(Arc::new(store)))
+}
+
+type JitStorePaths = (String, PathBuf, PathBuf, PathBuf);
+
+fn resolve_jit_store_paths(
+    declarative: Option<&ServerConfiguration>,
+) -> Result<Option<JitStorePaths>> {
+    if let Some(jit) = declarative.and_then(|config| config.spec.jit.as_ref()) {
+        return Ok(Some((
+            jit.store_url.clone(),
+            jit.store_password_file.clone(),
+            jit.store_ca_file.clone(),
+            jit.verifier_key_file.clone(),
+        )));
+    }
+    let Ok(url) = std::env::var("JIT_LEASE_STORE_URL") else {
+        return Ok(None);
+    };
+    Ok(Some((
+        url,
+        required_env_path("JIT_LEASE_STORE_PASSWORD_FILE")?,
+        required_env_path("JIT_LEASE_STORE_CA_FILE")?,
+        required_env_path("JIT_LEASE_VERIFIER_KEY_FILE")?,
+    )))
+}
+
+fn required_env_path(name: &'static str) -> Result<PathBuf> {
+    std::env::var(name)
+        .with_context(|| format!("{name} is required"))
+        .map(PathBuf::from)
 }
 
 /// Run all server tasks and await completion.
