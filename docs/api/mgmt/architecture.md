@@ -132,6 +132,15 @@ authenticated after-state. Callers continue by offset until `complete` is
 true. A report with `valid: false` identifies the first failing event and a
 stable failure code.
 
+Audit hashes are explicitly versioned. Migration `0003_nad_audit_hash_v2.sql`
+marks historical rows as version 1 without rewriting them and makes version 2
+the default for new rows. Version 2 uses a domain-separated, length-prefixed
+canonical hash that authenticates the hash version, previous hash, UUIDv7 event
+identifier, microsecond-normalized timestamp, correlation identifier,
+certificate actor, action, NAD identifier, resource version, and before/after
+states. The verifier retains v1 compatibility so an upgrade does not invalidate
+historical evidence.
+
 ## NAD management operations
 
 The management API exposes:

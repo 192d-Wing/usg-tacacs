@@ -98,6 +98,7 @@ pub struct NadPage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NadAuditEvent {
+    pub hash_version: i16,
     pub event_id: Uuid,
     pub occurred_at: OffsetDateTime,
     pub correlation_id: Uuid,
@@ -350,7 +351,7 @@ const NAD_SELECT_ACTIVE_PAGE: &str = "
      ORDER BY name, nad_id
      LIMIT $2 OFFSET $3";
 const NAD_AUDIT_SELECT_PAGE: &str = "
-    SELECT event_id, occurred_at, correlation_id, actor, action, nad_id,
+    SELECT hash_version, event_id, occurred_at, correlation_id, actor, action, nad_id,
            resource_version, before_state, after_state, previous_event_hash,
            event_hash, hmac_signature
       FROM tacacs_management.nad_audit_events
@@ -615,27 +616,71 @@ async fn append_audit(
     let previous_hash = last_audit_hash(tx).await?;
     let before_state = serialize_optional(before)?;
     let after_state = serde_json::to_value(after).map_err(|_| NadStoreError::CorruptRecord)?;
-    let hash = audit_hash(
-        previous_hash.as_deref(),
-        action,
+    let mut event = NadAuditEvent {
+        hash_version: 2,
+        event_id: Uuid::now_v7(),
+        occurred_at: audit_timestamp()?,
         correlation_id,
-        after,
-        before_state.as_ref(),
-        &after_state,
-    )?;
-    let signature = audit_signature(key, &hash)?;
-    insert_audit_row(
-        tx,
-        after,
-        action,
-        correlation_id,
+        actor: after.updated_by.clone(),
+        action: action.to_owned(),
+        nad_id: after.nad_id,
+        resource_version: after.resource_version,
         before_state,
         after_state,
-        previous_hash,
-        hash,
-        signature,
+        previous_event_hash: previous_hash.as_deref().map(hex::encode),
+        event_hash: String::new(),
+        hmac_signature: String::new(),
+    };
+    let hash = audit_hash_v2(&event, previous_hash.as_deref())?;
+    event.event_hash = hex::encode(&hash);
+    event.hmac_signature = hex::encode(audit_signature(key, &hash)?);
+    insert_audit_row(tx, &event).await
+}
+
+fn audit_timestamp() -> Result<OffsetDateTime, NadStoreError> {
+    let nanos = OffsetDateTime::now_utc().unix_timestamp_nanos();
+    OffsetDateTime::from_unix_timestamp_nanos((nanos / 1_000) * 1_000)
+        .map_err(|_| NadStoreError::Unavailable)
+}
+
+async fn insert_audit_row(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &NadAuditEvent,
+) -> Result<(), NadStoreError> {
+    let previous_hash = decode_stored_hash(event.previous_event_hash.as_deref())?;
+    let hash = decode_stored_hash(Some(&event.event_hash))?.ok_or(NadStoreError::CorruptRecord)?;
+    let signature =
+        decode_stored_hash(Some(&event.hmac_signature))?.ok_or(NadStoreError::CorruptRecord)?;
+    sqlx::query(
+        "INSERT INTO tacacs_management.nad_audit_events
+            (hash_version, event_id, occurred_at, correlation_id, actor, action,
+             nad_id, resource_version, before_state, after_state,
+             previous_event_hash, event_hash, hmac_signature)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
+    .bind(event.hash_version)
+    .bind(event.event_id)
+    .bind(event.occurred_at)
+    .bind(event.correlation_id)
+    .bind(&event.actor)
+    .bind(&event.action)
+    .bind(event.nad_id)
+    .bind(event.resource_version)
+    .bind(&event.before_state)
+    .bind(&event.after_state)
+    .bind(previous_hash)
+    .bind(hash)
+    .bind(signature)
+    .execute(&mut **tx)
     .await
+    .map_err(map_database_error)?;
+    Ok(())
+}
+
+fn decode_stored_hash(value: Option<&str>) -> Result<Option<Vec<u8>>, NadStoreError> {
+    value
+        .map(|encoded| hex::decode(encoded).map_err(|_| NadStoreError::CorruptRecord))
+        .transpose()
 }
 
 async fn last_audit_hash(
@@ -650,41 +695,6 @@ async fn last_audit_hash(
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_database_error)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn insert_audit_row(
-    tx: &mut Transaction<'_, Postgres>,
-    after: &NadRecord,
-    action: &str,
-    correlation_id: Uuid,
-    before_state: Option<serde_json::Value>,
-    after_state: serde_json::Value,
-    previous_hash: Option<Vec<u8>>,
-    hash: Vec<u8>,
-    signature: Vec<u8>,
-) -> Result<(), NadStoreError> {
-    sqlx::query(
-        "INSERT INTO tacacs_management.nad_audit_events
-            (event_id, correlation_id, actor, action, nad_id, resource_version,
-             before_state, after_state, previous_event_hash, event_hash, hmac_signature)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(correlation_id)
-    .bind(&after.updated_by)
-    .bind(action)
-    .bind(after.nad_id)
-    .bind(after.resource_version)
-    .bind(before_state)
-    .bind(after_state)
-    .bind(previous_hash)
-    .bind(hash)
-    .bind(signature)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_database_error)?;
-    Ok(())
 }
 
 fn serialize_optional(
@@ -715,6 +725,46 @@ fn audit_hash(
     }
     digest.update(serde_json::to_vec(after_state).map_err(|_| NadStoreError::CorruptRecord)?);
     Ok(digest.finalize().to_vec())
+}
+
+fn audit_hash_v2(
+    event: &NadAuditEvent,
+    previous_hash: Option<&[u8]>,
+) -> Result<Vec<u8>, NadStoreError> {
+    let mut digest = Sha256::new();
+    digest.update(b"usg-tacacs:nad-audit:v2\0");
+    digest.update(event.hash_version.to_be_bytes());
+    digest.update(previous_hash.unwrap_or(&[0_u8; 32]));
+    digest.update(event.event_id.as_bytes());
+    digest.update(event.occurred_at.unix_timestamp_nanos().to_be_bytes());
+    digest.update(event.correlation_id.as_bytes());
+    hash_length_prefixed(&mut digest, event.actor.as_bytes());
+    hash_length_prefixed(&mut digest, event.action.as_bytes());
+    digest.update(event.nad_id.as_bytes());
+    digest.update(event.resource_version.to_be_bytes());
+    hash_optional_json(&mut digest, event.before_state.as_ref())?;
+    let after = serde_json::to_vec(&event.after_state).map_err(|_| NadStoreError::CorruptRecord)?;
+    hash_length_prefixed(&mut digest, &after);
+    Ok(digest.finalize().to_vec())
+}
+
+fn hash_optional_json(
+    digest: &mut Sha256,
+    value: Option<&serde_json::Value>,
+) -> Result<(), NadStoreError> {
+    let Some(value) = value else {
+        digest.update([0]);
+        return Ok(());
+    };
+    digest.update([1]);
+    let encoded = serde_json::to_vec(value).map_err(|_| NadStoreError::CorruptRecord)?;
+    hash_length_prefixed(digest, &encoded);
+    Ok(())
+}
+
+fn hash_length_prefixed(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
 }
 
 fn audit_signature(key: &[u8], hash: &[u8]) -> Result<Vec<u8>, NadStoreError> {
@@ -784,21 +834,33 @@ fn verify_audit_event(
     let after: NadRecord =
         serde_json::from_value(event.after_state.clone()).map_err(|_| "invalid_after_state")?;
     verify_audit_metadata(event, &after)?;
-    let calculated = audit_hash(
-        previous.as_deref(),
-        &event.action,
-        event.correlation_id,
-        &after,
-        event.before_state.as_ref(),
-        &event.after_state,
-    )
-    .map_err(|_| "hash_calculation_failed")?;
+    let calculated = calculate_stored_audit_hash(event, &after, previous.as_deref())?;
     let stored = hex::decode(&event.event_hash).map_err(|_| "invalid_event_hash")?;
     if calculated != stored {
         return Err("event_hash_mismatch");
     }
     verify_audit_hmac(key, &stored, &event.hmac_signature)?;
     Ok(stored)
+}
+
+fn calculate_stored_audit_hash(
+    event: &NadAuditEvent,
+    after: &NadRecord,
+    previous: Option<&[u8]>,
+) -> Result<Vec<u8>, &'static str> {
+    match event.hash_version {
+        1 => audit_hash(
+            previous,
+            &event.action,
+            event.correlation_id,
+            after,
+            event.before_state.as_ref(),
+            &event.after_state,
+        ),
+        2 => audit_hash_v2(event, previous),
+        _ => return Err("unsupported_hash_version"),
+    }
+    .map_err(|_| "hash_calculation_failed")
 }
 
 fn verify_audit_metadata(event: &NadAuditEvent, after: &NadRecord) -> Result<(), &'static str> {
@@ -885,6 +947,7 @@ fn decode_audit_event(row: &sqlx::postgres::PgRow) -> Result<NadAuditEvent, NadS
         .map(hex::encode)
         .map_err(|_| NadStoreError::CorruptRecord)?;
     Ok(NadAuditEvent {
+        hash_version: row.get("hash_version"),
         event_id: row.get("event_id"),
         occurred_at: row.get("occurred_at"),
         correlation_id: row.get("correlation_id"),
@@ -952,6 +1015,7 @@ mod tests {
         let hash = audit_hash(None, "create", correlation_id, &record, None, &after_state).unwrap();
         let signature = audit_signature(&key, &hash).unwrap();
         let mut event = NadAuditEvent {
+            hash_version: 1,
             event_id: Uuid::new_v4(),
             occurred_at: OffsetDateTime::UNIX_EPOCH,
             correlation_id,
@@ -970,6 +1034,35 @@ mod tests {
         let report = verify_audit_events(&[event], None, &key, 0, true);
         assert!(!report.valid);
         assert_eq!(report.failure_code, Some("actor_mismatch"));
+    }
+
+    #[test]
+    fn audit_hash_v2_authenticates_forensic_metadata() {
+        let key = vec![0x42; 32];
+        let record = test_record();
+        let mut event = NadAuditEvent {
+            hash_version: 2,
+            event_id: Uuid::now_v7(),
+            occurred_at: OffsetDateTime::UNIX_EPOCH,
+            correlation_id: Uuid::new_v4(),
+            actor: record.updated_by.clone(),
+            action: "create".to_owned(),
+            nad_id: record.nad_id,
+            resource_version: record.resource_version,
+            before_state: None,
+            after_state: serde_json::to_value(&record).unwrap(),
+            previous_event_hash: None,
+            event_hash: String::new(),
+            hmac_signature: String::new(),
+        };
+        let hash = audit_hash_v2(&event, None).unwrap();
+        event.event_hash = hex::encode(&hash);
+        event.hmac_signature = hex::encode(audit_signature(&key, &hash).unwrap());
+        assert!(verify_audit_events(&[event.clone()], None, &key, 0, true).valid);
+        event.occurred_at += time::Duration::SECOND;
+        let report = verify_audit_events(&[event], None, &key, 0, true);
+        assert!(!report.valid);
+        assert_eq!(report.failure_code, Some("event_hash_mismatch"));
     }
 
     fn test_record() -> NadRecord {
@@ -1085,6 +1178,14 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(signed_count, 3);
+        let v2_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM tacacs_management.nad_audit_events
+              WHERE hash_version = 2",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(v2_count, 3);
         let verification = store.verify_audit_page(10, 0).await.unwrap();
         assert!(verification.valid);
         assert_eq!(verification.checked_events, 3);

@@ -190,6 +190,12 @@ Continue with `offset + checkedEvents` until `complete` is true. Any
 code; treat it as an integrity incident and preserve the database and service
 logs before remediation.
 
+Apply database migration `0003_nad_audit_hash_v2.sql` before deploying the
+corresponding server build. Historical events remain `hashVersion: 1`; new
+events use `hashVersion: 2`, which also authenticates the event ID, normalized
+timestamp, actor, and other forensic metadata. Do not rewrite v1 rows during
+the upgrade.
+
 An accepted NAD record becomes active only after runtime reconciliation
 validates secret resolution and conflicts against the YAML-owned baseline.
 Successful mutations trigger immediate reconciliation; each replica also

@@ -1007,6 +1007,7 @@ components:
       type: object
       additionalProperties: false
       required:
+        - hashVersion
         - eventId
         - occurredAt
         - correlationId
@@ -1020,6 +1021,10 @@ components:
         - eventHash
         - hmacSignature
       properties:
+        hashVersion:
+          type: integer
+          enum: [1, 2]
+          description: Version 1 is legacy; version 2 authenticates all forensic metadata.
         eventId:
           type: string
           format: uuid
