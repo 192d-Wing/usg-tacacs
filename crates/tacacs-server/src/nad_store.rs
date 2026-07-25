@@ -312,6 +312,24 @@ impl NadStore {
         }
     }
 
+    pub async fn fail_abandoned_operations(
+        &self,
+        submitted_before: OffsetDateTime,
+    ) -> Result<u64, NadStoreError> {
+        let result = sqlx::query(
+            "UPDATE tacacs_management.operations
+                SET status = 'failed',
+                    completed_at = clock_timestamp(),
+                    error = 'operation owner stopped before completion'
+              WHERE status = 'running' AND submitted_at < $1",
+        )
+        .bind(submitted_before)
+        .execute(&self.pool)
+        .await
+        .map_err(map_database_error)?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn get_operation(
         &self,
         operation_id: Uuid,
@@ -1208,6 +1226,17 @@ mod tests {
         }
     }
 
+    fn test_operation() -> StoredOperation {
+        StoredOperation {
+            operation_id: Uuid::now_v7(),
+            kind: "authorizationPolicyReload".to_owned(),
+            status: "running".to_owned(),
+            submitted_at: audit_timestamp().unwrap(),
+            completed_at: None,
+            error: None,
+        }
+    }
+
     #[sqlx::test]
     async fn postgres_nad_lifecycle_is_versioned_and_audited(pool: PgPool) {
         let store = test_store(pool.clone());
@@ -1341,14 +1370,7 @@ mod tests {
     async fn postgres_management_operations_survive_replica_handoffs(pool: PgPool) {
         let first_replica = test_store(pool.clone());
         let second_replica = test_store(pool);
-        let operation = StoredOperation {
-            operation_id: Uuid::now_v7(),
-            kind: "authorizationPolicyReload".to_owned(),
-            status: "running".to_owned(),
-            submitted_at: audit_timestamp().unwrap(),
-            completed_at: None,
-            error: None,
-        };
+        let operation = test_operation();
         first_replica.create_operation(&operation).await.unwrap();
         assert_eq!(
             second_replica
@@ -1367,6 +1389,43 @@ mod tests {
             .unwrap();
         assert_eq!(completed.status, "succeeded");
         assert!(completed.completed_at.is_some());
+    }
+
+    #[sqlx::test]
+    async fn postgres_management_operations_recover_after_owner_restart(pool: PgPool) {
+        let first_replica = test_store(pool.clone());
+        let second_replica = test_store(pool);
+        let mut operation = test_operation();
+        operation.submitted_at -= time::Duration::minutes(10);
+        first_replica.create_operation(&operation).await.unwrap();
+        drop(first_replica);
+
+        let cutoff = audit_timestamp().unwrap() - time::Duration::minutes(5);
+        let recovered = second_replica
+            .fail_abandoned_operations(cutoff)
+            .await
+            .unwrap();
+        let operation = second_replica
+            .get_operation(operation.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(recovered, 1);
+        assert_eq!(operation.status, "failed");
+        assert_eq!(
+            operation.error.as_deref(),
+            Some("operation owner stopped before completion")
+        );
+    }
+
+    #[sqlx::test]
+    async fn postgres_management_operations_fail_closed_without_store(pool: PgPool) {
+        let store = test_store(pool);
+        let operation_id = Uuid::now_v7();
+        store.pool.close().await;
+        assert_eq!(
+            store.get_operation(operation_id).await,
+            Err(NadStoreError::Unavailable)
+        );
     }
 
     #[test]

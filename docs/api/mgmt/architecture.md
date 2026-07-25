@@ -55,8 +55,11 @@ The contract deliberately excludes JIT lease operations.
 Release security gates are tracked in
 [`adversarial-test-matrix.md`](adversarial-test-matrix.md). Deterministic
 authorization, concurrency, reconciliation, and audit failures are automated
-in Rust and PostgreSQL tests. Deployment-only TLS, NetworkPolicy, failover, and
-load cases remain explicit instead of being represented as unit-test coverage.
+in Rust and PostgreSQL tests. A real TCP test verifies TLS 1.3 with a trusted
+client succeeds while TLS 1.2 and missing client certificates fail. Helm CI
+renders the NetworkPolicy and rejects untyped identities or management peers
+without a namespace. Cluster-level load and network enforcement still require
+the deployment lab.
 
 ## Configuration lifecycle
 
@@ -91,8 +94,13 @@ to `tacacs_management.operations` before work is queued and completion is
 persisted by the worker. Any API replica can resolve the operation UUID, and
 the result survives pod replacement. Completed rows are retained for 24 hours;
 registration transactionally prunes older completed rows and caps concurrent
-running operations at 1,024. The in-memory registry remains only as a
-development fallback when PostgreSQL management storage is absent.
+running operations at 1,024. During startup, a replica marks operations older
+than five minutes as failed with an explicit owner-stopped reason. This bounded
+recovery prevents a crashed owner from leaving an operation permanently
+running while allowing active work on another replica to finish normally.
+PostgreSQL loss fails closed with `503`; operation state is not silently
+reconstructed from a replica's local memory. The in-memory registry remains
+only as a development fallback when PostgreSQL management storage is absent.
 
 Dynamic NAD records created through management API operations are stored
 transactionally in PostgreSQL, with an immutable audit record. The management

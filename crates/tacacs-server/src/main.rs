@@ -1195,7 +1195,7 @@ async fn build_app_state(
     }
     let (username_limiter, ip_limiter) = setup_request_limiters(args);
     let (est_provider, est_config) = setup_est_provider(args).await?;
-    let nad_store = setup_nad_store(&jit_lease_store, &audit_hmac_key)?;
+    let nad_store = setup_nad_store(&jit_lease_store, &audit_hmac_key).await?;
     let runtime_nads = setup_runtime_nads(nad_store.clone(), declarative_config.as_deref()).await?;
 
     let policy_engine = build_initial_policy(args, &policy_path, declarative_config.as_deref())?;
@@ -1302,7 +1302,7 @@ fn setup_request_limiters(
     (username, ip)
 }
 
-fn setup_nad_store(
+async fn setup_nad_store(
     jit_store: &Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
     audit_key: &Option<Arc<Vec<u8>>>,
 ) -> Result<Option<Arc<crate::nad_store::NadStore>>> {
@@ -1311,6 +1311,17 @@ fn setup_nad_store(
     };
     let store = crate::nad_store::NadStore::new(store.pool(), key.clone())
         .map_err(|error| anyhow::anyhow!("initializing NAD store: {error}"))?;
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
+    let recovered = store
+        .fail_abandoned_operations(cutoff)
+        .await
+        .map_err(|error| anyhow::anyhow!("recovering abandoned management operations: {error}"))?;
+    if recovered > 0 {
+        warn!(
+            recovered,
+            "marked abandoned management operations failed during startup"
+        );
+    }
     Ok(Some(Arc::new(store)))
 }
 
