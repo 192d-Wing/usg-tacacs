@@ -57,6 +57,7 @@ use crate::jit_lease_store::{
     CreateLeaseInput, CreateLeaseOutcome, JitLeaseStore, LeaseMetadata, StoreError,
 };
 use crate::metrics::metrics;
+use crate::nad_store::{CreateNadInput, CreateNadOutcome, NadStore, NadStoreError, UpdateNadInput};
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
 use axum::{
@@ -66,7 +67,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -132,6 +133,8 @@ pub struct ApiState {
     pub config: RuntimeConfig,
     /// Authoritative JIT lease store; absent when the feature is disabled.
     pub jit_lease_store: Option<Arc<JitLeaseStore>>,
+    /// Transactional repository for API-owned NAD resources.
+    pub nad_store: Option<Arc<NadStore>>,
 }
 
 /// Build the API router with all endpoints.
@@ -161,6 +164,7 @@ pub fn build_api_router(
     registry: Arc<SessionRegistry>,
     config: RuntimeConfig,
     jit_lease_store: Option<Arc<JitLeaseStore>>,
+    nad_store: Option<Arc<NadStore>>,
 ) -> Router {
     let state = Arc::new(ApiState {
         rbac: rbac.clone(),
@@ -172,9 +176,26 @@ pub fn build_api_router(
         registry,
         config,
         jit_lease_store,
+        nad_store,
     });
 
     Router::new()
+        .merge(
+            Router::new()
+                .route("/api/mgmt/v1/nads", get(list_nads))
+                .route("/api/mgmt/v1/nads/{id}", get(get_nad))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "read:nads"))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/mgmt/v1/nads", post(create_nad))
+                .route(
+                    "/api/mgmt/v1/nads/{id}",
+                    patch(update_nad).delete(delete_nad),
+                )
+                .route_layer(DefaultBodyLimit::max(16 * 1024))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "write:nads"))),
+        )
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/status", get(get_status))
@@ -295,6 +316,192 @@ async fn get_jit_openapi() -> impl IntoResponse {
         [(header::CONTENT_TYPE, "application/yaml; charset=utf-8")],
         include_str!("../../../../docs/api/jit-lease.openapi.yaml"),
     )
+}
+
+async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        );
+    };
+    match store.list().await {
+        Ok(items) => (StatusCode::OK, Json(NadListResponse { items })).into_response(),
+        Err(error) => nad_problem(error, correlation_id),
+    }
+}
+
+async fn get_nad(
+    State(state): State<Arc<ApiState>>,
+    Path(nad_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        );
+    };
+    match store.get(nad_id).await {
+        Ok(record) => nad_response(StatusCode::OK, record),
+        Err(error) => nad_problem(error, correlation_id),
+    }
+}
+
+async fn create_nad(
+    State(state): State<Arc<ApiState>>,
+    Extension(identity): Extension<TlsClientIdentity>,
+    headers: HeaderMap,
+    Json(request): Json<CreateNadRequest>,
+) -> Response {
+    let Some(correlation_id) = uuid_header(&headers, "x-correlation-id") else {
+        return invalid_header_problem();
+    };
+    let Some(idempotency_key) = required_header(&headers, "idempotency-key", validate_idempotency)
+    else {
+        return invalid_header_problem();
+    };
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id.to_string(),
+        );
+    };
+    let input = CreateNadInput {
+        name: request.name,
+        description: request.description,
+        source_address: request.source_address,
+        authentication: request.authentication,
+        actor: identity.cn,
+        correlation_id,
+        idempotency_key,
+    };
+    match store.create(input).await {
+        Ok(CreateNadOutcome::Created(record)) => nad_response(StatusCode::CREATED, record),
+        Ok(CreateNadOutcome::Replay(record)) => nad_response(StatusCode::OK, record),
+        Err(error) => nad_problem(error, correlation_id.to_string()),
+    }
+}
+
+async fn update_nad(
+    State(state): State<Arc<ApiState>>,
+    Extension(identity): Extension<TlsClientIdentity>,
+    Path(nad_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateNadRequest>,
+) -> Response {
+    let Some(correlation_id) = uuid_header(&headers, "x-correlation-id") else {
+        return invalid_header_problem();
+    };
+    let Some(expected_version) = resource_version(&headers) else {
+        return invalid_header_problem();
+    };
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id.to_string(),
+        );
+    };
+    let input = UpdateNadInput {
+        nad_id,
+        description: request.description,
+        source_address: request.source_address,
+        authentication: request.authentication,
+        expected_version,
+        actor: identity.cn,
+        correlation_id,
+    };
+    match store.update(input).await {
+        Ok(record) => nad_response(StatusCode::OK, record),
+        Err(error) => nad_problem(error, correlation_id.to_string()),
+    }
+}
+
+async fn delete_nad(
+    State(state): State<Arc<ApiState>>,
+    Extension(identity): Extension<TlsClientIdentity>,
+    Path(nad_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(correlation_id) = uuid_header(&headers, "x-correlation-id") else {
+        return invalid_header_problem();
+    };
+    let Some(expected_version) = resource_version(&headers) else {
+        return invalid_header_problem();
+    };
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id.to_string(),
+        );
+    };
+    match store
+        .delete(nad_id, expected_version, &identity.cn, correlation_id)
+        .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => nad_problem(error, correlation_id.to_string()),
+    }
+}
+
+fn uuid_header(headers: &HeaderMap, name: &'static str) -> Option<Uuid> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Uuid::parse_str(value).ok())
+}
+
+fn resource_version(headers: &HeaderMap) -> Option<i64> {
+    let value = headers.get(header::IF_MATCH)?.to_str().ok()?;
+    let value = value.strip_prefix('"')?.strip_suffix('"')?;
+    value
+        .strip_prefix("rv-")?
+        .parse()
+        .ok()
+        .filter(|value| *value > 0)
+}
+
+fn mutation_correlation(headers: &HeaderMap) -> String {
+    uuid_header(headers, "x-correlation-id")
+        .unwrap_or_else(Uuid::new_v4)
+        .to_string()
+}
+
+fn nad_response(status: StatusCode, record: crate::nad_store::NadRecord) -> Response {
+    let version = record.resource_version;
+    let nad_id = record.nad_id;
+    let mut response = (status, Json(record)).into_response();
+    if let Ok(value) = HeaderValue::from_str(&format!("\"rv-{version}\"")) {
+        response.headers_mut().insert(header::ETAG, value);
+    }
+    if status == StatusCode::CREATED
+        && let Ok(value) = HeaderValue::from_str(&format!("/api/mgmt/v1/nads/{nad_id}"))
+    {
+        response.headers_mut().insert(header::LOCATION, value);
+    }
+    response
+}
+
+fn nad_problem(error: NadStoreError, correlation_id: String) -> Response {
+    match error {
+        NadStoreError::Unavailable | NadStoreError::CorruptRecord => problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        ),
+        NadStoreError::Conflict => problem(StatusCode::CONFLICT, "nad_conflict", correlation_id),
+        NadStoreError::NotFound => problem(StatusCode::NOT_FOUND, "nad_not_found", correlation_id),
+        NadStoreError::InvalidInput(code) => {
+            problem(StatusCode::UNPROCESSABLE_ENTITY, code, correlation_id)
+        }
+    }
 }
 
 async fn create_jit_lease(
@@ -1044,6 +1251,7 @@ mod tests {
             registry.clone(),
             make_test_config(),
             None,
+            None,
         );
         (router, reload_rx, registry)
     }
@@ -1052,6 +1260,30 @@ mod tests {
     fn make_test_router(rbac: RbacConfig) -> Router {
         let (router, _rx, _registry) = make_test_router_with_channel(rbac);
         router
+    }
+
+    #[test]
+    fn nad_if_match_requires_a_strong_resource_version_etag() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_MATCH, HeaderValue::from_static("\"rv-42\""));
+        assert_eq!(resource_version(&headers), Some(42));
+        headers.insert(header::IF_MATCH, HeaderValue::from_static("W/\"rv-42\""));
+        assert_eq!(resource_version(&headers), None);
+        headers.insert(header::IF_MATCH, HeaderValue::from_static("\"rv-0\""));
+        assert_eq!(resource_version(&headers), None);
+    }
+
+    #[test]
+    fn nad_mutation_correlation_must_be_a_uuid() {
+        let mut headers = HeaderMap::new();
+        let expected = Uuid::new_v4();
+        headers.insert(
+            "x-correlation-id",
+            HeaderValue::from_str(&expected.to_string()).unwrap(),
+        );
+        assert_eq!(uuid_header(&headers, "x-correlation-id"), Some(expected));
+        headers.insert("x-correlation-id", HeaderValue::from_static("not-a-uuid"));
+        assert_eq!(uuid_header(&headers, "x-correlation-id"), None);
     }
 
     // ==================== Authentication Tests ====================
@@ -1653,6 +1885,7 @@ mod tests {
             reload_tx,
             registry.clone(),
             make_test_config(),
+            None,
             None,
         );
 

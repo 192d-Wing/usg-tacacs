@@ -54,7 +54,33 @@
 //! - **Reference:** [CM-3](../../../../docs/NIST-CONTROLS-MAPPING.md#cm-3-configuration-change-control)
 
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use zeroize::Zeroizing;
+
+use crate::nad_store::{NadAuthentication, NadRecord};
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateNadRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub source_address: IpAddr,
+    pub authentication: NadAuthentication,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateNadRequest {
+    pub description: Option<String>,
+    pub source_address: IpAddr,
+    pub authentication: NadAuthentication,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadListResponse {
+    pub items: Vec<NadRecord>,
+}
 
 /// A create request whose password buffer is erased when the handler returns.
 #[derive(Deserialize)]

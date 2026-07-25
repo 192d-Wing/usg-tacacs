@@ -150,6 +150,10 @@ pub struct JitLeaseStore {
 }
 
 impl JitLeaseStore {
+    pub(crate) fn pool(&self) -> PgPool {
+        self.pool.clone()
+    }
+
     pub async fn connect(
         url: &str,
         password: Option<&str>,
