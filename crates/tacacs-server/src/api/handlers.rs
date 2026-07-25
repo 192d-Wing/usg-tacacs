@@ -679,7 +679,7 @@ async fn create_nad(
         description: request.description,
         source_address: request.source_address,
         authentication: request.authentication,
-        actor: identity.cn,
+        actor: identity.certificate_identity,
         correlation_id,
         idempotency_key,
     };
@@ -722,7 +722,7 @@ async fn update_nad(
         source_address: request.source_address,
         authentication: request.authentication,
         expected_version,
-        actor: identity.cn,
+        actor: identity.certificate_identity,
         correlation_id,
     };
     match store.update(input).await {
@@ -754,7 +754,12 @@ async fn delete_nad(
         );
     };
     match store
-        .delete(nad_id, expected_version, &identity.cn, correlation_id)
+        .delete(
+            nad_id,
+            expected_version,
+            &identity.certificate_identity,
+            correlation_id,
+        )
         .await
     {
         Ok(_) => {
@@ -886,7 +891,7 @@ async fn create_jit_lease(
             crate::server::audit_event(
                 "jit_lease_create",
                 "management-api",
-                &identity.cn,
+                &identity.certificate_identity,
                 0,
                 "success",
                 "authorized",
@@ -901,7 +906,7 @@ async fn create_jit_lease(
             crate::server::audit_event(
                 "jit_lease_create",
                 "management-api",
-                &identity.cn,
+                &identity.certificate_identity,
                 0,
                 "denied",
                 error.to_string().as_str(),
@@ -940,7 +945,7 @@ async fn get_jit_lease(
         Ok(Some(metadata)) => {
             audit_lease_api(
                 "jit_lease_read",
-                &identity.cn,
+                &identity.certificate_identity,
                 "success",
                 "authorized",
                 &correlation_id,
@@ -951,7 +956,7 @@ async fn get_jit_lease(
         Ok(None) => {
             audit_lease_api(
                 "jit_lease_read",
-                &identity.cn,
+                &identity.certificate_identity,
                 "denied",
                 "lease_not_found",
                 &correlation_id,
@@ -962,7 +967,7 @@ async fn get_jit_lease(
         Err(error) => {
             audit_lease_api(
                 "jit_lease_read",
-                &identity.cn,
+                &identity.certificate_identity,
                 "error",
                 error.to_string().as_str(),
                 &correlation_id,
@@ -995,7 +1000,7 @@ async fn revoke_jit_lease(
             crate::server::audit_event(
                 "jit_lease_revoke",
                 "management-api",
-                &identity.cn,
+                &identity.certificate_identity,
                 0,
                 "success",
                 "revoked",
@@ -1006,7 +1011,7 @@ async fn revoke_jit_lease(
         Err(error) => {
             audit_lease_api(
                 "jit_lease_revoke",
-                &identity.cn,
+                &identity.certificate_identity,
                 "error",
                 error.to_string().as_str(),
                 &correlation_id,

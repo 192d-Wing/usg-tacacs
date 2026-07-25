@@ -293,6 +293,7 @@ fn validate_nads(nads: &[Nad]) -> Result<()> {
 fn validate_rbac(rbac: &Rbac) -> Result<()> {
     let mut identities = HashSet::new();
     for subject in &rbac.subjects {
+        validate_certificate_identity(&subject.certificate_identity)?;
         if !rbac.roles.contains_key(&subject.role) {
             bail!(
                 "RBAC subject {} references undefined role {}",
@@ -315,6 +316,45 @@ fn validate_rbac(rbac: &Rbac) -> Result<()> {
     Ok(())
 }
 
+fn validate_certificate_identity(identity: &str) -> Result<()> {
+    let valid = if let Some(value) = identity.strip_prefix("cn:") {
+        valid_identity_value(value, 512)
+    } else if let Some(value) = identity.strip_prefix("dns:") {
+        valid_dns_identity(value)
+    } else if let Some(value) = identity.strip_prefix("email:") {
+        value == value.to_ascii_lowercase()
+            && value.contains('@')
+            && valid_identity_value(value, 512)
+    } else if let Some(value) = identity.strip_prefix("uri:") {
+        value.contains(':') && valid_identity_value(value, 1024)
+    } else {
+        false
+    };
+    if !valid {
+        bail!("RBAC certificateIdentity must be a valid typed cn:, dns:, email:, or uri: identity");
+    }
+    Ok(())
+}
+
+fn valid_identity_value(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+}
+
+fn valid_dns_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value == value.to_ascii_lowercase()
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+}
+
 fn validate_unique_rule_ids(rules: &[AuthorizationRule]) -> Result<()> {
     let mut ids = HashSet::new();
     for rule in rules {
@@ -335,5 +375,14 @@ mod tests {
             "apiVersion: tacacs.usg.mil/v1alpha1\nkind: TacacsServer\nunknown: true\n",
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rbac_certificate_identities_are_typed_and_canonical() {
+        assert!(validate_certificate_identity("cn:tacacs-admin.example.mil").is_ok());
+        assert!(validate_certificate_identity("dns:tacacs-admin.example.mil").is_ok());
+        assert!(validate_certificate_identity("uri:spiffe://example.mil/tacacs/admin").is_ok());
+        assert!(validate_certificate_identity("tacacs-admin.example.mil").is_err());
+        assert!(validate_certificate_identity("dns:TACACS-ADMIN.example.mil").is_err());
     }
 }

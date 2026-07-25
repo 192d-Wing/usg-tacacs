@@ -52,7 +52,7 @@ spec:
             - read:status
             - read:metrics
       subjects:
-        - certificateIdentity: tacacs-admin.example.mil
+        - certificateIdentity: cn:tacacs-admin.example.mil
           role: admin
   audit:
     hmacKeyFile: /run/secrets/audit/hmac-key

@@ -785,7 +785,7 @@ fn load_rbac_config(
     args: &Args,
     declarative: Option<&ServerConfiguration>,
 ) -> Result<crate::api::RbacConfig> {
-    if let Some(config) = declarative {
+    let rbac = if let Some(config) = declarative {
         let roles = config
             .spec
             .management
@@ -802,16 +802,19 @@ fn load_rbac_config(
             .iter()
             .map(|subject| (subject.certificate_identity.clone(), subject.role.clone()))
             .collect();
-        Ok(crate::api::RbacConfig { roles, users })
+        crate::api::RbacConfig { roles, users }
     } else if let Some(rbac_path) = args.api_rbac_config.as_ref() {
         let rbac_json = std::fs::read_to_string(rbac_path)
             .with_context(|| format!("failed to read RBAC config from {}", rbac_path.display()))?;
         serde_json::from_str(&rbac_json)
-            .with_context(|| format!("failed to parse RBAC config from {}", rbac_path.display()))
+            .with_context(|| format!("failed to parse RBAC config from {}", rbac_path.display()))?
     } else {
         info!("using default RBAC configuration (admin, operator, viewer roles)");
-        Ok(crate::api::RbacConfig::default())
-    }
+        crate::api::RbacConfig::default()
+    };
+    rbac.validate()
+        .map_err(|error| anyhow::anyhow!("invalid management RBAC configuration: {error}"))?;
+    Ok(rbac)
 }
 
 /// Build TLS acceptor for Management API.

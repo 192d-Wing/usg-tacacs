@@ -35,7 +35,9 @@ operations.
 
 ## Overview
 
-The API is disabled by default and must be explicitly enabled with `--api-enabled`. For production use, TLS with mutual authentication (mTLS) is strongly recommended.
+The API is disabled by default and must be explicitly enabled with
+`--api-enabled`. Production deployments require direct TLS 1.3 mutual
+authentication.
 
 ### Security Controls
 
@@ -53,8 +55,8 @@ The Management API implements the following NIST SP 800-53 security controls:
 ## Production Deployment
 
 Production deployments must use the server's TLS 1.3 mutual-authentication
-listener. A proxy may be used only when it preserves the authenticated client
-certificate boundary defined by the deployment architecture.
+listener. A proxy may use TCP passthrough, but an HTTP proxy cannot supply the
+client identity through a header.
 
 ## Enabling the API
 
@@ -86,14 +88,18 @@ usg-tacacs-server \
 
 ### TLS Client Certificate (Production)
 
-When API TLS is configured, authentication is performed via client certificate CN:
+Authentication is performed from typed identities in the validated client
+certificate:
 
 ```sh
 curl --cert client.pem --key client-key.pem \
   https://localhost:8443/api/mgmt/v1/status
 ```
 
-The CN from the client certificate is extracted and mapped to a role via the RBAC configuration.
+Supported selectors are `cn:`, `dns:`, `email:`, and `uri:`. DNS and email
+values are canonicalized to lowercase. Exactly one configured selector must
+match the certificate; ambiguous certificates fail closed even if both
+identities map to the same role.
 
 `X-User-CN` exists only in compiled test code. Runtime requests cannot select
 their identity with an HTTP header.
@@ -107,31 +113,20 @@ Create an RBAC configuration file to define users and roles:
 ```json
 {
   "users": {
-    "CN=admin.example.com": "admin",
-    "CN=operator.example.com": "operator",
-    "CN=monitor.example.com": "viewer"
+    "cn:admin.example.com": "admin",
+    "dns:operator.example.com": "operator",
+    "uri:spiffe://example.com/tacacs/monitor": "viewer"
   },
   "roles": {
-    "admin": {
-      "permissions": [
-        "read:status", "read:metrics", "read:sessions", "read:policy", "read:config",
-        "write:sessions", "write:policy"
-      ]
-    },
-    "operator": {
-      "permissions": [
-        "read:status", "read:metrics", "read:sessions", "read:policy", "read:config",
-        "write:sessions"
-      ]
-    },
-    "viewer": {
-      "permissions": [
-        "read:status", "read:metrics"
-      ]
-    }
+    "admin": ["read:*", "write:*"],
+    "operator": ["read:*", "write:sessions"],
+    "viewer": ["read:status", "read:metrics"]
   }
 }
 ```
+
+Untyped legacy identities such as `CN=admin.example.com` are rejected at
+startup. Convert them to typed selectors before upgrading.
 
 ### Default Roles
 

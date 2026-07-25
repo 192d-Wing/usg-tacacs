@@ -20,9 +20,11 @@ migration. New integrations must use `/api/jit/v1/leases`.
 ## Security boundary
 
 The management listener requires TLS client authentication. The validated
-certificate identity is inserted into the request by the TLS acceptor; HTTP
-headers cannot select an identity in production. RBAC then maps that certificate
-identity to a role and checks the permission required by each operation.
+certificate identities are extracted into typed `cn:`, `dns:`, `email:`, and
+`uri:` candidates by the TLS acceptor; HTTP headers cannot select an identity
+in production. RBAC requires exactly one configured candidate to match. Zero or
+multiple matches fail closed before the selected identity is inserted into the
+request for authorization and audit attribution.
 
 The management API must:
 

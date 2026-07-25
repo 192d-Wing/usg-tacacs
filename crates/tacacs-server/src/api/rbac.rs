@@ -82,8 +82,14 @@ struct AuthorizationProblem {
 /// | AC-3 | Access Enforcement | Used by RBAC middleware to enforce permissions |
 #[derive(Debug, Clone)]
 pub struct TlsClientIdentity {
-    /// The Common Name (CN) from the client's TLS certificate.
-    pub cn: String,
+    /// The single typed certificate identity selected by RBAC.
+    pub certificate_identity: String,
+}
+
+/// Typed identity candidates extracted from a validated peer certificate.
+#[derive(Debug, Clone)]
+pub struct TlsPeerIdentity {
+    pub candidates: Vec<String>,
 }
 
 /// RBAC configuration.
@@ -126,6 +132,23 @@ impl Default for RbacConfig {
 }
 
 impl RbacConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        for (identity, role) in &self.users {
+            if !valid_typed_identity(identity) {
+                return Err("invalid_certificate_identity");
+            }
+            if !self.roles.contains_key(role) {
+                return Err("undefined_rbac_role");
+            }
+        }
+        for permissions in self.roles.values() {
+            if permissions.is_empty() || !permissions.iter().all(|value| valid_permission(value)) {
+                return Err("invalid_rbac_permission");
+            }
+        }
+        Ok(())
+    }
+
     /// Check if a user has a specific permission.
     ///
     /// # NIST Controls
@@ -173,6 +196,50 @@ impl RbacConfig {
     }
 }
 
+fn valid_typed_identity(value: &str) -> bool {
+    if let Some(identity) = value.strip_prefix("dns:") {
+        return !identity.is_empty()
+            && identity.len() <= 253
+            && identity == identity.to_ascii_lowercase()
+            && identity.as_bytes()[0].is_ascii_alphanumeric()
+            && !identity.contains("..")
+            && identity.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte)
+            });
+    }
+    if let Some(identity) = value.strip_prefix("email:") {
+        return identity == identity.to_ascii_lowercase()
+            && identity.contains('@')
+            && valid_identity_text(identity, 512);
+    }
+    if let Some(identity) = value.strip_prefix("uri:") {
+        return identity.contains(':') && valid_identity_text(identity, 1024);
+    }
+    value
+        .strip_prefix("cn:")
+        .is_some_and(|identity| valid_identity_text(identity, 512))
+}
+
+fn valid_identity_text(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+}
+
+fn valid_permission(value: &str) -> bool {
+    let Some((verb, resource)) = value.split_once(':') else {
+        return false;
+    };
+    matches!(verb, "read" | "write")
+        && !resource.is_empty()
+        && resource.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_*".contains(&byte)
+        })
+        && (!resource.contains('*') || resource == "*")
+}
+
 /// Middleware for RBAC permission checking.
 #[derive(Clone)]
 pub struct RbacMiddleware {
@@ -196,11 +263,11 @@ impl RbacMiddleware {
     /// |---------|------|----------------|
     /// | IA-3 | Device Identification | Extracts identity from TLS client certificate extension |
     /// | AC-3 | Access Enforcement | Denies requests without valid certificate identity |
-    pub async fn check_permission(&self, req: Request<Body>, next: Next) -> Response {
+    pub async fn check_permission(&self, mut req: Request<Body>, next: Next) -> Response {
         // NIST IA-3: Extract user identity from TLS client certificate extension.
         // The TlsClientIdentity is inserted by the TLS connection handler after
         // validating the client certificate -- it cannot be spoofed via headers.
-        let user = Self::extract_user_identity(&req);
+        let user = self.extract_user_identity(&req);
 
         if !self.config.has_permission(&user, &self.required_permission) {
             warn!(
@@ -229,6 +296,9 @@ impl RbacMiddleware {
             return response;
         }
 
+        req.extensions_mut().insert(TlsClientIdentity {
+            certificate_identity: user,
+        });
         next.run(req).await
     }
 
@@ -239,10 +309,20 @@ impl RbacMiddleware {
     /// | Control | Name | Implementation |
     /// |---------|------|----------------|
     /// | IA-3 | Device Identification | Production path uses TLS certificate extension only |
-    fn extract_user_identity(req: &Request<Body>) -> String {
-        // Production: use TlsClientIdentity set by TLS connection handler
-        if let Some(identity) = req.extensions().get::<TlsClientIdentity>() {
-            return identity.cn.clone();
+    fn extract_user_identity(&self, req: &Request<Body>) -> String {
+        if let Some(peer) = req.extensions().get::<TlsPeerIdentity>() {
+            let mut matches = peer
+                .candidates
+                .iter()
+                .filter(|candidate| self.config.users.contains_key(*candidate));
+            let Some(identity) = matches.next() else {
+                return "anonymous".to_string();
+            };
+            if matches.next().is_some() {
+                warn!("client certificate matches multiple RBAC identities");
+                return "ambiguous".to_string();
+            }
+            return identity.clone();
         }
 
         // Test-only fallback: allow X-User-CN header for integration tests
@@ -336,5 +416,34 @@ mod tests {
     fn test_rbac_unknown_user_denied() {
         let config = RbacConfig::default();
         assert!(!config.has_permission("CN=unknown.tacacs.internal", "read:status"));
+    }
+
+    #[test]
+    fn peer_identity_selection_fails_closed_on_multiple_rbac_matches() {
+        let mut config = RbacConfig::default();
+        config
+            .users
+            .insert("cn:admin.example.mil".to_owned(), "admin".to_owned());
+        config
+            .users
+            .insert("dns:admin.example.mil".to_owned(), "admin".to_owned());
+        let middleware = RbacMiddleware::new(config, "read:status");
+        let mut request = Request::new(Body::empty());
+        request.extensions_mut().insert(TlsPeerIdentity {
+            candidates: vec![
+                "cn:admin.example.mil".to_owned(),
+                "dns:admin.example.mil".to_owned(),
+            ],
+        });
+        assert_eq!(middleware.extract_user_identity(&request), "ambiguous");
+    }
+
+    #[test]
+    fn production_rbac_config_requires_typed_identities() {
+        let mut config = RbacConfig::default();
+        config
+            .users
+            .insert("admin.example.mil".to_owned(), "admin".to_owned());
+        assert_eq!(config.validate(), Err("invalid_certificate_identity"));
     }
 }

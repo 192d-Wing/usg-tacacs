@@ -60,7 +60,7 @@ mod models;
 mod rbac;
 
 pub use handlers::{RuntimeConfig, build_api_router};
-pub use rbac::{RbacConfig, TlsClientIdentity};
+pub use rbac::{RbacConfig, TlsPeerIdentity};
 
 use crate::jit_lease_store::JitLeaseStore;
 use crate::nad_reconciler::RuntimeNadRegistry;
@@ -81,26 +81,45 @@ use tower::ServiceExt;
 use tracing::{error, info, warn};
 use usg_tacacs_policy::PolicyEngine;
 
-/// Extract the Common Name from a TLS peer certificate.
+/// Extract typed identity candidates from a TLS peer certificate.
 ///
 /// # NIST Controls
 ///
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | IA-3 | Device Identification | Extracts CN from validated mTLS client certificate |
-fn extract_client_cn(
+fn extract_client_identities(
     tls_stream: &tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-) -> Option<String> {
+) -> Option<TlsPeerIdentity> {
     let (_, conn) = tls_stream.get_ref();
     let certs = conn.peer_certificates()?;
     let leaf = certs.first()?;
     let x509 = X509::from_der(leaf.as_ref()).ok()?;
-    for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
-        if let Ok(value) = entry.data().to_string() {
-            return Some(value);
+    let candidates = x509_identity_candidates(&x509);
+    (!candidates.is_empty()).then_some(TlsPeerIdentity { candidates })
+}
+
+fn x509_identity_candidates(x509: &X509) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(names) = x509.subject_alt_names() {
+        for name in names {
+            if let Some(value) = name.dnsname() {
+                candidates.push(format!("dns:{}", value.to_ascii_lowercase()));
+            } else if let Some(value) = name.uri() {
+                candidates.push(format!("uri:{value}"));
+            } else if let Some(value) = name.email() {
+                candidates.push(format!("email:{}", value.to_ascii_lowercase()));
+            }
         }
     }
-    None
+    for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
+        if let Ok(value) = entry.data().to_string() {
+            candidates.push(format!("cn:{value}"));
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
 }
 
 /// Handle single TLS connection for management API.
@@ -118,8 +137,8 @@ async fn handle_tls_connection(
     match acceptor.accept(stream).await {
         Ok(tls_stream) => {
             // NIST IA-3: Extract client identity from TLS certificate
-            let client_identity = extract_client_cn(&tls_stream).map(|cn| TlsClientIdentity { cn });
-            serve_tls_api_connection(tls_stream, peer_addr, app, client_identity).await;
+            let peer_identity = extract_client_identities(&tls_stream);
+            serve_tls_api_connection(tls_stream, peer_addr, app, peer_identity).await;
         }
         Err(e) => {
             warn!(peer = %peer_addr, error = %e, "TLS handshake failed for API connection");
@@ -138,14 +157,14 @@ async fn serve_tls_api_connection(
     tls_stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     peer_addr: SocketAddr,
     app: axum::Router,
-    client_identity: Option<TlsClientIdentity>,
+    peer_identity: Option<TlsPeerIdentity>,
 ) {
     let io = TokioIo::new(tls_stream);
     let tower_service = app.clone();
     let hyper_service =
         hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
             let tower_service = tower_service.clone();
-            let identity = client_identity.clone();
+            let identity = peer_identity.clone();
             async move {
                 let (mut parts, body) = req.into_parts();
                 let body = Body::new(body);
@@ -245,4 +264,23 @@ pub async fn serve_api(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn certificate_candidates_are_typed_and_dns_is_canonical() {
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["Admin.Example.Mil".to_owned()]).unwrap();
+        let certificate = X509::from_der(certified.cert.der()).unwrap();
+        let candidates = x509_identity_candidates(&certificate);
+        assert!(candidates.contains(&"dns:admin.example.mil".to_owned()));
+        assert!(candidates.iter().all(|identity| {
+            ["cn:", "dns:", "email:", "uri:"]
+                .iter()
+                .any(|prefix| identity.starts_with(prefix))
+        }));
+    }
 }
