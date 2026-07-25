@@ -129,6 +129,7 @@ struct AppState {
     audit_hmac_key: Option<Arc<Vec<u8>>>,
     jit_lease_store: Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
     nad_store: Option<Arc<crate::nad_store::NadStore>>,
+    runtime_nads: Option<Arc<crate::nad_reconciler::RuntimeNadSnapshot>>,
     jit_managed_nads: Arc<std::collections::HashSet<String>>,
     jit_legacy_nads: JitLegacyNads,
     legacy_nad_secrets: LegacyNadSecrets,
@@ -573,12 +574,21 @@ fn build_tls_contexts(
         audit_hmac_key: state.audit_hmac_key.clone(),
         jit_lease_store: state.jit_lease_store.clone(),
         jit_managed_nads: state.jit_managed_nads.clone(),
+        jit_tls_nads: state
+            .runtime_nads
+            .as_ref()
+            .map(|snapshot| snapshot.tls_identities.clone())
+            .unwrap_or_default(),
         jit_nad_identity: None,
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
+    let mut allowed_san = args.tls_allowed_client_san.clone();
+    if let Some(snapshot) = &state.runtime_nads {
+        allowed_san.extend(snapshot.tls_identities.keys().cloned());
+    }
     let tls_identity = TlsIdentityConfig {
         allowed_cn: args.tls_allowed_client_cn.clone(),
-        allowed_san: args.tls_allowed_client_san.clone(),
+        allowed_san,
     };
     let tls_registry = state.session_registry.clone();
     (auth_ctx, conn_cfg, tls_identity, tls_registry)
@@ -633,12 +643,13 @@ fn setup_legacy_listener(
         None => return Ok(()),
     };
 
+    let (nad_secrets, jit_legacy_nads) = legacy_runtime_maps(state);
     let default_ok = state
         .shared_secret
         .as_deref()
         .map(|s| s.len() >= MIN_SECRET_LEN)
         .unwrap_or(false);
-    let any_nad = !state.legacy_nad_secrets.is_empty();
+    let any_nad = !nad_secrets.is_empty();
     if !default_ok && !any_nad {
         bail!(
             "legacy TACACS+ requires a shared secret of at least {} bytes or per-NAD secrets",
@@ -658,11 +669,14 @@ fn setup_legacy_listener(
         audit_hmac_key: state.audit_hmac_key.clone(),
         jit_lease_store: state.jit_lease_store.clone(),
         jit_managed_nads: state.jit_managed_nads.clone(),
+        jit_tls_nads: state
+            .runtime_nads
+            .as_ref()
+            .map(|snapshot| snapshot.tls_identities.clone())
+            .unwrap_or_default(),
         jit_nad_identity: None,
     };
     let conn_cfg = build_connection_config(args, state.conn_limiter.clone());
-    let nad_secrets = state.legacy_nad_secrets.clone();
-    let jit_legacy_nads = state.jit_legacy_nads.clone();
     let legacy_registry = state.session_registry.clone();
 
     handles.push(tokio::spawn(async move {
@@ -680,6 +694,19 @@ fn setup_legacy_listener(
         }
     }));
     Ok(())
+}
+
+fn legacy_runtime_maps(state: &AppState) -> (LegacyNadSecrets, JitLegacyNads) {
+    match &state.runtime_nads {
+        Some(snapshot) => (
+            snapshot.legacy_secrets.clone(),
+            snapshot.legacy_identities.clone(),
+        ),
+        None => (
+            state.legacy_nad_secrets.clone(),
+            state.jit_legacy_nads.clone(),
+        ),
+    }
 }
 
 /// Setup HTTP health check server if configured.
@@ -1150,6 +1177,8 @@ async fn build_app_state(
     let (username_limiter, ip_limiter) = setup_request_limiters(args);
     let (est_provider, est_config) = setup_est_provider(args).await?;
     let nad_store = setup_nad_store(&jit_lease_store, &audit_hmac_key)?;
+    let runtime_nads =
+        setup_runtime_nads(nad_store.as_deref(), declarative_config.as_deref()).await?;
 
     let policy_engine = build_initial_policy(args, &policy_path, declarative_config.as_deref())?;
     Ok(AppState {
@@ -1167,6 +1196,7 @@ async fn build_app_state(
         audit_hmac_key,
         jit_lease_store,
         nad_store,
+        runtime_nads,
         jit_managed_nads,
         jit_legacy_nads,
         legacy_nad_secrets,
@@ -1177,6 +1207,34 @@ async fn build_app_state(
         policy_path,
         declarative_config,
     })
+}
+
+async fn setup_runtime_nads(
+    store: Option<&crate::nad_store::NadStore>,
+    declarative: Option<&ServerConfiguration>,
+) -> Result<Option<Arc<crate::nad_reconciler::RuntimeNadSnapshot>>> {
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    let api_nads = store
+        .list()
+        .await
+        .map_err(|error| anyhow::anyhow!("loading API-owned NADs: {error}"))?;
+    let yaml_nads = declarative
+        .map(|config| config.spec.nads.as_slice())
+        .unwrap_or_default();
+    let reconciler = crate::nad_reconciler::NadReconciler::new(PathBuf::from("/run/secrets/nads"));
+    let snapshot = reconciler.reconcile(yaml_nads, &api_nads);
+    let active = snapshot
+        .statuses
+        .values()
+        .filter(|status| status.state == crate::nad_reconciler::ReconciliationState::Active)
+        .count();
+    info!(
+        api_nads = api_nads.len(),
+        active, "initial NAD reconciliation complete"
+    );
+    Ok(Some(Arc::new(snapshot)))
 }
 
 fn setup_request_limiters(
@@ -1520,6 +1578,7 @@ mod ip_limiter;
 mod jit_lease;
 mod jit_lease_store;
 mod metrics;
+mod nad_reconciler;
 mod nad_store;
 mod policy;
 mod server;

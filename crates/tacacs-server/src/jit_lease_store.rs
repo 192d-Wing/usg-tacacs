@@ -738,6 +738,7 @@ mod tests {
                 "router-a.example.mil".to_owned(),
                 "router-b.example.mil".to_owned(),
             ])),
+            jit_tls_nads: Arc::new(HashMap::new()),
             jit_nad_identity: None,
         }
     }

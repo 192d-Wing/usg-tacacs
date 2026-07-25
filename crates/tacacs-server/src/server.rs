@@ -350,6 +350,8 @@ pub(crate) struct AuthContext {
     pub jit_lease_store: Option<Arc<JitLeaseStore>>,
     /// Certificate identities that must use JIT authentication exclusively.
     pub jit_managed_nads: Arc<HashSet<String>>,
+    /// Reconciled certificate identity to canonical NAD identity mappings.
+    pub jit_tls_nads: Arc<HashMap<String, NadIdentity>>,
     /// Trusted NAD identity selected from the authenticated client certificate.
     pub jit_nad_identity: Option<NadIdentity>,
 }
@@ -403,8 +405,8 @@ fn extract_cert_names(x509: &X509) -> Vec<String> {
 
     // Extract Common Name entries
     for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
-        if let Ok(val) = entry.data().as_utf8() {
-            names.push(val.to_string());
+        if let Ok(value) = entry.data().to_string() {
+            names.push(value);
         }
     }
 
@@ -495,7 +497,9 @@ fn enforce_client_cert_policy(
 }
 
 fn auth_ctx_with_nad_identity(base: AuthContext, cert_names: &[String]) -> Result<AuthContext> {
-    let jit_nad_identity = select_managed_nad_identity(cert_names, &base.jit_managed_nads)?;
+    let jit_nad_identity = select_reconciled_nad_identity(cert_names, &base.jit_tls_nads)?.or(
+        select_managed_nad_identity(cert_names, &base.jit_managed_nads)?,
+    );
     Ok(AuthContext {
         // RFC 9887 protects the TACACS+ body with TLS and does not use the
         // legacy shared-secret transform. The legacy listener independently
@@ -504,6 +508,20 @@ fn auth_ctx_with_nad_identity(base: AuthContext, cert_names: &[String]) -> Resul
         jit_nad_identity,
         ..base
     })
+}
+
+fn select_reconciled_nad_identity(
+    cert_names: &[String],
+    mappings: &HashMap<String, NadIdentity>,
+) -> Result<Option<NadIdentity>> {
+    let identities = cert_names
+        .iter()
+        .filter_map(|name| mappings.get(name))
+        .collect::<HashSet<_>>();
+    if identities.len() > 1 {
+        anyhow::bail!("certificate matches multiple managed NAD identities");
+    }
+    Ok(identities.into_iter().next().cloned())
 }
 
 fn select_managed_nad_identity(
@@ -1332,6 +1350,7 @@ fn auth_ctx_with_legacy_nad(
         audit_hmac_key: base.audit_hmac_key.clone(),
         jit_lease_store: base.jit_lease_store.clone(),
         jit_managed_nads: base.jit_managed_nads.clone(),
+        jit_tls_nads: base.jit_tls_nads.clone(),
         jit_nad_identity,
     }
 }

@@ -94,8 +94,8 @@ fn extract_client_cn(
     let leaf = certs.first()?;
     let x509 = X509::from_der(leaf.as_ref()).ok()?;
     for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
-        if let Ok(val) = entry.data().as_utf8() {
-            return Some(val.to_string());
+        if let Ok(value) = entry.data().to_string() {
+            return Some(value);
         }
     }
     None
