@@ -2,6 +2,7 @@
 //! Typed declarative YAML server configuration and semantic validation.
 
 use anyhow::{Context, Result, bail};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -11,7 +12,7 @@ pub const API_VERSION: &str = "tacacs.usg.mil/v1alpha1";
 pub const KIND: &str = "TacacsServer";
 pub const MAX_JIT_TTL_SECONDS: u64 = 900;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerConfiguration {
     pub api_version: String,
@@ -20,7 +21,7 @@ pub struct ServerConfiguration {
     pub spec: ServerSpec,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Metadata {
     pub name: String,
@@ -28,7 +29,7 @@ pub struct Metadata {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerSpec {
     pub listeners: Listeners,
@@ -41,7 +42,7 @@ pub struct ServerSpec {
     pub jit: Option<Jit>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Listeners {
     #[serde(default)]
@@ -51,7 +52,7 @@ pub struct Listeners {
     pub health: SocketAddr,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TlsListener {
     pub address: SocketAddr,
@@ -62,7 +63,7 @@ pub struct TlsListener {
     pub minimum_version: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 // `flatten` cannot be combined with `deny_unknown_fields`; the tagged
 // authentication enum performs strict validation of its own fields.
 #[serde(rename_all = "camelCase")]
@@ -75,7 +76,7 @@ pub struct Nad {
     pub authentication: NadAuthentication,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
 pub enum NadAuthentication {
     Legacy {
@@ -88,7 +89,7 @@ pub enum NadAuthentication {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Authorization {
     #[serde(default)]
@@ -97,7 +98,7 @@ pub struct Authorization {
     pub rules: Vec<AuthorizationRule>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthorizationRule {
     pub id: String,
@@ -113,28 +114,28 @@ pub struct AuthorizationRule {
     pub command: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleEffect {
     Allow,
     Deny,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Management {
     pub listener: TlsListener,
     pub rbac: Rbac,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Rbac {
     pub roles: BTreeMap<String, Role>,
     pub subjects: Vec<SubjectBinding>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Role {
     pub permissions: Vec<String>,
@@ -142,20 +143,20 @@ pub struct Role {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubjectBinding {
     pub certificate_identity: String,
     pub role: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Audit {
     pub hmac_key_file: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Jit {
     pub store_url: String,

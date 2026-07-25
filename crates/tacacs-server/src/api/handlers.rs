@@ -71,6 +71,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
+use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,6 +99,8 @@ pub struct RuntimeConfig {
     pub policy_source: String,
     /// True when policy is owned by the typed YAML server configuration.
     pub declarative_config: bool,
+    /// Parsed authoritative YAML, retained for redacted management reads.
+    pub source_config: Option<Arc<usg_tacacs_config::ServerConfiguration>>,
 }
 
 /// Shared state for API handlers.
@@ -246,6 +249,10 @@ pub fn build_api_router(
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/config", get(get_config))
+                .route("/api/mgmt/v1/config/effective", get(get_effective_config))
+                .route("/api/mgmt/v1/config/schema", get(get_config_schema))
+                .route("/api/mgmt/v1/config/validate", post(validate_config))
+                .route_layer(DefaultBodyLimit::max(256 * 1024))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:config",
@@ -1221,6 +1228,106 @@ async fn get_config(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     Json(response)
 }
 
+async fn validate_config(body: String) -> Response {
+    let parsed = yaml_serde::from_str::<usg_tacacs_config::ServerConfiguration>(&body);
+    let config = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::OK,
+                Json(ConfigValidationResponse {
+                    valid: false,
+                    configuration_hash: None,
+                    diagnostics: vec![ConfigDiagnostic {
+                        severity: "error",
+                        code: "configuration_parse_failed",
+                        path: None,
+                        message: error.to_string(),
+                    }],
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = config.validate(false) {
+        return (
+            StatusCode::OK,
+            Json(ConfigValidationResponse {
+                valid: false,
+                configuration_hash: Some(configuration_hash(&config)),
+                diagnostics: vec![ConfigDiagnostic {
+                    severity: "error",
+                    code: "configuration_validation_failed",
+                    path: diagnostic_path(&error.to_string()),
+                    message: error.to_string(),
+                }],
+            }),
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        Json(ConfigValidationResponse {
+            valid: true,
+            configuration_hash: Some(configuration_hash(&config)),
+            diagnostics: Vec::new(),
+        }),
+    )
+        .into_response()
+}
+
+async fn get_config_schema() -> Json<schemars::Schema> {
+    Json(schemars::schema_for!(
+        usg_tacacs_config::ServerConfiguration
+    ))
+}
+
+async fn get_effective_config(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
+    let Some(config) = state.config.source_config.as_ref() else {
+        return problem(
+            StatusCode::NOT_FOUND,
+            "declarative_config_unavailable",
+            mutation_correlation(&headers),
+        );
+    };
+    match serde_json::to_value(config.as_ref()) {
+        Ok(value) => Json(EffectiveConfigResponse {
+            ownership: "yaml",
+            mutable: false,
+            configuration_hash: configuration_hash(config),
+            config: value,
+        })
+        .into_response(),
+        Err(error) => {
+            tracing::error!(error = %error, "failed to serialize effective configuration");
+            problem(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "configuration_serialization_failed",
+                mutation_correlation(&headers),
+            )
+        }
+    }
+}
+
+fn configuration_hash(config: &usg_tacacs_config::ServerConfiguration) -> String {
+    let encoded = serde_json::to_vec(config).expect("typed configuration is serializable");
+    format!("sha256:{}", hex::encode(Sha256::digest(encoded)))
+}
+
+fn diagnostic_path(message: &str) -> Option<String> {
+    let field = message.split_whitespace().next()?;
+    field.starts_with("spec.").then(|| {
+        format!(
+            "/{}",
+            field
+                .trim_end_matches(':')
+                .split('.')
+                .collect::<Vec<_>>()
+                .join("/")
+        )
+    })
+}
+
 /// GET /api/v1/metrics - Get Prometheus metrics.
 ///
 /// Requires permission: `read:metrics`
@@ -1282,6 +1389,9 @@ mod tests {
 
     /// Create test runtime config.
     fn make_test_config() -> RuntimeConfig {
+        let source_config =
+            yaml_serde::from_str(include_str!("../../../../docs/config/server.example.yaml"))
+                .expect("example declarative configuration must parse");
         RuntimeConfig {
             listen_tls: None,
             listen_legacy: None,
@@ -1289,6 +1399,7 @@ mod tests {
             ldap_enabled: false,
             policy_source: "test-policy.json".to_string(),
             declarative_config: false,
+            source_config: Some(Arc::new(source_config)),
         }
     }
 
@@ -1509,6 +1620,64 @@ mod tests {
         }
 
         verify_references(&document, &document);
+    }
+
+    #[tokio::test]
+    async fn config_validation_uses_typed_declarative_model() {
+        use http_body_util::BodyExt;
+
+        let app = make_test_router(make_test_rbac());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mgmt/v1/config/validate")
+                    .header("X-User-CN", "CN=admin.test")
+                    .header(header::CONTENT_TYPE, "application/yaml")
+                    .body(Body::from(include_str!(
+                        "../../../../docs/config/server.example.yaml"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["valid"], true);
+        assert!(
+            body["configurationHash"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+    }
+
+    #[tokio::test]
+    async fn config_schema_and_effective_views_are_available() {
+        use http_body_util::BodyExt;
+
+        for path in [
+            "/api/mgmt/v1/config/schema",
+            "/api/mgmt/v1/config/effective",
+        ] {
+            let response = make_test_router(make_test_rbac())
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("X-User-CN", "CN=admin.test")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert!(body.is_object());
+        }
     }
 
     #[tokio::test]

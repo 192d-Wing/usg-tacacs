@@ -6,6 +6,22 @@ icon: lucide/settings
 
 The Management API provides REST endpoints for runtime administration of the TACACS+ server, including session management, policy reload, and monitoring.
 
+## Typed configuration inspection
+
+The API uses the same strict `TacacsServer` Rust types as the startup config
+checker:
+
+```text
+POST /api/mgmt/v1/config/validate
+GET  /api/mgmt/v1/config/schema
+GET  /api/mgmt/v1/config/effective
+```
+
+Validation is a dry run: it neither reads referenced secret files nor applies
+the submitted YAML. The effective endpoint returns the YAML-owned configuration
+as JSON with a stable SHA-256 hash. Authorized administrators can see secret
+references, but secret file contents are never included.
+
 ## Overview
 
 The API is disabled by default and must be explicitly enabled with `--api-enabled`. For production use, TLS with mutual authentication (mTLS) is strongly recommended.

@@ -47,6 +47,8 @@ url = "2"
 uuid.workspace = true
 time.workspace = true
 arc-swap.workspace = true
+yaml_serde = "0.10"
+schemars = "1.2"
 
 # HTTP server for metrics and health endpoints
 axum.workspace = true
@@ -72,4 +74,3 @@ opentelemetry-otlp.workspace = true
 tempfile = "3.14"
 rcgen = "0.14"
 usg-tacacs-client-tls.workspace = true
-yaml_serde = "0.10"

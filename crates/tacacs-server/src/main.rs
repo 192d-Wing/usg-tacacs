@@ -746,6 +746,7 @@ fn setup_management_api(
         ldap_enabled: state.ldap_config.is_some(),
         policy_source: state.policy_path.display().to_string(),
         declarative_config: state.declarative_config.is_some(),
+        source_config: state.declarative_config.clone(),
     };
 
     let api_policy = state.shared_policy.clone();

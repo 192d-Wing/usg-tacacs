@@ -60,6 +60,32 @@ use zeroize::Zeroizing;
 use crate::nad_reconciler::NadReconciliationStatus;
 use crate::nad_store::{NadAuthentication, NadRecord};
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigValidationResponse {
+    pub valid: bool,
+    pub configuration_hash: Option<String>,
+    pub diagnostics: Vec<ConfigDiagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigDiagnostic {
+    pub severity: &'static str,
+    pub code: &'static str,
+    pub path: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveConfigResponse {
+    pub ownership: &'static str,
+    pub mutable: bool,
+    pub configuration_hash: String,
+    pub config: serde_json::Value,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateNadRequest {

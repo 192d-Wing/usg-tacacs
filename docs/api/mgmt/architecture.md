@@ -55,6 +55,20 @@ Static baseline data such as listeners, trusted roots, authorization rules,
 RBAC roles, and secret-file references is declarative and validated before the
 server starts.
 
+The API exposes that same typed Rust model through read-only configuration
+operations:
+
+- `POST /api/mgmt/v1/config/validate` parses and semantically validates YAML
+  without resolving secrets or applying changes;
+- `GET /api/mgmt/v1/config/schema` returns JSON Schema generated from the
+  authoritative Rust types;
+- `GET /api/mgmt/v1/config/effective` returns the active declarative document,
+  its SHA-256 content hash, and explicit immutable YAML ownership metadata.
+
+These operations require `read:config`. They never rewrite the source file or
+a mounted ConfigMap. The effective view contains secret references only; the
+service never reads referenced secret contents to populate an API response.
+
 Dynamic NAD records created through management API operations are stored
 transactionally in PostgreSQL, with an immutable audit record. The management
 API does not rewrite a mounted ConfigMap or local YAML file. Git-managed YAML is

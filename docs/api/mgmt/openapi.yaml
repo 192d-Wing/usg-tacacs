@@ -122,6 +122,56 @@ paths:
                 $ref: "#/components/schemas/RuntimeConfig"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /config/effective:
+    get:
+      operationId: getEffectiveConfig
+      summary: Get the redacted effective declarative configuration
+      responses:
+        "200":
+          description: Effective Git-managed configuration and its stable hash
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectiveConfig"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /config/schema:
+    get:
+      operationId: getConfigSchema
+      summary: Get the JSON Schema generated from the authoritative Rust configuration types
+      responses:
+        "200":
+          description: JSON Schema for a TacacsServer declarative configuration
+          content:
+            application/json:
+              schema:
+                type: object
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /config/validate:
+    post:
+      operationId: validateConfig
+      summary: Parse and semantically validate a declarative YAML configuration without applying it
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema:
+              type: string
+              maxLength: 262144
+      responses:
+        "200":
+          description: Validation result, including diagnostics for invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigValidation"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          description: Configuration exceeds the request limit
   /metrics:
     get:
       operationId: getMetrics
@@ -509,6 +559,51 @@ components:
           type: boolean
         api_enabled:
           type: boolean
+    EffectiveConfig:
+      type: object
+      additionalProperties: false
+      required: [ownership, mutable, configurationHash, config]
+      properties:
+        ownership:
+          type: string
+          const: yaml
+        mutable:
+          type: boolean
+          const: false
+        configurationHash:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+        config:
+          type: object
+          description: Typed declarative configuration. Secret values are never resolved or returned.
+    ConfigValidation:
+      type: object
+      additionalProperties: false
+      required: [valid, configurationHash, diagnostics]
+      properties:
+        valid:
+          type: boolean
+        configurationHash:
+          type: [string, "null"]
+          pattern: "^sha256:[a-f0-9]{64}$"
+        diagnostics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigDiagnostic"
+    ConfigDiagnostic:
+      type: object
+      additionalProperties: false
+      required: [severity, code, path, message]
+      properties:
+        severity:
+          type: string
+          enum: [error, warning]
+        code:
+          type: string
+        path:
+          type: [string, "null"]
+        message:
+          type: string
     Success:
       type: object
       additionalProperties: false
