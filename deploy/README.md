@@ -31,3 +31,9 @@ refer to a file containing only that NAD's TACACS shared secret; do not point it
 at the former aggregate `IP=secret` file. JIT store settings, authorization, and
 management RBAC are no longer supplied through separate environment variables
 or JSON files when `--config` is used.
+
+Management certificate identities must use an explicit typed selector:
+`cn:`, `dns:`, `email:`, or `uri:`. The chart's NetworkPolicy admits port 8443
+only from a declared namespace and matching Pod labels. Both selectors are
+applied to the same peer; a matching Pod name in another namespace is not
+sufficient.

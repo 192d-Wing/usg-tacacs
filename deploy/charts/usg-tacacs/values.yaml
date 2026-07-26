@@ -31,10 +31,13 @@ service:
   annotations: {}
 
 management:
-  adminCommonNames:
-    - tacacs-admin.example.mil
-  issuerCommonName: jitpw-api.jitpw-system.svc
-  auditorCommonName: jitpw-audit.jitpw-system.svc
+  subjects:
+    - certificateIdentity: cn:tacacs-admin.example.mil
+      role: admin
+    - certificateIdentity: dns:jitpw-api.jitpw-system.svc
+      role: jitpw-issuer
+    - certificateIdentity: dns:jitpw-audit.jitpw-system.svc
+      role: jitpw-auditor
 
 authorization:
   privilegedGroups:
@@ -42,9 +45,13 @@ authorization:
 
 networkPolicy:
   enabled: true
-  managementPodNames:
-    - jitpw-api
-    - jitpw-recovery-worker
+  managementPeers:
+    - namespace: jitpw-system
+      podLabels:
+        app.kubernetes.io/name: jitpw-api
+    - namespace: jitpw-system
+      podLabels:
+        app.kubernetes.io/name: jitpw-recovery-worker
 
 resources:
   requests:

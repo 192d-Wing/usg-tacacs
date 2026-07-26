@@ -49,6 +49,7 @@
 //! - **AU-2/AU-12 (Audit Events/Generation)**: All API requests are logged
 //!   with user identity, endpoint, and authorization result.
 
+use super::middleware::request_context;
 use super::models::*;
 use super::rbac::TlsClientIdentity;
 use super::rbac::{RbacConfig, require_permission};
@@ -58,18 +59,23 @@ use crate::jit_lease_store::{
 };
 use crate::metrics::metrics;
 use crate::nad_reconciler::RuntimeNadRegistry;
-use crate::nad_store::{CreateNadInput, CreateNadOutcome, NadStore, NadStoreError, UpdateNadInput};
+use crate::nad_store::{
+    CreateNadInput, CreateNadOutcome, NadAuthentication, NadStore, NadStoreError, StoredOperation,
+    UpdateNadInput,
+};
 use crate::server::PolicyReloadRequest;
 use crate::session_registry::SessionRegistry;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Extension, Path, State},
+    extract::{DefaultBodyLimit, Extension, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -97,6 +103,8 @@ pub struct RuntimeConfig {
     pub policy_source: String,
     /// True when policy is owned by the typed YAML server configuration.
     pub declarative_config: bool,
+    /// Parsed authoritative YAML, retained for redacted management reads.
+    pub source_config: Option<Arc<usg_tacacs_config::ServerConfiguration>>,
 }
 
 /// Shared state for API handlers.
@@ -138,6 +146,8 @@ pub struct ApiState {
     pub nad_store: Option<Arc<NadStore>>,
     /// Atomically published runtime NAD registry.
     pub runtime_nads: Option<Arc<RuntimeNadRegistry>>,
+    /// Observable asynchronous management operations.
+    pub operations: Arc<RwLock<HashMap<Uuid, OperationResponse>>>,
 }
 
 /// Build the API router with all endpoints.
@@ -182,12 +192,24 @@ pub fn build_api_router(
         jit_lease_store,
         nad_store,
         runtime_nads,
+        operations: Arc::new(RwLock::new(HashMap::new())),
     });
 
     Router::new()
         .merge(
             Router::new()
+                .route("/api/mgmt/v1/audit/nads", get(list_nad_audit))
+                .route("/api/mgmt/v1/audit/nads/verify", get(verify_nad_audit))
+                .route_layer(middleware::from_fn(require_permission(&rbac, "read:audit"))),
+        )
+        .merge(
+            Router::new()
                 .route("/api/mgmt/v1/nads", get(list_nads))
+                .route("/api/mgmt/v1/nads/inventory", get(list_nad_inventory))
+                .route(
+                    "/api/mgmt/v1/nads/reconciliation",
+                    get(get_nad_reconciliation),
+                )
                 .route("/api/mgmt/v1/nads/{id}", get(get_nad))
                 .route_layer(middleware::from_fn(require_permission(&rbac, "read:nads"))),
         )
@@ -244,7 +266,19 @@ pub fn build_api_router(
         )
         .merge(
             Router::new()
+                .route("/api/mgmt/v1/operations/{id}", get(get_operation))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    "read:operations",
+                ))),
+        )
+        .merge(
+            Router::new()
                 .route("/api/mgmt/v1/config", get(get_config))
+                .route("/api/mgmt/v1/config/effective", get(get_effective_config))
+                .route("/api/mgmt/v1/config/schema", get(get_config_schema))
+                .route("/api/mgmt/v1/config/validate", post(validate_config))
+                .route_layer(DefaultBodyLimit::max(256 * 1024))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
                     "read:config",
@@ -305,6 +339,7 @@ pub fn build_api_router(
                 ))),
         )
         .with_state(state)
+        .layer(middleware::from_fn(request_context))
 }
 
 /// Return the version-controlled management OpenAPI 3.1.1 contract.
@@ -323,8 +358,19 @@ async fn get_jit_openapi() -> impl IntoResponse {
     )
 }
 
-async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
+async fn list_nads(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<NadListQuery>,
+    headers: HeaderMap,
+) -> Response {
     let correlation_id = mutation_correlation(&headers);
+    let Some((limit, offset)) = nad_list_page(&query) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_pagination",
+            correlation_id,
+        );
+    };
     let Some(store) = state.nad_store.as_ref() else {
         return problem(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -332,10 +378,14 @@ async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Re
             correlation_id,
         );
     };
-    match store.list().await {
-        Ok(items) => {
+    match store
+        .list_page(query.name_prefix.as_deref(), limit, offset)
+        .await
+    {
+        Ok(page) => {
             let snapshot = state.runtime_nads.as_ref().map(|value| value.snapshot());
-            let items = items
+            let items = page
+                .items
                 .into_iter()
                 .map(|record| NadResponse {
                     reconciliation: snapshot
@@ -344,10 +394,245 @@ async fn list_nads(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Re
                     record,
                 })
                 .collect();
-            (StatusCode::OK, Json(NadListResponse { items })).into_response()
+            let next_offset = page.has_more.then_some(offset + limit);
+            (StatusCode::OK, Json(NadListResponse { items, next_offset })).into_response()
         }
         Err(error) => nad_problem(error, correlation_id),
     }
+}
+
+async fn list_nad_audit(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<NadAuditQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some((limit, offset)) = nad_audit_page(&query) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_audit_query",
+            correlation_id,
+        );
+    };
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        );
+    };
+    match store
+        .list_audit(
+            query.nad_id,
+            query.correlation_id,
+            query.action.as_deref(),
+            limit,
+            offset,
+        )
+        .await
+    {
+        Ok(page) => Json(NadAuditResponse {
+            items: page.items,
+            next_offset: page.has_more.then_some(offset + limit),
+        })
+        .into_response(),
+        Err(error) => nad_problem(error, correlation_id),
+    }
+}
+
+async fn verify_nad_audit(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<NadAuditVerificationQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some((limit, offset)) = nad_audit_verification_page(&query) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_audit_query",
+            correlation_id,
+        );
+    };
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        );
+    };
+    match store.verify_audit_page(limit, offset).await {
+        Ok(report) => Json(report).into_response(),
+        Err(error) => nad_problem(error, correlation_id),
+    }
+}
+
+fn nad_audit_verification_page(query: &NadAuditVerificationQuery) -> Option<(usize, usize)> {
+    let limit = query.limit.unwrap_or(1_000);
+    let offset = query.offset.unwrap_or(0);
+    (limit > 0 && limit <= 5_000 && offset <= 1_000_000).then_some((limit, offset))
+}
+
+fn nad_audit_page(query: &NadAuditQuery) -> Option<(usize, usize)> {
+    let limit = query.limit.unwrap_or(100);
+    let offset = query.offset.unwrap_or(0);
+    let valid_action = query
+        .action
+        .as_deref()
+        .is_none_or(|value| matches!(value, "create" | "update" | "delete"));
+    (valid_action && limit > 0 && limit <= 200 && offset <= 1_000_000).then_some((limit, offset))
+}
+
+fn nad_list_page(query: &NadListQuery) -> Option<(usize, usize)> {
+    let limit = query.limit.unwrap_or(100);
+    let offset = query.offset.unwrap_or(0);
+    let valid_prefix = query.name_prefix.as_deref().is_none_or(valid_nad_prefix);
+    (valid_prefix && limit > 0 && limit <= 200 && offset <= 1_000_000).then_some((limit, offset))
+}
+
+fn valid_nad_prefix(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value == value.to_ascii_lowercase()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+}
+
+async fn list_nad_inventory(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some(store) = state.nad_store.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_store_unavailable",
+            correlation_id,
+        );
+    };
+    let api_records = match store.list().await {
+        Ok(records) => records,
+        Err(error) => return nad_problem(error, correlation_id),
+    };
+    let snapshot = state.runtime_nads.as_ref().map(|value| value.snapshot());
+    let mut items = yaml_inventory(&state.config);
+    items.extend(api_records.into_iter().map(|record| {
+        let reconciliation = snapshot
+            .as_ref()
+            .and_then(|value| value.statuses.get(&record.nad_id).cloned());
+        NadInventoryItem {
+            nad_id: Some(record.nad_id),
+            name: record.name,
+            description: record.description,
+            source_address: record.source_address,
+            authentication: record.authentication,
+            ownership: "api",
+            mutable: true,
+            resource_version: Some(record.resource_version),
+            reconciliation,
+        }
+    }));
+    items.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.ownership.cmp(right.ownership))
+            .then_with(|| left.source_address.cmp(&right.source_address))
+    });
+    (StatusCode::OK, Json(NadInventoryResponse { items })).into_response()
+}
+
+fn yaml_inventory(config: &RuntimeConfig) -> Vec<NadInventoryItem> {
+    let Some(source) = &config.source_config else {
+        return Vec::new();
+    };
+    source
+        .spec
+        .nads
+        .iter()
+        .map(|nad| NadInventoryItem {
+            nad_id: None,
+            name: nad.name.clone(),
+            description: nad.description.clone(),
+            source_address: nad.source_address,
+            authentication: yaml_authentication(&nad.authentication),
+            ownership: "yaml",
+            mutable: false,
+            resource_version: None,
+            reconciliation: None,
+        })
+        .collect()
+}
+
+fn yaml_authentication(value: &usg_tacacs_config::NadAuthentication) -> NadAuthentication {
+    match value {
+        usg_tacacs_config::NadAuthentication::Legacy { secret_file } => NadAuthentication::Legacy {
+            secret_ref: secret_file.display().to_string(),
+        },
+        usg_tacacs_config::NadAuthentication::Tls {
+            certificate_identities,
+        } => NadAuthentication::Tls {
+            certificate_identities: certificate_identities.clone(),
+        },
+    }
+}
+
+async fn get_nad_reconciliation(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<NadReconciliationQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let correlation_id = mutation_correlation(&headers);
+    let Some(registry) = state.runtime_nads.as_ref() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nad_reconciliation_unavailable",
+            correlation_id,
+        );
+    };
+    let Some((limit, offset)) = reconciliation_page(&query) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_pagination",
+            correlation_id,
+        );
+    };
+    let snapshot = registry.snapshot();
+    let mut all = snapshot.statuses.values().cloned().collect::<Vec<_>>();
+    all.sort_by_key(|status| status.nad_id);
+    let counts = reconciliation_counts(&all);
+    if let Some(state) = query.state {
+        all.retain(|status| status.state == state);
+    }
+    let total = all.len();
+    let items = all.into_iter().skip(offset).take(limit).collect();
+    let next_offset = (offset.saturating_add(limit) < total).then_some(offset + limit);
+    Json(NadReconciliationResponse {
+        reconciled_at: snapshot.reconciled_at,
+        total,
+        active: counts[0],
+        conflict: counts[1],
+        secret_unavailable: counts[2],
+        items,
+        next_offset,
+    })
+    .into_response()
+}
+
+fn reconciliation_page(query: &NadReconciliationQuery) -> Option<(usize, usize)> {
+    let limit = query.limit.unwrap_or(100);
+    let offset = query.offset.unwrap_or(0);
+    (limit > 0 && limit <= 200 && offset <= 1_000_000).then_some((limit, offset))
+}
+
+fn reconciliation_counts(
+    statuses: &[crate::nad_reconciler::NadReconciliationStatus],
+) -> [usize; 3] {
+    let mut counts = [0; 3];
+    for status in statuses {
+        match status.state {
+            crate::nad_reconciler::ReconciliationState::Active => counts[0] += 1,
+            crate::nad_reconciler::ReconciliationState::Conflict => counts[1] += 1,
+            crate::nad_reconciler::ReconciliationState::SecretUnavailable => counts[2] += 1,
+        }
+    }
+    counts
 }
 
 async fn get_nad(
@@ -394,7 +679,7 @@ async fn create_nad(
         description: request.description,
         source_address: request.source_address,
         authentication: request.authentication,
-        actor: identity.cn,
+        actor: identity.certificate_identity,
         correlation_id,
         idempotency_key,
     };
@@ -437,7 +722,7 @@ async fn update_nad(
         source_address: request.source_address,
         authentication: request.authentication,
         expected_version,
-        actor: identity.cn,
+        actor: identity.certificate_identity,
         correlation_id,
     };
     match store.update(input).await {
@@ -469,7 +754,12 @@ async fn delete_nad(
         );
     };
     match store
-        .delete(nad_id, expected_version, &identity.cn, correlation_id)
+        .delete(
+            nad_id,
+            expected_version,
+            &identity.certificate_identity,
+            correlation_id,
+        )
         .await
     {
         Ok(_) => {
@@ -601,7 +891,7 @@ async fn create_jit_lease(
             crate::server::audit_event(
                 "jit_lease_create",
                 "management-api",
-                &identity.cn,
+                &identity.certificate_identity,
                 0,
                 "success",
                 "authorized",
@@ -616,7 +906,7 @@ async fn create_jit_lease(
             crate::server::audit_event(
                 "jit_lease_create",
                 "management-api",
-                &identity.cn,
+                &identity.certificate_identity,
                 0,
                 "denied",
                 error.to_string().as_str(),
@@ -655,7 +945,7 @@ async fn get_jit_lease(
         Ok(Some(metadata)) => {
             audit_lease_api(
                 "jit_lease_read",
-                &identity.cn,
+                &identity.certificate_identity,
                 "success",
                 "authorized",
                 &correlation_id,
@@ -666,7 +956,7 @@ async fn get_jit_lease(
         Ok(None) => {
             audit_lease_api(
                 "jit_lease_read",
-                &identity.cn,
+                &identity.certificate_identity,
                 "denied",
                 "lease_not_found",
                 &correlation_id,
@@ -677,7 +967,7 @@ async fn get_jit_lease(
         Err(error) => {
             audit_lease_api(
                 "jit_lease_read",
-                &identity.cn,
+                &identity.certificate_identity,
                 "error",
                 error.to_string().as_str(),
                 &correlation_id,
@@ -710,7 +1000,7 @@ async fn revoke_jit_lease(
             crate::server::audit_event(
                 "jit_lease_revoke",
                 "management-api",
-                &identity.cn,
+                &identity.certificate_identity,
                 0,
                 "success",
                 "revoked",
@@ -721,7 +1011,7 @@ async fn revoke_jit_lease(
         Err(error) => {
             audit_lease_api(
                 "jit_lease_revoke",
-                &identity.cn,
+                &identity.certificate_identity,
                 "error",
                 error.to_string().as_str(),
                 &correlation_id,
@@ -976,24 +1266,21 @@ async fn get_sessions(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 async fn delete_session(
     State(state): State<Arc<ApiState>>,
     Path(session_id): Path<u64>,
-) -> impl IntoResponse {
+    headers: HeaderMap,
+) -> Response {
     info!(session_id = session_id, "API request to terminate session");
 
     // NIST AC-12: Terminate session by connection ID
     let success = state.registry.terminate_session(session_id).await;
 
     if success {
-        let response = SuccessResponse {
-            success: true,
-            message: format!("Session {} termination requested", session_id),
-        };
-        (StatusCode::OK, Json(response))
+        StatusCode::NO_CONTENT.into_response()
     } else {
-        let response = SuccessResponse {
-            success: false,
-            message: format!("Session {} not found", session_id),
-        };
-        (StatusCode::NOT_FOUND, Json(response))
+        problem(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            mutation_correlation(&headers),
+        )
     }
 }
 
@@ -1032,33 +1319,182 @@ async fn get_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 /// | AC-3 | Access Enforcement | Requires `write:policy` permission |
 /// | AU-12 | Audit Generation | Logs reload request initiation |
 /// | CM-3 | Configuration Change Control | API-triggered policy reload with audit logging |
-async fn reload_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+async fn reload_policy(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
     info!("API request to reload policy");
 
     // NIST CM-3: Send reload request through internal channel
+    let operation_id = Uuid::now_v7();
+    let operation = OperationResponse {
+        operation_id: operation_id.to_string(),
+        kind: "authorizationPolicyReload",
+        status: "running",
+        submitted_at: current_timestamp(),
+        completed_at: None,
+        error: None,
+    };
+    if !register_operation(&state, operation_id, operation.clone()).await {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "operation_capacity_exceeded",
+            mutation_correlation(&headers),
+        );
+    }
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
     let request = PolicyReloadRequest::FromDisk {
         path: PathBuf::from(&state.policy_path),
         schema: state.schema_path.clone(),
+        completion: Some(completion_tx),
     };
 
     match state.reload_tx.send(request).await {
         Ok(_) => {
             info!("Policy reload request queued successfully");
-            let response = SuccessResponse {
-                success: true,
-                message: "Policy reload triggered".to_string(),
-            };
-            (StatusCode::OK, Json(response))
+            spawn_operation_completion(&state, operation_id, completion_rx);
+            (StatusCode::ACCEPTED, Json(operation)).into_response()
         }
         Err(e) => {
             warn!(error = %e, "Failed to queue policy reload request");
-            let response = SuccessResponse {
-                success: false,
-                message: "Failed to queue policy reload - channel closed".to_string(),
-            };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(response))
+            state.operations.write().await.remove(&operation_id);
+            if let Some(store) = &state.nad_store {
+                let _ = store
+                    .complete_operation(operation_id, "failed", Some("policy reload unavailable"))
+                    .await;
+            }
+            problem(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "policy_reload_unavailable",
+                mutation_correlation(&headers),
+            )
         }
     }
+}
+
+fn spawn_operation_completion(
+    state: &ApiState,
+    operation_id: Uuid,
+    completion_rx: tokio::sync::oneshot::Receiver<Result<(), String>>,
+) {
+    let operations = Arc::clone(&state.operations);
+    let operation_store = state.nad_store.clone();
+    tokio::spawn(async move {
+        let result = completion_rx
+            .await
+            .unwrap_or_else(|_| Err("policy reload worker stopped".to_string()));
+        let (status, error) = match result {
+            Ok(()) => ("succeeded", None),
+            Err(error) => ("failed", Some(error)),
+        };
+        if let Some(operation) = operations.write().await.get_mut(&operation_id) {
+            operation.completed_at = Some(current_timestamp());
+            operation.status = status;
+            operation.error.clone_from(&error);
+        }
+        if let Some(store) = operation_store
+            && let Err(store_error) = store
+                .complete_operation(operation_id, status, error.as_deref())
+                .await
+        {
+            warn!(error = %store_error, %operation_id, "failed to persist operation result");
+        }
+    });
+}
+
+async fn register_operation(state: &ApiState, id: Uuid, operation: OperationResponse) -> bool {
+    let durable = state.nad_store.is_some();
+    if let Some(store) = &state.nad_store {
+        let Some(stored) = stored_operation(id, &operation) else {
+            return false;
+        };
+        if store.create_operation(&stored).await.is_err() {
+            return false;
+        }
+    }
+    const MAX_OPERATIONS: usize = 1024;
+    let mut records = state.operations.write().await;
+    if records.len() >= MAX_OPERATIONS {
+        let completed = records
+            .iter()
+            .filter(|(_, value)| value.completed_at.is_some())
+            .min_by_key(|(_, value)| &value.submitted_at)
+            .map(|(id, _)| *id);
+        let Some(completed) = completed else {
+            return durable;
+        };
+        records.remove(&completed);
+    }
+    records.insert(id, operation);
+    true
+}
+
+async fn get_operation(
+    State(state): State<Arc<ApiState>>,
+    Path(operation_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(store) = &state.nad_store {
+        return match store.get_operation(operation_id).await {
+            Ok(operation) => Json(operation_response(operation)).into_response(),
+            Err(NadStoreError::NotFound) => problem(
+                StatusCode::NOT_FOUND,
+                "operation_not_found",
+                mutation_correlation(&headers),
+            ),
+            Err(error) => nad_problem(error, mutation_correlation(&headers)),
+        };
+    }
+    match state.operations.read().await.get(&operation_id).cloned() {
+        Some(operation) => Json(operation).into_response(),
+        None => problem(
+            StatusCode::NOT_FOUND,
+            "operation_not_found",
+            mutation_correlation(&headers),
+        ),
+    }
+}
+
+fn stored_operation(id: Uuid, operation: &OperationResponse) -> Option<StoredOperation> {
+    let submitted_at = time::OffsetDateTime::parse(
+        &operation.submitted_at,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .ok()?;
+    Some(StoredOperation {
+        operation_id: id,
+        kind: operation.kind.to_owned(),
+        status: operation.status.to_owned(),
+        submitted_at,
+        completed_at: None,
+        error: None,
+    })
+}
+
+fn operation_response(operation: StoredOperation) -> OperationResponse {
+    OperationResponse {
+        operation_id: operation.operation_id.to_string(),
+        kind: match operation.kind.as_str() {
+            "authorizationPolicyReload" => "authorizationPolicyReload",
+            _ => "unknown",
+        },
+        status: match operation.status.as_str() {
+            "running" => "running",
+            "succeeded" => "succeeded",
+            "failed" => "failed",
+            _ => "failed",
+        },
+        submitted_at: format_operation_timestamp(operation.submitted_at),
+        completed_at: operation.completed_at.map(format_operation_timestamp),
+        error: operation.error,
+    }
+}
+
+fn format_operation_timestamp(value: time::OffsetDateTime) -> String {
+    value
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("UTC timestamp is RFC 3339 representable")
+}
+
+fn current_timestamp() -> String {
+    format_operation_timestamp(time::OffsetDateTime::now_utc())
 }
 
 /// POST /api/v1/policy - Upload new policy from JSON.
@@ -1126,6 +1562,7 @@ async fn queue_policy_upload(
     let request = PolicyReloadRequest::FromJson {
         content: policy_json,
         schema: schema_path,
+        completion: None,
     };
 
     match reload_tx.send(request).await {
@@ -1222,6 +1659,106 @@ async fn get_config(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     Json(response)
 }
 
+async fn validate_config(body: String) -> Response {
+    let parsed = yaml_serde::from_str::<usg_tacacs_config::ServerConfiguration>(&body);
+    let config = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::OK,
+                Json(ConfigValidationResponse {
+                    valid: false,
+                    configuration_hash: None,
+                    diagnostics: vec![ConfigDiagnostic {
+                        severity: "error",
+                        code: "configuration_parse_failed",
+                        path: None,
+                        message: error.to_string(),
+                    }],
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = config.validate(false) {
+        return (
+            StatusCode::OK,
+            Json(ConfigValidationResponse {
+                valid: false,
+                configuration_hash: Some(configuration_hash(&config)),
+                diagnostics: vec![ConfigDiagnostic {
+                    severity: "error",
+                    code: "configuration_validation_failed",
+                    path: diagnostic_path(&error.to_string()),
+                    message: error.to_string(),
+                }],
+            }),
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        Json(ConfigValidationResponse {
+            valid: true,
+            configuration_hash: Some(configuration_hash(&config)),
+            diagnostics: Vec::new(),
+        }),
+    )
+        .into_response()
+}
+
+async fn get_config_schema() -> Json<schemars::Schema> {
+    Json(schemars::schema_for!(
+        usg_tacacs_config::ServerConfiguration
+    ))
+}
+
+async fn get_effective_config(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
+    let Some(config) = state.config.source_config.as_ref() else {
+        return problem(
+            StatusCode::NOT_FOUND,
+            "declarative_config_unavailable",
+            mutation_correlation(&headers),
+        );
+    };
+    match serde_json::to_value(config.as_ref()) {
+        Ok(value) => Json(EffectiveConfigResponse {
+            ownership: "yaml",
+            mutable: false,
+            configuration_hash: configuration_hash(config),
+            config: value,
+        })
+        .into_response(),
+        Err(error) => {
+            tracing::error!(error = %error, "failed to serialize effective configuration");
+            problem(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "configuration_serialization_failed",
+                mutation_correlation(&headers),
+            )
+        }
+    }
+}
+
+fn configuration_hash(config: &usg_tacacs_config::ServerConfiguration) -> String {
+    let encoded = serde_json::to_vec(config).expect("typed configuration is serializable");
+    format!("sha256:{}", hex::encode(Sha256::digest(encoded)))
+}
+
+fn diagnostic_path(message: &str) -> Option<String> {
+    let field = message.split_whitespace().next()?;
+    field.starts_with("spec.").then(|| {
+        format!(
+            "/{}",
+            field
+                .trim_end_matches(':')
+                .split('.')
+                .collect::<Vec<_>>()
+                .join("/")
+        )
+    })
+}
+
 /// GET /api/v1/metrics - Get Prometheus metrics.
 ///
 /// Requires permission: `read:metrics`
@@ -1283,6 +1820,9 @@ mod tests {
 
     /// Create test runtime config.
     fn make_test_config() -> RuntimeConfig {
+        let source_config =
+            yaml_serde::from_str(include_str!("../../../../docs/config/server.example.yaml"))
+                .expect("example declarative configuration must parse");
         RuntimeConfig {
             listen_tls: None,
             listen_legacy: None,
@@ -1290,6 +1830,7 @@ mod tests {
             ldap_enabled: false,
             policy_source: "test-policy.json".to_string(),
             declarative_config: false,
+            source_config: Some(Arc::new(source_config)),
         }
     }
 
@@ -1347,6 +1888,131 @@ mod tests {
         assert_eq!(uuid_header(&headers, "x-correlation-id"), Some(expected));
         headers.insert("x-correlation-id", HeaderValue::from_static("not-a-uuid"));
         assert_eq!(uuid_header(&headers, "x-correlation-id"), None);
+    }
+
+    #[test]
+    fn yaml_inventory_is_read_only_and_contains_only_secret_references() {
+        let items = yaml_inventory(&make_test_config());
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| {
+            item.ownership == "yaml"
+                && !item.mutable
+                && item.nad_id.is_none()
+                && item.resource_version.is_none()
+        }));
+        let legacy = items
+            .iter()
+            .find(|item| item.name == "oopl-an-001")
+            .expect("example legacy NAD must be present");
+        assert_eq!(
+            legacy.authentication,
+            NadAuthentication::Legacy {
+                secret_ref: "/run/secrets/nads/oopl-an-001".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn reconciliation_queries_are_bounded_and_count_all_states() {
+        assert_eq!(
+            reconciliation_page(&NadReconciliationQuery {
+                state: None,
+                limit: None,
+                offset: None,
+            }),
+            Some((100, 0))
+        );
+        assert_eq!(
+            reconciliation_page(&NadReconciliationQuery {
+                state: None,
+                limit: Some(201),
+                offset: None,
+            }),
+            None
+        );
+        let statuses = [
+            reconciliation_status(crate::nad_reconciler::ReconciliationState::Active),
+            reconciliation_status(crate::nad_reconciler::ReconciliationState::Conflict),
+            reconciliation_status(crate::nad_reconciler::ReconciliationState::SecretUnavailable),
+        ];
+        assert_eq!(reconciliation_counts(&statuses), [1, 1, 1]);
+    }
+
+    #[test]
+    fn nad_collection_queries_are_bounded_and_prefixes_are_canonical() {
+        assert_eq!(
+            nad_list_page(&NadListQuery {
+                name_prefix: Some("oopl-an-".to_owned()),
+                limit: None,
+                offset: None,
+            }),
+            Some((100, 0))
+        );
+        assert_eq!(
+            nad_list_page(&NadListQuery {
+                name_prefix: Some("OOPL".to_owned()),
+                limit: Some(10),
+                offset: None,
+            }),
+            None
+        );
+        assert_eq!(
+            nad_list_page(&NadListQuery {
+                name_prefix: None,
+                limit: Some(201),
+                offset: None,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn audit_queries_are_bounded_and_actions_are_allowlisted() {
+        assert_eq!(
+            nad_audit_page(&NadAuditQuery {
+                nad_id: None,
+                correlation_id: None,
+                action: Some("delete".to_owned()),
+                limit: None,
+                offset: None,
+            }),
+            Some((100, 0))
+        );
+        assert_eq!(
+            nad_audit_page(&NadAuditQuery {
+                nad_id: None,
+                correlation_id: None,
+                action: Some("truncate".to_owned()),
+                limit: Some(10),
+                offset: None,
+            }),
+            None
+        );
+        assert_eq!(
+            nad_audit_verification_page(&NadAuditVerificationQuery {
+                limit: None,
+                offset: None,
+            }),
+            Some((1_000, 0))
+        );
+        assert_eq!(
+            nad_audit_verification_page(&NadAuditVerificationQuery {
+                limit: Some(5_001),
+                offset: None,
+            }),
+            None
+        );
+    }
+
+    fn reconciliation_status(
+        state: crate::nad_reconciler::ReconciliationState,
+    ) -> crate::nad_reconciler::NadReconciliationStatus {
+        crate::nad_reconciler::NadReconciliationStatus {
+            nad_id: Uuid::new_v4(),
+            resource_version: 1,
+            state,
+            reason: None,
+        }
     }
 
     // ==================== Authentication Tests ====================
@@ -1472,6 +2138,104 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mgmt_openapi_is_parseable_and_internal_references_resolve() {
+        let document: serde_json::Value =
+            yaml_serde::from_str(include_str!("../../../../docs/api/mgmt/openapi.yaml"))
+                .expect("management OpenAPI document must be valid YAML");
+        assert_eq!(document["openapi"], "3.1.1");
+        assert!(
+            document["paths"]
+                .as_object()
+                .is_some_and(|paths| !paths.is_empty())
+        );
+
+        fn verify_references(root: &serde_json::Value, value: &serde_json::Value) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    if let Some(reference) = object.get("$ref").and_then(|value| value.as_str()) {
+                        let pointer = reference
+                            .strip_prefix('#')
+                            .expect("only internal OpenAPI references are allowed");
+                        assert!(
+                            root.pointer(pointer).is_some(),
+                            "unresolved OpenAPI reference: {reference}"
+                        );
+                    }
+                    for child in object.values() {
+                        verify_references(root, child);
+                    }
+                }
+                serde_json::Value::Array(array) => {
+                    for child in array {
+                        verify_references(root, child);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        verify_references(&document, &document);
+    }
+
+    #[tokio::test]
+    async fn config_validation_uses_typed_declarative_model() {
+        use http_body_util::BodyExt;
+
+        let app = make_test_router(make_test_rbac());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mgmt/v1/config/validate")
+                    .header("X-User-CN", "CN=admin.test")
+                    .header(header::CONTENT_TYPE, "application/yaml")
+                    .body(Body::from(include_str!(
+                        "../../../../docs/config/server.example.yaml"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["valid"], true);
+        assert!(
+            body["configurationHash"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+    }
+
+    #[tokio::test]
+    async fn config_schema_and_effective_views_are_available() {
+        use http_body_util::BodyExt;
+
+        for path in [
+            "/api/mgmt/v1/config/schema",
+            "/api/mgmt/v1/config/effective",
+        ] {
+            let response = make_test_router(make_test_rbac())
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("X-User-CN", "CN=admin.test")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert!(body.is_object());
+        }
+    }
+
     #[tokio::test]
     async fn jit_openapi_serves_versioned_contract() {
         use http_body_util::BodyExt;
@@ -1525,7 +2289,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/policy/reload")
+                    .uri("/api/mgmt/v1/policy/reload")
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1545,7 +2309,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/mgmt/v1/status")
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1565,7 +2329,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/policy")
+                    .uri("/api/mgmt/v1/policy")
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1586,7 +2350,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/mgmt/v1/status")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1605,7 +2369,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1624,7 +2388,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/metrics")
+                    .uri("/api/mgmt/v1/metrics")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1650,7 +2414,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/config")
+                    .uri("/api/mgmt/v1/config")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1663,15 +2427,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_reload_policy_with_auth() {
+        use http_body_util::BodyExt;
+
         let rbac = make_test_rbac();
         // Use the channel variant to keep the receiver alive during the test
         let (app, mut reload_rx, _registry) = make_test_router_with_channel(rbac);
 
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/policy/reload")
+                    .uri("/api/mgmt/v1/policy/reload")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1679,19 +2446,43 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let operation_id = body["operationId"].as_str().unwrap();
 
         // Verify the reload request was sent to the channel
         let reload_request = reload_rx.try_recv().expect("should receive reload request");
         match reload_request {
-            PolicyReloadRequest::FromDisk { path, schema } => {
+            PolicyReloadRequest::FromDisk {
+                path,
+                schema,
+                completion,
+            } => {
                 assert_eq!(path.to_string_lossy(), "test-policy.json");
                 assert!(schema.is_none());
+                completion.unwrap().send(Ok(())).unwrap();
             }
             PolicyReloadRequest::FromJson { .. } => {
                 panic!("Expected FromDisk, got FromJson");
             }
         }
+        tokio::task::yield_now().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/mgmt/v1/operations/{operation_id}"))
+                    .header("X-User-CN", "CN=admin.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["status"], "succeeded");
     }
 
     // ==================== Session Registry Integration Tests ====================
@@ -1711,7 +2502,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1756,7 +2547,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1789,7 +2580,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1808,7 +2599,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_session_terminates_existing() {
-        use http_body_util::BodyExt;
         use std::net::{IpAddr, Ipv4Addr};
 
         let rbac = make_test_rbac();
@@ -1825,7 +2615,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/api/v1/sessions/{}", conn_id))
+                    .uri(format!("/api/mgmt/v1/sessions/{}", conn_id))
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1833,13 +2623,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let success_response: SuccessResponse = serde_json::from_slice(&body).unwrap();
-
-        assert!(success_response.success);
-        assert!(success_response.message.contains("termination requested"));
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
         // Verify session is now marked for termination
         assert!(registry.is_termination_requested(conn_id).await);
@@ -1859,7 +2643,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/api/v1/sessions/999999")
+                    .uri("/api/mgmt/v1/sessions/999999")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1870,10 +2654,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        let success_response: SuccessResponse = serde_json::from_slice(&body).unwrap();
-
-        assert!(!success_response.success);
-        assert!(success_response.message.contains("not found"));
+        let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(problem["code"], "session_not_found");
     }
 
     #[tokio::test]
@@ -1904,7 +2686,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -1963,7 +2745,7 @@ mod tests {
                 .clone()
                 .oneshot(
                     Request::builder()
-                        .uri("/api/v1/sessions")
+                        .uri("/api/mgmt/v1/sessions")
                         .header("X-User-CN", "CN=admin.test")
                         .body(Body::empty())
                         .unwrap(),
@@ -1984,7 +2766,7 @@ mod tests {
             let response = router
                 .oneshot(
                     Request::builder()
-                        .uri("/api/v1/sessions")
+                        .uri("/api/mgmt/v1/sessions")
                         .header("X-User-CN", "CN=admin.test")
                         .body(Body::empty())
                         .unwrap(),
@@ -2018,7 +2800,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/sessions")
+                    .uri("/api/mgmt/v1/sessions")
                     .header("X-User-CN", "CN=admin.test")
                     .body(Body::empty())
                     .unwrap(),
@@ -2053,7 +2835,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/api/v1/sessions/{}", conn_id))
+                    .uri(format!("/api/mgmt/v1/sessions/{}", conn_id))
                     .header("X-User-CN", "CN=viewer.test")
                     .body(Body::empty())
                     .unwrap(),

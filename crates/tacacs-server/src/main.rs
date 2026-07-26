@@ -746,6 +746,7 @@ fn setup_management_api(
         ldap_enabled: state.ldap_config.is_some(),
         policy_source: state.policy_path.display().to_string(),
         declarative_config: state.declarative_config.is_some(),
+        source_config: state.declarative_config.clone(),
     };
 
     let api_policy = state.shared_policy.clone();
@@ -784,7 +785,7 @@ fn load_rbac_config(
     args: &Args,
     declarative: Option<&ServerConfiguration>,
 ) -> Result<crate::api::RbacConfig> {
-    if let Some(config) = declarative {
+    let rbac = if let Some(config) = declarative {
         let roles = config
             .spec
             .management
@@ -801,16 +802,19 @@ fn load_rbac_config(
             .iter()
             .map(|subject| (subject.certificate_identity.clone(), subject.role.clone()))
             .collect();
-        Ok(crate::api::RbacConfig { roles, users })
+        crate::api::RbacConfig { roles, users }
     } else if let Some(rbac_path) = args.api_rbac_config.as_ref() {
         let rbac_json = std::fs::read_to_string(rbac_path)
             .with_context(|| format!("failed to read RBAC config from {}", rbac_path.display()))?;
         serde_json::from_str(&rbac_json)
-            .with_context(|| format!("failed to parse RBAC config from {}", rbac_path.display()))
+            .with_context(|| format!("failed to parse RBAC config from {}", rbac_path.display()))?
     } else {
         info!("using default RBAC configuration (admin, operator, viewer roles)");
-        Ok(crate::api::RbacConfig::default())
-    }
+        crate::api::RbacConfig::default()
+    };
+    rbac.validate()
+        .map_err(|error| anyhow::anyhow!("invalid management RBAC configuration: {error}"))?;
+    Ok(rbac)
 }
 
 /// Build TLS acceptor for Management API.
@@ -883,7 +887,7 @@ async fn watch_declarative_policy(
     let Ok(mut sighup) = signal(SignalKind::hangup()) else {
         warn!("failed to install SIGHUP handler for declarative configuration");
         while let Some(request) = reload_rx.recv().await {
-            handle_declarative_reload(&config_path, &policy, &request).await;
+            handle_declarative_reload(&config_path, &policy, request).await;
         }
         return;
     };
@@ -896,14 +900,15 @@ async fn watch_declarative_policy(
                 let request = PolicyReloadRequest::FromDisk {
                     path: config_path.clone(),
                     schema: None,
+                    completion: None,
                 };
-                handle_declarative_reload(&config_path, &policy, &request).await;
+                handle_declarative_reload(&config_path, &policy, request).await;
             }
             request = reload_rx.recv() => {
                 let Some(request) = request else {
                     return;
                 };
-                handle_declarative_reload(&config_path, &policy, &request).await;
+                handle_declarative_reload(&config_path, &policy, request).await;
             }
         }
     }
@@ -912,12 +917,20 @@ async fn watch_declarative_policy(
 async fn handle_declarative_reload(
     config_path: &Path,
     policy: &Arc<RwLock<PolicyEngine>>,
-    request: &PolicyReloadRequest,
+    request: PolicyReloadRequest,
 ) {
-    if matches!(request, PolicyReloadRequest::FromJson { .. }) {
-        warn!("policy JSON upload rejected while authoritative YAML configuration is active");
-        return;
-    }
+    let completion = match request {
+        PolicyReloadRequest::FromDisk { completion, .. } => completion,
+        PolicyReloadRequest::FromJson { completion, .. } => {
+            warn!("policy JSON upload rejected while authoritative YAML configuration is active");
+            if let Some(sender) = completion {
+                let _ = sender.send(Err(
+                    "policy JSON upload is disabled by declarative configuration".to_string(),
+                ));
+            }
+            return;
+        }
+    };
     let result = ServerConfiguration::from_path(config_path).and_then(|config| {
         config.validate(true)?;
         declarative_policy(&config)
@@ -929,6 +942,9 @@ async fn handle_declarative_reload(
                 config = %config_path.display(),
                 "authorization policy reloaded from declarative configuration"
             );
+            if let Some(sender) = completion {
+                let _ = sender.send(Ok(()));
+            }
         }
         Err(error) => {
             error!(
@@ -936,6 +952,9 @@ async fn handle_declarative_reload(
                 error = %error,
                 "declarative policy reload rejected; retaining previous policy"
             );
+            if let Some(sender) = completion {
+                let _ = sender.send(Err(error.to_string()));
+            }
         }
     }
 }
@@ -1176,7 +1195,7 @@ async fn build_app_state(
     }
     let (username_limiter, ip_limiter) = setup_request_limiters(args);
     let (est_provider, est_config) = setup_est_provider(args).await?;
-    let nad_store = setup_nad_store(&jit_lease_store, &audit_hmac_key)?;
+    let nad_store = setup_nad_store(&jit_lease_store, &audit_hmac_key).await?;
     let runtime_nads = setup_runtime_nads(nad_store.clone(), declarative_config.as_deref()).await?;
 
     let policy_engine = build_initial_policy(args, &policy_path, declarative_config.as_deref())?;
@@ -1283,7 +1302,7 @@ fn setup_request_limiters(
     (username, ip)
 }
 
-fn setup_nad_store(
+async fn setup_nad_store(
     jit_store: &Option<Arc<crate::jit_lease_store::JitLeaseStore>>,
     audit_key: &Option<Arc<Vec<u8>>>,
 ) -> Result<Option<Arc<crate::nad_store::NadStore>>> {
@@ -1292,6 +1311,17 @@ fn setup_nad_store(
     };
     let store = crate::nad_store::NadStore::new(store.pool(), key.clone())
         .map_err(|error| anyhow::anyhow!("initializing NAD store: {error}"))?;
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
+    let recovered = store
+        .fail_abandoned_operations(cutoff)
+        .await
+        .map_err(|error| anyhow::anyhow!("recovering abandoned management operations: {error}"))?;
+    if recovered > 0 {
+        warn!(
+            recovered,
+            "marked abandoned management operations failed during startup"
+        );
+    }
     Ok(Some(Arc::new(store)))
 }
 

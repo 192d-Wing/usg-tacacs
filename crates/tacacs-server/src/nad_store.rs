@@ -89,6 +89,60 @@ pub enum CreateNadOutcome {
     Replay(NadRecord),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NadPage {
+    pub items: Vec<NadRecord>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NadAuditEvent {
+    pub hash_version: i16,
+    pub event_id: Uuid,
+    pub occurred_at: OffsetDateTime,
+    pub correlation_id: Uuid,
+    pub actor: String,
+    pub action: String,
+    pub nad_id: Uuid,
+    pub resource_version: i64,
+    pub before_state: Option<serde_json::Value>,
+    pub after_state: serde_json::Value,
+    pub previous_event_hash: Option<String>,
+    pub event_hash: String,
+    pub hmac_signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NadAuditPage {
+    pub items: Vec<NadAuditEvent>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NadAuditVerification {
+    pub valid: bool,
+    pub checked_events: usize,
+    pub offset: usize,
+    pub complete: bool,
+    pub first_event_id: Option<Uuid>,
+    pub last_event_id: Option<Uuid>,
+    pub last_event_hash: Option<String>,
+    pub failure_event_id: Option<Uuid>,
+    pub failure_code: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredOperation {
+    pub operation_id: Uuid,
+    pub kind: String,
+    pub status: String,
+    pub submitted_at: OffsetDateTime,
+    pub completed_at: Option<OffsetDateTime>,
+    pub error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct NadStore {
     pool: PgPool,
@@ -111,6 +165,32 @@ impl NadStore {
         rows.iter().map(decode_nad).collect()
     }
 
+    pub async fn list_page(
+        &self,
+        name_prefix: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<NadPage, NadStoreError> {
+        let fetch_limit = i64::try_from(limit.saturating_add(1))
+            .map_err(|_| NadStoreError::InvalidInput("invalid_pagination"))?;
+        let offset =
+            i64::try_from(offset).map_err(|_| NadStoreError::InvalidInput("invalid_pagination"))?;
+        let rows = sqlx::query(NAD_SELECT_ACTIVE_PAGE)
+            .bind(name_prefix)
+            .bind(fetch_limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_database_error)?;
+        let has_more = rows.len() > limit;
+        let items = rows
+            .iter()
+            .take(limit)
+            .map(decode_nad)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(NadPage { items, has_more })
+    }
+
     pub async fn get(&self, nad_id: Uuid) -> Result<NadRecord, NadStoreError> {
         let row = sqlx::query(NAD_SELECT_ONE)
             .bind(nad_id)
@@ -119,6 +199,159 @@ impl NadStore {
             .map_err(map_database_error)?
             .ok_or(NadStoreError::NotFound)?;
         decode_nad(&row)
+    }
+
+    pub async fn list_audit(
+        &self,
+        nad_id: Option<Uuid>,
+        correlation_id: Option<Uuid>,
+        action: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<NadAuditPage, NadStoreError> {
+        let fetch_limit = i64::try_from(limit.saturating_add(1))
+            .map_err(|_| NadStoreError::InvalidInput("invalid_pagination"))?;
+        let offset =
+            i64::try_from(offset).map_err(|_| NadStoreError::InvalidInput("invalid_pagination"))?;
+        let rows = sqlx::query(NAD_AUDIT_SELECT_PAGE)
+            .bind(nad_id)
+            .bind(correlation_id)
+            .bind(action)
+            .bind(fetch_limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_database_error)?;
+        let has_more = rows.len() > limit;
+        let items = rows
+            .iter()
+            .take(limit)
+            .map(decode_audit_event)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(NadAuditPage { items, has_more })
+    }
+
+    pub async fn verify_audit_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<NadAuditVerification, NadStoreError> {
+        let page = self.list_audit(None, None, None, limit, offset).await?;
+        let previous_hash = self.audit_page_anchor(offset).await?;
+        Ok(verify_audit_events(
+            &page.items,
+            previous_hash.as_deref(),
+            &self.audit_key,
+            offset,
+            !page.has_more,
+        ))
+    }
+
+    async fn audit_page_anchor(&self, offset: usize) -> Result<Option<Vec<u8>>, NadStoreError> {
+        if offset == 0 {
+            return Ok(None);
+        }
+        let page = self
+            .list_audit(None, None, None, 1, offset.saturating_sub(1))
+            .await?;
+        let Some(event) = page.items.first() else {
+            return Err(NadStoreError::InvalidInput("audit_offset_out_of_range"));
+        };
+        hex::decode(&event.event_hash)
+            .map(Some)
+            .map_err(|_| NadStoreError::CorruptRecord)
+    }
+
+    pub async fn create_operation(&self, operation: &StoredOperation) -> Result<(), NadStoreError> {
+        let mut tx = self.pool.begin().await.map_err(map_database_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('management_operations'))")
+            .execute(&mut *tx)
+            .await
+            .map_err(map_database_error)?;
+        sqlx::query(
+            "DELETE FROM tacacs_management.operations
+              WHERE completed_at < clock_timestamp() - interval '24 hours'",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(map_database_error)?;
+        let running: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM tacacs_management.operations WHERE status = 'running'",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_database_error)?;
+        if running >= 1_024 {
+            return Err(NadStoreError::InvalidInput("operation_capacity_exceeded"));
+        }
+        insert_operation(&mut tx, operation).await?;
+        tx.commit().await.map_err(map_database_error)
+    }
+
+    pub async fn complete_operation(
+        &self,
+        operation_id: Uuid,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), NadStoreError> {
+        let result = sqlx::query(
+            "UPDATE tacacs_management.operations
+                SET status = $2, completed_at = clock_timestamp(), error = $3
+              WHERE operation_id = $1 AND status = 'running'",
+        )
+        .bind(operation_id)
+        .bind(status)
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .map_err(map_database_error)?;
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(NadStoreError::NotFound)
+        }
+    }
+
+    pub async fn fail_abandoned_operations(
+        &self,
+        submitted_before: OffsetDateTime,
+    ) -> Result<u64, NadStoreError> {
+        let result = sqlx::query(
+            "UPDATE tacacs_management.operations
+                SET status = 'failed',
+                    completed_at = clock_timestamp(),
+                    error = 'operation owner stopped before completion'
+              WHERE status = 'running' AND submitted_at < $1",
+        )
+        .bind(submitted_before)
+        .execute(&self.pool)
+        .await
+        .map_err(map_database_error)?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn get_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<StoredOperation, NadStoreError> {
+        let row = sqlx::query(
+            "SELECT operation_id, kind, status, submitted_at, completed_at, error
+               FROM tacacs_management.operations
+              WHERE operation_id = $1",
+        )
+        .bind(operation_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_database_error)?
+        .ok_or(NadStoreError::NotFound)?;
+        Ok(StoredOperation {
+            operation_id: row.get("operation_id"),
+            kind: row.get("kind"),
+            status: row.get("status"),
+            submitted_at: row.get("submitted_at"),
+            completed_at: row.get("completed_at"),
+            error: row.get("error"),
+        })
     }
 
     pub async fn create(&self, input: CreateNadInput) -> Result<CreateNadOutcome, NadStoreError> {
@@ -207,8 +440,28 @@ const NAD_SELECT_ONE: &str = "
            authentication_mode, secret_ref, certificate_identities, ownership,
            resource_version, created_at, created_by, updated_at, updated_by,
            deleted_at, deleted_by
-      FROM tacacs_management.nads
+     FROM tacacs_management.nads
      WHERE nad_id = $1 AND deleted_at IS NULL";
+const NAD_SELECT_ACTIVE_PAGE: &str = "
+    SELECT nad_id, name, description, host(source_address) AS source_address,
+           authentication_mode, secret_ref, certificate_identities, ownership,
+           resource_version, created_at, created_by, updated_at, updated_by,
+           deleted_at, deleted_by
+      FROM tacacs_management.nads
+     WHERE deleted_at IS NULL
+       AND ($1::text IS NULL OR name LIKE $1 || '%')
+     ORDER BY name, nad_id
+     LIMIT $2 OFFSET $3";
+const NAD_AUDIT_SELECT_PAGE: &str = "
+    SELECT hash_version, event_id, occurred_at, correlation_id, actor, action, nad_id,
+           resource_version, before_state, after_state, previous_event_hash,
+           event_hash, hmac_signature
+      FROM tacacs_management.nad_audit_events
+     WHERE ($1::uuid IS NULL OR nad_id = $1)
+       AND ($2::uuid IS NULL OR correlation_id = $2)
+       AND ($3::text IS NULL OR action = $3)
+     ORDER BY occurred_at, event_id
+     LIMIT $4 OFFSET $5";
 
 fn validate_create(input: &CreateNadInput) -> Result<(), NadStoreError> {
     validate_name(&input.name)?;
@@ -450,6 +703,27 @@ async fn insert_idempotency(
     Ok(())
 }
 
+async fn insert_operation(
+    tx: &mut Transaction<'_, Postgres>,
+    operation: &StoredOperation,
+) -> Result<(), NadStoreError> {
+    sqlx::query(
+        "INSERT INTO tacacs_management.operations
+            (operation_id, kind, status, submitted_at, completed_at, error)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(operation.operation_id)
+    .bind(&operation.kind)
+    .bind(&operation.status)
+    .bind(operation.submitted_at)
+    .bind(operation.completed_at)
+    .bind(&operation.error)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_database_error)?;
+    Ok(())
+}
+
 async fn append_audit(
     tx: &mut Transaction<'_, Postgres>,
     after: &NadRecord,
@@ -465,27 +739,71 @@ async fn append_audit(
     let previous_hash = last_audit_hash(tx).await?;
     let before_state = serialize_optional(before)?;
     let after_state = serde_json::to_value(after).map_err(|_| NadStoreError::CorruptRecord)?;
-    let hash = audit_hash(
-        previous_hash.as_deref(),
-        action,
+    let mut event = NadAuditEvent {
+        hash_version: 2,
+        event_id: Uuid::now_v7(),
+        occurred_at: audit_timestamp()?,
         correlation_id,
-        after,
-        before_state.as_ref(),
-        &after_state,
-    )?;
-    let signature = audit_signature(key, &hash)?;
-    insert_audit_row(
-        tx,
-        after,
-        action,
-        correlation_id,
+        actor: after.updated_by.clone(),
+        action: action.to_owned(),
+        nad_id: after.nad_id,
+        resource_version: after.resource_version,
         before_state,
         after_state,
-        previous_hash,
-        hash,
-        signature,
+        previous_event_hash: previous_hash.as_deref().map(hex::encode),
+        event_hash: String::new(),
+        hmac_signature: String::new(),
+    };
+    let hash = audit_hash_v2(&event, previous_hash.as_deref())?;
+    event.event_hash = hex::encode(&hash);
+    event.hmac_signature = hex::encode(audit_signature(key, &hash)?);
+    insert_audit_row(tx, &event).await
+}
+
+fn audit_timestamp() -> Result<OffsetDateTime, NadStoreError> {
+    let nanos = OffsetDateTime::now_utc().unix_timestamp_nanos();
+    OffsetDateTime::from_unix_timestamp_nanos((nanos / 1_000) * 1_000)
+        .map_err(|_| NadStoreError::Unavailable)
+}
+
+async fn insert_audit_row(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &NadAuditEvent,
+) -> Result<(), NadStoreError> {
+    let previous_hash = decode_stored_hash(event.previous_event_hash.as_deref())?;
+    let hash = decode_stored_hash(Some(&event.event_hash))?.ok_or(NadStoreError::CorruptRecord)?;
+    let signature =
+        decode_stored_hash(Some(&event.hmac_signature))?.ok_or(NadStoreError::CorruptRecord)?;
+    sqlx::query(
+        "INSERT INTO tacacs_management.nad_audit_events
+            (hash_version, event_id, occurred_at, correlation_id, actor, action,
+             nad_id, resource_version, before_state, after_state,
+             previous_event_hash, event_hash, hmac_signature)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
+    .bind(event.hash_version)
+    .bind(event.event_id)
+    .bind(event.occurred_at)
+    .bind(event.correlation_id)
+    .bind(&event.actor)
+    .bind(&event.action)
+    .bind(event.nad_id)
+    .bind(event.resource_version)
+    .bind(&event.before_state)
+    .bind(&event.after_state)
+    .bind(previous_hash)
+    .bind(hash)
+    .bind(signature)
+    .execute(&mut **tx)
     .await
+    .map_err(map_database_error)?;
+    Ok(())
+}
+
+fn decode_stored_hash(value: Option<&str>) -> Result<Option<Vec<u8>>, NadStoreError> {
+    value
+        .map(|encoded| hex::decode(encoded).map_err(|_| NadStoreError::CorruptRecord))
+        .transpose()
 }
 
 async fn last_audit_hash(
@@ -500,41 +818,6 @@ async fn last_audit_hash(
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_database_error)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn insert_audit_row(
-    tx: &mut Transaction<'_, Postgres>,
-    after: &NadRecord,
-    action: &str,
-    correlation_id: Uuid,
-    before_state: Option<serde_json::Value>,
-    after_state: serde_json::Value,
-    previous_hash: Option<Vec<u8>>,
-    hash: Vec<u8>,
-    signature: Vec<u8>,
-) -> Result<(), NadStoreError> {
-    sqlx::query(
-        "INSERT INTO tacacs_management.nad_audit_events
-            (event_id, correlation_id, actor, action, nad_id, resource_version,
-             before_state, after_state, previous_event_hash, event_hash, hmac_signature)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(correlation_id)
-    .bind(&after.updated_by)
-    .bind(action)
-    .bind(after.nad_id)
-    .bind(after.resource_version)
-    .bind(before_state)
-    .bind(after_state)
-    .bind(previous_hash)
-    .bind(hash)
-    .bind(signature)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_database_error)?;
-    Ok(())
 }
 
 fn serialize_optional(
@@ -567,10 +850,168 @@ fn audit_hash(
     Ok(digest.finalize().to_vec())
 }
 
+fn audit_hash_v2(
+    event: &NadAuditEvent,
+    previous_hash: Option<&[u8]>,
+) -> Result<Vec<u8>, NadStoreError> {
+    let mut digest = Sha256::new();
+    digest.update(b"usg-tacacs:nad-audit:v2\0");
+    digest.update(event.hash_version.to_be_bytes());
+    digest.update(previous_hash.unwrap_or(&[0_u8; 32]));
+    digest.update(event.event_id.as_bytes());
+    digest.update(event.occurred_at.unix_timestamp_nanos().to_be_bytes());
+    digest.update(event.correlation_id.as_bytes());
+    hash_length_prefixed(&mut digest, event.actor.as_bytes());
+    hash_length_prefixed(&mut digest, event.action.as_bytes());
+    digest.update(event.nad_id.as_bytes());
+    digest.update(event.resource_version.to_be_bytes());
+    hash_optional_json(&mut digest, event.before_state.as_ref())?;
+    let after = serde_json::to_vec(&event.after_state).map_err(|_| NadStoreError::CorruptRecord)?;
+    hash_length_prefixed(&mut digest, &after);
+    Ok(digest.finalize().to_vec())
+}
+
+fn hash_optional_json(
+    digest: &mut Sha256,
+    value: Option<&serde_json::Value>,
+) -> Result<(), NadStoreError> {
+    let Some(value) = value else {
+        digest.update([0]);
+        return Ok(());
+    };
+    digest.update([1]);
+    let encoded = serde_json::to_vec(value).map_err(|_| NadStoreError::CorruptRecord)?;
+    hash_length_prefixed(digest, &encoded);
+    Ok(())
+}
+
+fn hash_length_prefixed(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
+}
+
 fn audit_signature(key: &[u8], hash: &[u8]) -> Result<Vec<u8>, NadStoreError> {
     let mut mac = HmacSha256::new_from_slice(key).map_err(|_| NadStoreError::Unavailable)?;
     mac.update(hash);
     Ok(mac.finalize().into_bytes().to_vec())
+}
+
+fn verify_audit_events(
+    events: &[NadAuditEvent],
+    anchor: Option<&[u8]>,
+    key: &[u8],
+    offset: usize,
+    complete: bool,
+) -> NadAuditVerification {
+    let mut expected_previous = anchor.map(<[u8]>::to_vec);
+    for (index, event) in events.iter().enumerate() {
+        match verify_audit_event(event, expected_previous.as_deref(), key) {
+            Ok(hash) => expected_previous = Some(hash),
+            Err(code) => {
+                return failed_audit_verification(events, offset, index, event.event_id, code);
+            }
+        }
+    }
+    NadAuditVerification {
+        valid: true,
+        checked_events: events.len(),
+        offset,
+        complete,
+        first_event_id: events.first().map(|event| event.event_id),
+        last_event_id: events.last().map(|event| event.event_id),
+        last_event_hash: events.last().map(|event| event.event_hash.clone()),
+        failure_event_id: None,
+        failure_code: None,
+    }
+}
+
+fn failed_audit_verification(
+    events: &[NadAuditEvent],
+    offset: usize,
+    checked_events: usize,
+    event_id: Uuid,
+    code: &'static str,
+) -> NadAuditVerification {
+    NadAuditVerification {
+        valid: false,
+        checked_events,
+        offset,
+        complete: false,
+        first_event_id: events.first().map(|event| event.event_id),
+        last_event_id: None,
+        last_event_hash: None,
+        failure_event_id: Some(event_id),
+        failure_code: Some(code),
+    }
+}
+
+fn verify_audit_event(
+    event: &NadAuditEvent,
+    expected_previous: Option<&[u8]>,
+    key: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    let previous = decode_optional_hash(event.previous_event_hash.as_deref())?;
+    if previous.as_deref() != expected_previous {
+        return Err("chain_discontinuity");
+    }
+    let after: NadRecord =
+        serde_json::from_value(event.after_state.clone()).map_err(|_| "invalid_after_state")?;
+    verify_audit_metadata(event, &after)?;
+    let calculated = calculate_stored_audit_hash(event, &after, previous.as_deref())?;
+    let stored = hex::decode(&event.event_hash).map_err(|_| "invalid_event_hash")?;
+    if calculated != stored {
+        return Err("event_hash_mismatch");
+    }
+    verify_audit_hmac(key, &stored, &event.hmac_signature)?;
+    Ok(stored)
+}
+
+fn calculate_stored_audit_hash(
+    event: &NadAuditEvent,
+    after: &NadRecord,
+    previous: Option<&[u8]>,
+) -> Result<Vec<u8>, &'static str> {
+    match event.hash_version {
+        1 => audit_hash(
+            previous,
+            &event.action,
+            event.correlation_id,
+            after,
+            event.before_state.as_ref(),
+            &event.after_state,
+        ),
+        2 => audit_hash_v2(event, previous),
+        _ => return Err("unsupported_hash_version"),
+    }
+    .map_err(|_| "hash_calculation_failed")
+}
+
+fn verify_audit_metadata(event: &NadAuditEvent, after: &NadRecord) -> Result<(), &'static str> {
+    if event.actor != after.updated_by {
+        return Err("actor_mismatch");
+    }
+    if event.nad_id != after.nad_id || event.resource_version != after.resource_version {
+        return Err("resource_metadata_mismatch");
+    }
+    match (event.action.as_str(), event.before_state.as_ref()) {
+        ("create", None) | ("update" | "delete", Some(_)) => Ok(()),
+        ("create" | "update" | "delete", _) => Err("invalid_state_transition"),
+        _ => Err("invalid_action"),
+    }
+}
+
+fn decode_optional_hash(value: Option<&str>) -> Result<Option<Vec<u8>>, &'static str> {
+    value
+        .map(|hash| hex::decode(hash).map_err(|_| "invalid_previous_event_hash"))
+        .transpose()
+}
+
+fn verify_audit_hmac(key: &[u8], hash: &[u8], signature: &str) -> Result<(), &'static str> {
+    let signature = hex::decode(signature).map_err(|_| "invalid_hmac_signature")?;
+    let mut mac = HmacSha256::new_from_slice(key).map_err(|_| "invalid_hmac_key")?;
+    mac.update(hash);
+    mac.verify_slice(&signature)
+        .map_err(|_| "hmac_signature_mismatch")
 }
 
 fn encode_authentication(
@@ -612,6 +1053,36 @@ fn decode_nad(row: &sqlx::postgres::PgRow) -> Result<NadRecord, NadStoreError> {
         updated_by: row.get("updated_by"),
         deleted_at: row.get("deleted_at"),
         deleted_by: row.get("deleted_by"),
+    })
+}
+
+fn decode_audit_event(row: &sqlx::postgres::PgRow) -> Result<NadAuditEvent, NadStoreError> {
+    let previous_hash = row
+        .try_get::<Option<Vec<u8>>, _>("previous_event_hash")
+        .map_err(|_| NadStoreError::CorruptRecord)?
+        .map(hex::encode);
+    let event_hash = row
+        .try_get::<Vec<u8>, _>("event_hash")
+        .map(hex::encode)
+        .map_err(|_| NadStoreError::CorruptRecord)?;
+    let hmac_signature = row
+        .try_get::<Vec<u8>, _>("hmac_signature")
+        .map(hex::encode)
+        .map_err(|_| NadStoreError::CorruptRecord)?;
+    Ok(NadAuditEvent {
+        hash_version: row.get("hash_version"),
+        event_id: row.get("event_id"),
+        occurred_at: row.get("occurred_at"),
+        correlation_id: row.get("correlation_id"),
+        actor: row.get("actor"),
+        action: row.get("action"),
+        nad_id: row.get("nad_id"),
+        resource_version: row.get("resource_version"),
+        before_state: row.get("before_state"),
+        after_state: row.get("after_state"),
+        previous_event_hash: previous_hash,
+        event_hash,
+        hmac_signature,
     })
 }
 
@@ -658,6 +1129,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn audit_verification_detects_metadata_and_hmac_tampering() {
+        let key = vec![0x42; 32];
+        let record = test_record();
+        let after_state = serde_json::to_value(&record).unwrap();
+        let correlation_id = Uuid::new_v4();
+        let hash = audit_hash(None, "create", correlation_id, &record, None, &after_state).unwrap();
+        let signature = audit_signature(&key, &hash).unwrap();
+        let mut event = NadAuditEvent {
+            hash_version: 1,
+            event_id: Uuid::new_v4(),
+            occurred_at: OffsetDateTime::UNIX_EPOCH,
+            correlation_id,
+            actor: record.updated_by.clone(),
+            action: "create".to_owned(),
+            nad_id: record.nad_id,
+            resource_version: record.resource_version,
+            before_state: None,
+            after_state,
+            previous_event_hash: None,
+            event_hash: hex::encode(hash),
+            hmac_signature: hex::encode(signature),
+        };
+        assert!(verify_audit_events(&[event.clone()], None, &key, 0, true).valid);
+        event.actor = "CN=attacker.example.mil".to_owned();
+        let report = verify_audit_events(&[event], None, &key, 0, true);
+        assert!(!report.valid);
+        assert_eq!(report.failure_code, Some("actor_mismatch"));
+    }
+
+    #[test]
+    fn audit_hash_v2_authenticates_forensic_metadata() {
+        let key = vec![0x42; 32];
+        let record = test_record();
+        let mut event = NadAuditEvent {
+            hash_version: 2,
+            event_id: Uuid::now_v7(),
+            occurred_at: OffsetDateTime::UNIX_EPOCH,
+            correlation_id: Uuid::new_v4(),
+            actor: record.updated_by.clone(),
+            action: "create".to_owned(),
+            nad_id: record.nad_id,
+            resource_version: record.resource_version,
+            before_state: None,
+            after_state: serde_json::to_value(&record).unwrap(),
+            previous_event_hash: None,
+            event_hash: String::new(),
+            hmac_signature: String::new(),
+        };
+        let hash = audit_hash_v2(&event, None).unwrap();
+        event.event_hash = hex::encode(&hash);
+        event.hmac_signature = hex::encode(audit_signature(&key, &hash).unwrap());
+        assert!(verify_audit_events(&[event.clone()], None, &key, 0, true).valid);
+        event.occurred_at += time::Duration::SECOND;
+        let report = verify_audit_events(&[event], None, &key, 0, true);
+        assert!(!report.valid);
+        assert_eq!(report.failure_code, Some("event_hash_mismatch"));
+    }
+
+    fn test_record() -> NadRecord {
+        NadRecord {
+            nad_id: Uuid::new_v4(),
+            name: "oopl-an-001".to_owned(),
+            description: None,
+            source_address: "192.0.2.10".parse().unwrap(),
+            authentication: NadAuthentication::Legacy {
+                secret_ref: "/run/secrets/nads/oopl-an-001".to_owned(),
+            },
+            ownership: "api".to_owned(),
+            resource_version: 1,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            created_by: "CN=tacacs-admin.example.mil".to_owned(),
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: "CN=tacacs-admin.example.mil".to_owned(),
+            deleted_at: None,
+            deleted_by: None,
+        }
+    }
+
     fn test_store(pool: PgPool) -> NadStore {
         NadStore::new(pool, Arc::new(vec![0x42; 32])).unwrap()
     }
@@ -673,6 +1223,17 @@ mod tests {
             actor: "CN=tacacs-admin.example.mil".to_owned(),
             correlation_id: Uuid::new_v4(),
             idempotency_key: key.to_owned(),
+        }
+    }
+
+    fn test_operation() -> StoredOperation {
+        StoredOperation {
+            operation_id: Uuid::now_v7(),
+            kind: "authorizationPolicyReload".to_owned(),
+            status: "running".to_owned(),
+            submitted_at: audit_timestamp().unwrap(),
+            completed_at: None,
+            error: None,
         }
     }
 
@@ -751,6 +1312,18 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(signed_count, 3);
+        let v2_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM tacacs_management.nad_audit_events
+              WHERE hash_version = 2",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(v2_count, 3);
+        let verification = store.verify_audit_page(10, 0).await.unwrap();
+        assert!(verification.valid);
+        assert_eq!(verification.checked_events, 3);
+        assert!(verification.complete);
     }
 
     #[sqlx::test]
@@ -791,6 +1364,68 @@ mod tests {
             .execute(&pool)
             .await;
         assert!(delete.is_err());
+    }
+
+    #[sqlx::test]
+    async fn postgres_management_operations_survive_replica_handoffs(pool: PgPool) {
+        let first_replica = test_store(pool.clone());
+        let second_replica = test_store(pool);
+        let operation = test_operation();
+        first_replica.create_operation(&operation).await.unwrap();
+        assert_eq!(
+            second_replica
+                .get_operation(operation.operation_id)
+                .await
+                .unwrap(),
+            operation
+        );
+        second_replica
+            .complete_operation(operation.operation_id, "succeeded", None)
+            .await
+            .unwrap();
+        let completed = first_replica
+            .get_operation(operation.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(completed.status, "succeeded");
+        assert!(completed.completed_at.is_some());
+    }
+
+    #[sqlx::test]
+    async fn postgres_management_operations_recover_after_owner_restart(pool: PgPool) {
+        let first_replica = test_store(pool.clone());
+        let second_replica = test_store(pool);
+        let mut operation = test_operation();
+        operation.submitted_at -= time::Duration::minutes(10);
+        first_replica.create_operation(&operation).await.unwrap();
+        drop(first_replica);
+
+        let cutoff = audit_timestamp().unwrap() - time::Duration::minutes(5);
+        let recovered = second_replica
+            .fail_abandoned_operations(cutoff)
+            .await
+            .unwrap();
+        let operation = second_replica
+            .get_operation(operation.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(recovered, 1);
+        assert_eq!(operation.status, "failed");
+        assert_eq!(
+            operation.error.as_deref(),
+            Some("operation owner stopped before completion")
+        );
+    }
+
+    #[sqlx::test]
+    async fn postgres_management_operations_fail_closed_without_store(pool: PgPool) {
+        let store = test_store(pool);
+        let operation_id = Uuid::now_v7();
+        store.pool.close().await;
+        assert_eq!(
+            store.get_operation(operation_id).await,
+            Err(NadStoreError::Unavailable)
+        );
     }
 
     #[test]

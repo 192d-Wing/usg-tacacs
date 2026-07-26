@@ -55,11 +55,12 @@
 //! - **AU-2/AU-12 (Audit Events)**: All API access attempts are logged.
 
 mod handlers;
+mod middleware;
 mod models;
 mod rbac;
 
 pub use handlers::{RuntimeConfig, build_api_router};
-pub use rbac::{RbacConfig, TlsClientIdentity};
+pub use rbac::{RbacConfig, TlsPeerIdentity};
 
 use crate::jit_lease_store::JitLeaseStore;
 use crate::nad_reconciler::RuntimeNadRegistry;
@@ -80,26 +81,45 @@ use tower::ServiceExt;
 use tracing::{error, info, warn};
 use usg_tacacs_policy::PolicyEngine;
 
-/// Extract the Common Name from a TLS peer certificate.
+/// Extract typed identity candidates from a TLS peer certificate.
 ///
 /// # NIST Controls
 ///
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | IA-3 | Device Identification | Extracts CN from validated mTLS client certificate |
-fn extract_client_cn(
+fn extract_client_identities(
     tls_stream: &tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-) -> Option<String> {
+) -> Option<TlsPeerIdentity> {
     let (_, conn) = tls_stream.get_ref();
     let certs = conn.peer_certificates()?;
     let leaf = certs.first()?;
     let x509 = X509::from_der(leaf.as_ref()).ok()?;
-    for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
-        if let Ok(value) = entry.data().to_string() {
-            return Some(value);
+    let candidates = x509_identity_candidates(&x509);
+    (!candidates.is_empty()).then_some(TlsPeerIdentity { candidates })
+}
+
+fn x509_identity_candidates(x509: &X509) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(names) = x509.subject_alt_names() {
+        for name in names {
+            if let Some(value) = name.dnsname() {
+                candidates.push(format!("dns:{}", value.to_ascii_lowercase()));
+            } else if let Some(value) = name.uri() {
+                candidates.push(format!("uri:{value}"));
+            } else if let Some(value) = name.email() {
+                candidates.push(format!("email:{}", value.to_ascii_lowercase()));
+            }
         }
     }
-    None
+    for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
+        if let Ok(value) = entry.data().to_string() {
+            candidates.push(format!("cn:{value}"));
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
 }
 
 /// Handle single TLS connection for management API.
@@ -117,8 +137,8 @@ async fn handle_tls_connection(
     match acceptor.accept(stream).await {
         Ok(tls_stream) => {
             // NIST IA-3: Extract client identity from TLS certificate
-            let client_identity = extract_client_cn(&tls_stream).map(|cn| TlsClientIdentity { cn });
-            serve_tls_api_connection(tls_stream, peer_addr, app, client_identity).await;
+            let peer_identity = extract_client_identities(&tls_stream);
+            serve_tls_api_connection(tls_stream, peer_addr, app, peer_identity).await;
         }
         Err(e) => {
             warn!(peer = %peer_addr, error = %e, "TLS handshake failed for API connection");
@@ -137,14 +157,14 @@ async fn serve_tls_api_connection(
     tls_stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     peer_addr: SocketAddr,
     app: axum::Router,
-    client_identity: Option<TlsClientIdentity>,
+    peer_identity: Option<TlsPeerIdentity>,
 ) {
     let io = TokioIo::new(tls_stream);
     let tower_service = app.clone();
     let hyper_service =
         hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
             let tower_service = tower_service.clone();
-            let identity = client_identity.clone();
+            let identity = peer_identity.clone();
             async move {
                 let (mut parts, body) = req.into_parts();
                 let body = Body::new(body);
@@ -181,9 +201,8 @@ async fn serve_tls_api_connection(
 /// | CM-3 | Configuration Change Control | Policy reload channel for controlled updates |
 /// | SC-8 | Transmission Confidentiality | TLS 1.3 with mTLS when acceptor is provided |
 ///
-/// # Security Warning
-/// When `acceptor` is `None`, the API runs in plaintext mode which should only
-/// be used for development/testing. Production deployments must use TLS.
+/// The network listener is always TLS 1.3 with mandatory client
+/// authentication. Router tests do not use this network entry point.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_api(
     addr: SocketAddr,
@@ -199,6 +218,7 @@ pub async fn serve_api(
     nad_store: Option<Arc<NadStore>>,
     runtime_nads: Option<Arc<RuntimeNadRegistry>>,
 ) -> anyhow::Result<()> {
+    let tls_acceptor = require_mtls_acceptor(acceptor)?;
     let app = build_api_router(
         rbac,
         policy,
@@ -212,36 +232,198 @@ pub async fn serve_api(
         runtime_nads,
     );
     let listener = TcpListener::bind(addr).await?;
+    info!(addr = %addr, tls = true, "Management API server listening");
+    loop {
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                error!(error = %e, "failed to accept API connection");
+                continue;
+            }
+        };
+        let acceptor = tls_acceptor.clone();
+        let app = app.clone();
+        tokio::spawn(async move {
+            handle_tls_connection(stream, peer_addr, acceptor, app).await;
+        });
+    }
+}
 
-    if let Some(tls_acceptor) = acceptor {
-        info!(addr = %addr, tls = true, "Management API server listening (TLS enabled)");
+fn require_mtls_acceptor(acceptor: Option<TlsAcceptor>) -> anyhow::Result<TlsAcceptor> {
+    acceptor.ok_or_else(|| anyhow::anyhow!("management API requires TLS 1.3 client authentication"))
+}
 
-        loop {
-            let (stream, peer_addr) = match listener.accept().await {
-                Ok(conn) => conn,
-                Err(e) => {
-                    error!(error = %e, "failed to accept API connection");
-                    continue;
-                }
-            };
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{Router, routing::get};
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+        KeyUsagePurpose,
+    };
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
+    use rustls::{ClientConfig, RootCertStore, ServerConfig};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use tokio_rustls::TlsConnector;
 
-            let acceptor = tls_acceptor.clone();
-            let app = app.clone();
+    struct TestPki {
+        ca: CertificateDer<'static>,
+        server: CertificateDer<'static>,
+        server_key: Vec<u8>,
+        client: CertificateDer<'static>,
+        client_key: Vec<u8>,
+    }
 
-            tokio::spawn(async move {
-                handle_tls_connection(stream, peer_addr, acceptor, app).await;
-            });
-        }
-    } else {
-        warn!(
-            addr = %addr,
-            "Management API server listening in PLAINTEXT mode - NOT RECOMMENDED FOR PRODUCTION"
+    fn signed_leaf(
+        name: &str,
+        usage: ExtendedKeyUsagePurpose,
+        issuer: &Issuer<'_, KeyPair>,
+    ) -> (CertificateDer<'static>, Vec<u8>) {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec![name.to_owned()]).unwrap();
+        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        params.extended_key_usages.push(usage);
+        let cert = params.signed_by(&key, issuer).unwrap();
+        (cert.der().clone(), key.serialize_der())
+    }
+
+    fn test_pki() -> TestPki {
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages.extend([
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ]);
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = Issuer::new(ca_params, ca_key);
+        let (server, server_key) =
+            signed_leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth, &issuer);
+        let (client, client_key) = signed_leaf(
+            "admin.example.mil",
+            ExtendedKeyUsagePurpose::ClientAuth,
+            &issuer,
         );
-        if let Err(e) = axum::serve(listener, app).await {
-            error!(error = %e, "API server error");
-            return Err(e.into());
+        TestPki {
+            ca: ca.der().clone(),
+            server,
+            server_key,
+            client,
+            client_key,
         }
     }
 
-    Ok(())
+    fn server_acceptor(pki: &TestPki) -> TlsAcceptor {
+        let mut roots = RootCertStore::empty();
+        roots.add(pki.ca.clone()).unwrap();
+        let verifier = rustls::server::WebPkiClientVerifier::builder(roots.into())
+            .build()
+            .unwrap();
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pki.server_key.clone()));
+        let config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(vec![pki.server.clone()], key)
+            .unwrap();
+        TlsAcceptor::from(Arc::new(config))
+    }
+
+    fn client_connector(pki: &TestPki, authenticate: bool, tls13: bool) -> TlsConnector {
+        let mut roots = RootCertStore::empty();
+        roots.add(pki.ca.clone()).unwrap();
+        let versions = if tls13 {
+            &[&rustls::version::TLS13][..]
+        } else {
+            &[&rustls::version::TLS12][..]
+        };
+        let builder =
+            ClientConfig::builder_with_protocol_versions(versions).with_root_certificates(roots);
+        let config = if authenticate {
+            let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pki.client_key.clone()));
+            builder
+                .with_client_auth_cert(vec![pki.client.clone()], key)
+                .unwrap()
+        } else {
+            builder.with_no_client_auth()
+        };
+        TlsConnector::from(Arc::new(config))
+    }
+
+    async fn run_one_connection(acceptor: TlsAcceptor) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            let app = Router::new().route("/probe", get(|| async { "ok" }));
+            handle_tls_connection(stream, peer, acceptor, app).await;
+        });
+        address
+    }
+
+    async fn connect(
+        address: SocketAddr,
+        connector: TlsConnector,
+    ) -> anyhow::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+        let stream = TcpStream::connect(address).await?;
+        let name = ServerName::try_from("localhost")?;
+        Ok(connector.connect(name, stream).await?)
+    }
+
+    async fn assert_connection_rejected(address: SocketAddr, connector: TlsConnector) {
+        let Ok(mut stream) = connect(address, connector).await else {
+            return;
+        };
+        let request = b"GET /probe HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        if stream.write_all(request).await.is_err() {
+            return;
+        }
+        let mut response = Vec::new();
+        let read_result = stream.read_to_end(&mut response).await;
+        assert!(read_result.is_err() || response.is_empty());
+    }
+
+    #[test]
+    fn certificate_candidates_are_typed_and_dns_is_canonical() {
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["Admin.Example.Mil".to_owned()]).unwrap();
+        let certificate = X509::from_der(certified.cert.der()).unwrap();
+        let candidates = x509_identity_candidates(&certificate);
+        assert!(candidates.contains(&"dns:admin.example.mil".to_owned()));
+        assert!(candidates.iter().all(|identity| {
+            ["cn:", "dns:", "email:", "uri:"]
+                .iter()
+                .any(|prefix| identity.starts_with(prefix))
+        }));
+    }
+
+    #[test]
+    fn plaintext_management_listener_is_rejected() {
+        let result = require_mtls_acceptor(None);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn management_socket_requires_mtls_and_tls13() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let pki = test_pki();
+
+        let address = run_one_connection(server_acceptor(&pki)).await;
+        let mut stream = connect(address, client_connector(&pki, true, true))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /probe HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+
+        let address = run_one_connection(server_acceptor(&pki)).await;
+        assert_connection_rejected(address, client_connector(&pki, false, true)).await;
+
+        let address = run_one_connection(server_acceptor(&pki)).await;
+        assert_connection_rejected(address, client_connector(&pki, true, false)).await;
+    }
 }

@@ -7,7 +7,7 @@ use crate::nad_store::{
 };
 use crate::server::normalize_ip;
 use arc_swap::ArcSwap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
@@ -16,7 +16,7 @@ use usg_tacacs_config::{Nad, NadAuthentication as YamlAuthentication};
 use usg_tacacs_proto::MIN_SECRET_LEN;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ReconciliationState {
     Active,

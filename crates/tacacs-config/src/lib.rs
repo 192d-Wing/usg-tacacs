@@ -2,6 +2,7 @@
 //! Typed declarative YAML server configuration and semantic validation.
 
 use anyhow::{Context, Result, bail};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -11,7 +12,7 @@ pub const API_VERSION: &str = "tacacs.usg.mil/v1alpha1";
 pub const KIND: &str = "TacacsServer";
 pub const MAX_JIT_TTL_SECONDS: u64 = 900;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerConfiguration {
     pub api_version: String,
@@ -20,7 +21,7 @@ pub struct ServerConfiguration {
     pub spec: ServerSpec,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Metadata {
     pub name: String,
@@ -28,7 +29,7 @@ pub struct Metadata {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerSpec {
     pub listeners: Listeners,
@@ -41,7 +42,7 @@ pub struct ServerSpec {
     pub jit: Option<Jit>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Listeners {
     #[serde(default)]
@@ -51,7 +52,7 @@ pub struct Listeners {
     pub health: SocketAddr,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TlsListener {
     pub address: SocketAddr,
@@ -62,7 +63,7 @@ pub struct TlsListener {
     pub minimum_version: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 // `flatten` cannot be combined with `deny_unknown_fields`; the tagged
 // authentication enum performs strict validation of its own fields.
 #[serde(rename_all = "camelCase")]
@@ -75,7 +76,7 @@ pub struct Nad {
     pub authentication: NadAuthentication,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
 pub enum NadAuthentication {
     Legacy {
@@ -88,7 +89,7 @@ pub enum NadAuthentication {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Authorization {
     #[serde(default)]
@@ -97,7 +98,7 @@ pub struct Authorization {
     pub rules: Vec<AuthorizationRule>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthorizationRule {
     pub id: String,
@@ -113,28 +114,28 @@ pub struct AuthorizationRule {
     pub command: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleEffect {
     Allow,
     Deny,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Management {
     pub listener: TlsListener,
     pub rbac: Rbac,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Rbac {
     pub roles: BTreeMap<String, Role>,
     pub subjects: Vec<SubjectBinding>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Role {
     pub permissions: Vec<String>,
@@ -142,20 +143,20 @@ pub struct Role {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubjectBinding {
     pub certificate_identity: String,
     pub role: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Audit {
     pub hmac_key_file: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Jit {
     pub store_url: String,
@@ -292,6 +293,7 @@ fn validate_nads(nads: &[Nad]) -> Result<()> {
 fn validate_rbac(rbac: &Rbac) -> Result<()> {
     let mut identities = HashSet::new();
     for subject in &rbac.subjects {
+        validate_certificate_identity(&subject.certificate_identity)?;
         if !rbac.roles.contains_key(&subject.role) {
             bail!(
                 "RBAC subject {} references undefined role {}",
@@ -314,6 +316,45 @@ fn validate_rbac(rbac: &Rbac) -> Result<()> {
     Ok(())
 }
 
+fn validate_certificate_identity(identity: &str) -> Result<()> {
+    let valid = if let Some(value) = identity.strip_prefix("cn:") {
+        valid_identity_value(value, 512)
+    } else if let Some(value) = identity.strip_prefix("dns:") {
+        valid_dns_identity(value)
+    } else if let Some(value) = identity.strip_prefix("email:") {
+        value == value.to_ascii_lowercase()
+            && value.contains('@')
+            && valid_identity_value(value, 512)
+    } else if let Some(value) = identity.strip_prefix("uri:") {
+        value.contains(':') && valid_identity_value(value, 1024)
+    } else {
+        false
+    };
+    if !valid {
+        bail!("RBAC certificateIdentity must be a valid typed cn:, dns:, email:, or uri: identity");
+    }
+    Ok(())
+}
+
+fn valid_identity_value(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+}
+
+fn valid_dns_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value == value.to_ascii_lowercase()
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+}
+
 fn validate_unique_rule_ids(rules: &[AuthorizationRule]) -> Result<()> {
     let mut ids = HashSet::new();
     for rule in rules {
@@ -334,5 +375,14 @@ mod tests {
             "apiVersion: tacacs.usg.mil/v1alpha1\nkind: TacacsServer\nunknown: true\n",
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rbac_certificate_identities_are_typed_and_canonical() {
+        assert!(validate_certificate_identity("cn:tacacs-admin.example.mil").is_ok());
+        assert!(validate_certificate_identity("dns:tacacs-admin.example.mil").is_ok());
+        assert!(validate_certificate_identity("uri:spiffe://example.mil/tacacs/admin").is_ok());
+        assert!(validate_certificate_identity("tacacs-admin.example.mil").is_err());
+        assert!(validate_certificate_identity("dns:TACACS-ADMIN.example.mil").is_err());
     }
 }

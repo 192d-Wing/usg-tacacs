@@ -57,8 +57,45 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use zeroize::Zeroizing;
 
-use crate::nad_reconciler::NadReconciliationStatus;
-use crate::nad_store::{NadAuthentication, NadRecord};
+use crate::nad_reconciler::{NadReconciliationStatus, ReconciliationState};
+use crate::nad_store::{NadAuditEvent, NadAuthentication, NadRecord};
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigValidationResponse {
+    pub valid: bool,
+    pub configuration_hash: Option<String>,
+    pub diagnostics: Vec<ConfigDiagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigDiagnostic {
+    pub severity: &'static str,
+    pub code: &'static str,
+    pub path: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveConfigResponse {
+    pub ownership: &'static str,
+    pub mutable: bool,
+    pub configuration_hash: String,
+    pub config: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationResponse {
+    pub operation_id: String,
+    pub kind: &'static str,
+    pub status: &'static str,
+    pub submitted_at: String,
+    pub completed_at: Option<String>,
+    pub error: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -77,10 +114,83 @@ pub struct UpdateNadRequest {
     pub authentication: NadAuthentication,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NadListQuery {
+    pub name_prefix: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NadListResponse {
     pub items: Vec<NadResponse>,
+    pub next_offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadInventoryResponse {
+    pub items: Vec<NadInventoryItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadInventoryItem {
+    pub nad_id: Option<uuid::Uuid>,
+    pub name: String,
+    pub description: Option<String>,
+    pub source_address: IpAddr,
+    pub authentication: NadAuthentication,
+    pub ownership: &'static str,
+    pub mutable: bool,
+    pub resource_version: Option<i64>,
+    pub reconciliation: Option<NadReconciliationStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NadReconciliationQuery {
+    pub state: Option<ReconciliationState>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadReconciliationResponse {
+    pub reconciled_at: time::OffsetDateTime,
+    pub total: usize,
+    pub active: usize,
+    pub conflict: usize,
+    pub secret_unavailable: usize,
+    pub items: Vec<NadReconciliationStatus>,
+    pub next_offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NadAuditQuery {
+    pub nad_id: Option<uuid::Uuid>,
+    pub correlation_id: Option<uuid::Uuid>,
+    pub action: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NadAuditResponse {
+    pub items: Vec<NadAuditEvent>,
+    pub next_offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NadAuditVerificationQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,13 +313,6 @@ pub struct ConfigResponse {
     pub policy_source: String,
     pub metrics_enabled: bool,
     pub api_enabled: bool,
-}
-
-/// Generic success response.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SuccessResponse {
-    pub success: bool,
-    pub message: String,
 }
 
 /// Generic error response.
