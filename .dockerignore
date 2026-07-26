@@ -4,7 +4,13 @@ target/
 crates/tacacs-proto/fuzz/target/
 crates/tacacs-proto/fuzz/corpus/
 tests/e2e/artifacts/
-docs/
+docs/*
+!docs/api/
+docs/api/*
+!docs/api/jit-lease.openapi.yaml
+!docs/api/mgmt/
+docs/api/mgmt/*
+!docs/api/mgmt/openapi.yaml
 iac/
 dashboards/
 *.md
