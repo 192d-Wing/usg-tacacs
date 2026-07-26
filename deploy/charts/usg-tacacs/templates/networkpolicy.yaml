@@ -1,25 +1,27 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- range $index, $role := list "management" "legacy" "tls" }}
+{{- $workload := index $.Values.workloads $role }}
+{{- if $workload.enabled }}
+{{- if $index }}
+---
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "usg-tacacs.name" . }}
+  name: {{ include "usg-tacacs.name" $ }}-{{ $role }}
   labels:
-    {{- include "usg-tacacs.labels" . | nindent 4 }}
+    {{- include "usg-tacacs.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
 spec:
   podSelector:
     matchLabels:
-      {{- include "usg-tacacs.selectorLabels" . | nindent 6 }}
+      {{- include "usg-tacacs.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $role }}
   policyTypes: [Ingress]
   ingress:
     - from:
-        {{- range .Values.nads }}
-        - ipBlock:
-            cidr: {{ printf "%s/32" .sourceIp }}
-        {{- end }}
-      ports:
-        - { protocol: TCP, port: 49 }
-    - from:
-        {{- range .Values.networkPolicy.managementPeers }}
+        {{- if eq $role "management" }}
+        {{- range $.Values.networkPolicy.managementPeers }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .namespace | quote }}
@@ -27,6 +29,20 @@ spec:
             matchLabels:
               {{- toYaml .podLabels | nindent 14 }}
         {{- end }}
+        {{- else }}
+        {{- range $.Values.nads }}
+        - ipBlock:
+            cidr: {{ printf "%s/32" .sourceIp }}
+        {{- end }}
+        {{- end }}
       ports:
+        {{- if eq $role "management" }}
         - { protocol: TCP, port: 8443 }
+        {{- else if eq $role "legacy" }}
+        - { protocol: TCP, port: 49 }
+        {{- else }}
+        - { protocol: TCP, port: 300 }
+        {{- end }}
+{{- end }}
+{{- end }}
 {{- end }}

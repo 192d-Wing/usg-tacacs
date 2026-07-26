@@ -1,60 +1,90 @@
+{{- define "usg-tacacs.serverConfig" -}}
+{{- $root := .root -}}
+apiVersion: tacacs.usg.mil/v1alpha1
+kind: TacacsServer
+metadata:
+  name: {{ printf "%s-%s" (include "usg-tacacs.name" $root) .role | quote }}
+  description: {{ $root.Values.configuration.description | quote }}
+spec:
+  role: {{ .role }}
+  listeners:
+    {{- if eq .role "legacy" }}
+    legacy: "0.0.0.0:49"
+    {{- else if eq .role "tls" }}
+    tls:
+      address: "0.0.0.0:300"
+      certificateFile: /run/tls/dataplane/server.crt
+      privateKeyFile: /run/tls/dataplane/server.key
+      clientCaFile: /run/tls/dataplane/client-ca.crt
+      minimumVersion: "1.3"
+    {{- end }}
+    health: "0.0.0.0:8080"
+  nads:
+    {{- range $root.Values.nads }}
+    - name: {{ .identity | quote }}
+      description: {{ .description | default "" | quote }}
+      sourceAddress: {{ .sourceIp | quote }}
+      mode: {{ .mode }}
+      {{- if eq .mode "legacy" }}
+      secretFile: {{ .secretFile | quote }}
+      {{- else }}
+      certificateIdentities:
+        {{- toYaml .certificateIdentities | nindent 8 }}
+      {{- end }}
+    {{- end }}
+  authorization:
+    defaultAllow: false
+    rules:
+      - id: allow-privileged-groups
+        priority: 10
+        effect: allow
+        groups:
+          {{- toYaml $root.Values.authorization.privilegedGroups | nindent 10 }}
+        command: ".*"
+  {{- if eq .role "management" }}
+  management:
+    listener:
+      address: "0.0.0.0:8443"
+      certificateFile: /run/tls/api/server.crt
+      privateKeyFile: /run/tls/api/server.key
+      clientCaFile: /run/tls/api/client-ca.crt
+      minimumVersion: "1.3"
+    rbac:
+      roles:
+        admin:
+          description: Full TACACS management access
+          permissions: ["read:*", "write:*"]
+        jitpw-issuer:
+          permissions: ["write:jit-leases"]
+        jitpw-auditor:
+          permissions: ["read:jit-leases"]
+      subjects:
+        {{- toYaml $root.Values.management.subjects | nindent 8 }}
+  {{- end }}
+  audit:
+    hmacKeyFile: /run/secrets/tacacs/audit-hmac-key
+  jit:
+    storeUrl: {{ $root.Values.postgres.url | quote }}
+    storePasswordFile: /run/secrets/tacacs/postgres-password
+    storeCaFile: /run/tls/postgres/ca.crt
+    verifierKeyFile: /run/secrets/tacacs/verifier-key
+    maximumTtlSeconds: 900
+{{- end -}}
+{{- range $index, $role := list "management" "legacy" "tls" }}
+{{- $workload := index $.Values.workloads $role }}
+{{- if $workload.enabled }}
+{{- if $index }}
+---
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "usg-tacacs.name" . }}-configuration
+  name: {{ include "usg-tacacs.name" $ }}-{{ $role }}-configuration
   labels:
-    {{- include "usg-tacacs.labels" . | nindent 4 }}
+    {{- include "usg-tacacs.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
 data:
   server.yaml: |
-    apiVersion: tacacs.usg.mil/v1alpha1
-    kind: TacacsServer
-    metadata:
-      name: {{ include "usg-tacacs.name" . | quote }}
-      description: {{ .Values.configuration.description | quote }}
-    spec:
-      listeners:
-        legacy: "0.0.0.0:49"
-        health: "0.0.0.0:8080"
-      nads:
-        {{- range .Values.nads }}
-        - name: {{ .identity | quote }}
-          description: {{ .description | default "" | quote }}
-          sourceAddress: {{ .sourceIp | quote }}
-          mode: legacy
-          secretFile: {{ .secretFile | quote }}
-        {{- end }}
-      authorization:
-        defaultAllow: false
-        rules:
-          - id: allow-privileged-groups
-            priority: 10
-            effect: allow
-            groups:
-              {{- toYaml .Values.authorization.privilegedGroups | nindent 14 }}
-            command: ".*"
-      management:
-        listener:
-          address: "0.0.0.0:8443"
-          certificateFile: /run/tls/api/server.crt
-          privateKeyFile: /run/tls/api/server.key
-          clientCaFile: /run/tls/api/client-ca.crt
-          minimumVersion: "1.3"
-        rbac:
-          roles:
-            admin:
-              description: Full TACACS management access
-              permissions: ["read:*", "write:*"]
-            jitpw-issuer:
-              permissions: ["write:jit-leases"]
-            jitpw-auditor:
-              permissions: ["read:jit-leases"]
-          subjects:
-            {{- toYaml .Values.management.subjects | nindent 12 }}
-      audit:
-        hmacKeyFile: /run/secrets/tacacs/audit-hmac-key
-      jit:
-        storeUrl: {{ .Values.postgres.url | quote }}
-        storePasswordFile: /run/secrets/tacacs/postgres-password
-        storeCaFile: /run/tls/postgres/ca.crt
-        verifierKeyFile: /run/secrets/tacacs/verifier-key
-        maximumTtlSeconds: 900
+    {{- include "usg-tacacs.serverConfig" (dict "root" $ "role" $role) | nindent 4 }}
+{{- end }}
+{{- end }}
