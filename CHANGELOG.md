@@ -5,6 +5,24 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.1] - 2026-07-25
+
+### Fixed
+
+- Added the CMake and Perl build prerequisites required to compile AWS-LC FIPS
+  in both amd64 and arm64 server container builds.
+- Made UI container builds reproducible by installing the committed npm
+  dependency graph with `npm ci`.
+- Updated the Vite React plugin to a Vite 8-compatible release rather than
+  bypassing peer-dependency validation.
+
+### Security
+
+- Release container images now include OCI SBOM and maximum-mode provenance
+  attestations.
+- A GitHub Release is created only after both multi-architecture server and UI
+  manifests have been published successfully.
+
 ## [0.82.0] - 2026-07-25
 
 ### Added

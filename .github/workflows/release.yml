@@ -108,7 +108,8 @@ jobs:
           context:    ${{ matrix.context }}
           file:       ${{ matrix.dockerfile }}
           push:       true
-          provenance: false   # omit attestation blobs (simplifies manifest merge)
+          provenance: mode=max
+          sbom:       true
           tags:       ${{ steps.meta.outputs.tag }}
           cache-from: type=registry,ref=${{ steps.meta.outputs.cache }}
           cache-to:   type=registry,ref=${{ steps.meta.outputs.cache }},mode=max
@@ -159,3 +160,31 @@ jobs:
           IMAGE:   ${{ matrix.image }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+
+# ---------------------------------------------------------------------------
+# Job 3 — Publish the tagged source release after all container manifests exist
+# ---------------------------------------------------------------------------
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: manifest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Publish release notes and source archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v header="## [${VERSION}]" \
+            '$0 == header { emit=1; next }
+             emit && /^## \[/ { exit }
+             emit { print }' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md

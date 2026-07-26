@@ -3,4 +3,4 @@ name: usg-tacacs
 description: JITPW-managed USG TACACS deployment
 type: application
 version: 0.2.0
-appVersion: "0.82.0"
+appVersion: "0.82.1"
