@@ -13,6 +13,7 @@ RUN apk add --no-cache \
     build-base \
     cmake \
     go \
+    linux-headers \
     musl-dev \
     openssl-dev \
     openssl-libs-static \

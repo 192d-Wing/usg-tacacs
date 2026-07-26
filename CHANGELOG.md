@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Added the Go toolchain required by the AWS-LC FIPS CMake configuration to
-  both native server container builds.
+- Added the Go toolchain and Linux kernel headers required by the AWS-LC FIPS
+  CMake configuration to both native server container builds.
 
 ### Changed
 
