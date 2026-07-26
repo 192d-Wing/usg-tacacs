@@ -12,6 +12,7 @@ FROM rust:1.95-alpine AS chef
 RUN apk add --no-cache \
     build-base \
     cmake \
+    go \
     musl-dev \
     openssl-dev \
     openssl-libs-static \

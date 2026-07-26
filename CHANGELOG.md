@@ -5,6 +5,18 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.2] - 2026-07-25
+
+### Fixed
+
+- Added the Go toolchain required by the AWS-LC FIPS CMake configuration to
+  both native server container builds.
+
+### Changed
+
+- Pull requests now compile the server container's complete builder stage, so
+  missing native FIPS build prerequisites fail before a release tag is cut.
+
 ## [0.82.1] - 2026-07-25
 
 ### Fixed
