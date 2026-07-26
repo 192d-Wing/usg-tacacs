@@ -32,14 +32,24 @@ pub struct Metadata {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerSpec {
+    pub role: ServerRole,
     pub listeners: Listeners,
     #[serde(default)]
     pub nads: Vec<Nad>,
     pub authorization: Authorization,
-    pub management: Management,
+    #[serde(default)]
+    pub management: Option<Management>,
     pub audit: Audit,
     #[serde(default)]
     pub jit: Option<Jit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ServerRole {
+    Management,
+    Legacy,
+    Tls,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -193,15 +203,15 @@ impl ServerConfiguration {
         if self.metadata.name.trim().is_empty() {
             bail!("metadata.name must not be empty");
         }
-        if self.spec.listeners.legacy.is_none() && self.spec.listeners.tls.is_none() {
-            bail!("at least one TACACS listener must be configured");
+        validate_role(&self.spec)?;
+        if let Some(management) = &self.spec.management {
+            validate_tls("spec.management.listener", &management.listener)?;
+            validate_rbac(&management.rbac)?;
         }
-        validate_tls("spec.management.listener", &self.spec.management.listener)?;
         if let Some(tls) = &self.spec.listeners.tls {
             validate_tls("spec.listeners.tls", tls)?;
         }
         validate_nads(&self.spec.nads)?;
-        validate_rbac(&self.spec.management.rbac)?;
         validate_unique_rule_ids(&self.spec.authorization.rules)?;
         if let Some(jit) = &self.spec.jit
             && !(1..=MAX_JIT_TTL_SECONDS).contains(&jit.maximum_ttl_seconds)
@@ -244,6 +254,21 @@ impl ServerConfiguration {
         }
         paths
     }
+}
+
+fn validate_role(spec: &ServerSpec) -> Result<()> {
+    let legacy = spec.listeners.legacy.is_some();
+    let tls = spec.listeners.tls.is_some();
+    let management = spec.management.is_some();
+    let valid = match spec.role {
+        ServerRole::Management => management && !legacy && !tls,
+        ServerRole::Legacy => legacy && !tls && !management,
+        ServerRole::Tls => tls && !legacy && !management,
+    };
+    if !valid {
+        bail!("spec.role must exclusively match its listener: management, legacy, or tls");
+    }
+    Ok(())
 }
 
 fn validate_tls(field: &str, listener: &TlsListener) -> Result<()> {
@@ -384,5 +409,36 @@ mod tests {
         assert!(validate_certificate_identity("uri:spiffe://example.mil/tacacs/admin").is_ok());
         assert!(validate_certificate_identity("tacacs-admin.example.mil").is_err());
         assert!(validate_certificate_identity("dns:TACACS-ADMIN.example.mil").is_err());
+    }
+
+    fn management_example() -> ServerConfiguration {
+        yaml_serde::from_str(include_str!("../../../docs/config/server.example.yaml")).unwrap()
+    }
+
+    #[test]
+    fn runtime_roles_require_exclusive_listeners() {
+        let management = management_example();
+        assert!(management.validate(false).is_ok());
+
+        let mut legacy = management.clone();
+        legacy.spec.role = ServerRole::Legacy;
+        legacy.spec.listeners.legacy = Some("0.0.0.0:49".parse().unwrap());
+        legacy.spec.management = None;
+        assert!(legacy.validate(false).is_ok());
+
+        let mut tls = management.clone();
+        tls.spec.role = ServerRole::Tls;
+        tls.spec.listeners.tls = Some(management.spec.management.unwrap().listener);
+        tls.spec.management = None;
+        assert!(tls.validate(false).is_ok());
+    }
+
+    #[test]
+    fn runtime_roles_reject_combined_data_planes() {
+        let mut config = management_example();
+        config.spec.role = ServerRole::Legacy;
+        config.spec.listeners.legacy = Some("0.0.0.0:49".parse().unwrap());
+        config.spec.listeners.tls = Some(config.spec.management.take().unwrap().listener);
+        assert!(config.validate(false).is_err());
     }
 }
