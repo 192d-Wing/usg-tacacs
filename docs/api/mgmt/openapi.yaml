@@ -5,11 +5,29 @@ info:
   description: Administrative API for operating a USG TACACS server. This contract does not expose JIT password lease operations.
 servers:
   - url: https://tacacs.example.mil:8443/api/mgmt/v1
+tags:
+  - name: Status
+    description: Service health, readiness, and version information.
+  - name: Sessions
+    description: Active TACACS session inspection and termination.
+  - name: Policy
+    description: Authorization policy inspection, replacement, and reload.
+  - name: Operations
+    description: Durable asynchronous management operation status.
+  - name: Configuration
+    description: Redacted runtime configuration, schema, and validation.
+  - name: Metrics
+    description: Prometheus management-plane telemetry.
+  - name: NADs
+    description: Network access device lifecycle and runtime reconciliation.
+  - name: Audit
+    description: Forensic NAD evidence export and integrity verification.
 security:
   - mutualTLS: []
 paths:
   /status:
     get:
+      tags: [Status]
       operationId: getStatus
       summary: Get server status
       responses:
@@ -23,6 +41,7 @@ paths:
           $ref: "#/components/responses/Forbidden"
   /sessions:
     get:
+      tags: [Sessions]
       operationId: listSessions
       summary: List active TACACS sessions
       responses:
@@ -44,6 +63,7 @@ paths:
           format: int64
           minimum: 1
     delete:
+      tags: [Sessions]
       operationId: deleteSession
       summary: Terminate an active TACACS session
       responses:
@@ -55,6 +75,7 @@ paths:
           $ref: "#/components/responses/NotFound"
   /policy:
     get:
+      tags: [Policy]
       operationId: getPolicy
       summary: Get the active authorization policy
       responses:
@@ -67,6 +88,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
     post:
+      tags: [Policy]
       operationId: replacePolicy
       summary: Validate and replace the authorization policy
       requestBody:
@@ -96,6 +118,7 @@ paths:
           $ref: "#/components/responses/StoreUnavailable"
   /policy/reload:
     post:
+      tags: [Policy]
       operationId: reloadPolicy
       summary: Reload the policy from its configured source
       responses:
@@ -118,6 +141,7 @@ paths:
           type: string
           format: uuid
     get:
+      tags: [Operations]
       operationId: getOperation
       summary: Get the current result of an asynchronous management operation
       responses:
@@ -133,6 +157,7 @@ paths:
           $ref: "#/components/responses/NotFound"
   /config:
     get:
+      tags: [Configuration]
       operationId: getRuntimeConfig
       summary: Get the redacted runtime configuration
       responses:
@@ -146,6 +171,7 @@ paths:
           $ref: "#/components/responses/Forbidden"
   /config/effective:
     get:
+      tags: [Configuration]
       operationId: getEffectiveConfig
       summary: Get the redacted effective declarative configuration
       responses:
@@ -161,6 +187,7 @@ paths:
           $ref: "#/components/responses/NotFound"
   /config/schema:
     get:
+      tags: [Configuration]
       operationId: getConfigSchema
       summary: Get the JSON Schema generated from the authoritative Rust configuration types
       responses:
@@ -174,6 +201,7 @@ paths:
           $ref: "#/components/responses/Forbidden"
   /config/validate:
     post:
+      tags: [Configuration]
       operationId: validateConfig
       summary: Parse and semantically validate a declarative YAML configuration without applying it
       requestBody:
@@ -196,6 +224,7 @@ paths:
           description: Configuration exceeds the request limit
   /metrics:
     get:
+      tags: [Metrics]
       operationId: getMetrics
       summary: Get Prometheus metrics
       responses:
@@ -209,6 +238,7 @@ paths:
           $ref: "#/components/responses/Forbidden"
   /audit/nads:
     get:
+      tags: [Audit]
       operationId: listNadAuditEvents
       summary: Export NAD management audit evidence
       description: >
@@ -261,6 +291,7 @@ paths:
           $ref: "#/components/responses/StoreUnavailable"
   /audit/nads/verify:
     get:
+      tags: [Audit]
       operationId: verifyNadAuditEvents
       summary: Verify a page of the NAD audit chain
       description: >
@@ -299,6 +330,7 @@ paths:
           $ref: "#/components/responses/StoreUnavailable"
   /nads:
     get:
+      tags: [NADs]
       operationId: listNads
       summary: List API-owned network access devices
       parameters:
@@ -336,6 +368,7 @@ paths:
         "503":
           $ref: "#/components/responses/StoreUnavailable"
     post:
+      tags: [NADs]
       operationId: createNad
       summary: Create an API-owned network access device
       parameters:
@@ -381,6 +414,7 @@ paths:
           $ref: "#/components/responses/StoreUnavailable"
   /nads/inventory:
     get:
+      tags: [NADs]
       operationId: listNadInventory
       summary: List YAML-owned and API-owned network access devices
       description: >
@@ -402,6 +436,7 @@ paths:
           $ref: "#/components/responses/StoreUnavailable"
   /nads/reconciliation:
     get:
+      tags: [NADs]
       operationId: getNadReconciliation
       summary: Query API-owned NAD runtime reconciliation
       description: >
@@ -452,6 +487,7 @@ paths:
           type: string
           format: uuid
     get:
+      tags: [NADs]
       operationId: getNad
       summary: Get an API-owned network access device
       responses:
@@ -471,6 +507,7 @@ paths:
         "503":
           $ref: "#/components/responses/StoreUnavailable"
     patch:
+      tags: [NADs]
       operationId: updateNad
       summary: Replace mutable fields of an API-owned NAD
       parameters:
@@ -505,6 +542,7 @@ paths:
         "503":
           $ref: "#/components/responses/StoreUnavailable"
     delete:
+      tags: [NADs]
       operationId: deleteNad
       summary: Soft-delete an API-owned network access device
       parameters:

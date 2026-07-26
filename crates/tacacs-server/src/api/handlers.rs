@@ -2178,6 +2178,42 @@ mod tests {
         verify_references(&document, &document);
     }
 
+    #[test]
+    fn mgmt_openapi_operations_have_one_declared_tag() {
+        let document: serde_json::Value =
+            yaml_serde::from_str(include_str!("../../../../docs/api/mgmt/openapi.yaml")).unwrap();
+        let declared: std::collections::HashSet<&str> = document["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tag| tag["name"].as_str().unwrap())
+            .collect();
+        let expected = [
+            "Status",
+            "Sessions",
+            "Policy",
+            "Operations",
+            "Configuration",
+            "Metrics",
+            "NADs",
+            "Audit",
+        ];
+        assert_eq!(declared, expected.into_iter().collect());
+        for (path, item) in document["paths"].as_object().unwrap() {
+            for method in ["get", "post", "put", "patch", "delete"] {
+                let Some(operation) = item.get(method) else {
+                    continue;
+                };
+                let tags = operation["tags"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{method} {path} must declare an operation tag"));
+                assert_eq!(tags.len(), 1, "{method} {path} must have exactly one tag");
+                let tag = tags[0].as_str().unwrap();
+                assert!(declared.contains(tag), "{method} {path} uses unknown tag");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn config_validation_uses_typed_declarative_model() {
         use http_body_util::BodyExt;
