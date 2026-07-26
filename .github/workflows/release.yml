@@ -179,8 +179,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          awk -v header="## [${VERSION}]" \
-            '$0 == header { emit=1; next }
+          awk -v header="## [${VERSION}] - " \
+            'index($0, header) == 1 { emit=1; next }
              emit && /^## \[/ { exit }
              emit { print }' CHANGELOG.md > release-notes.md
           test -s release-notes.md
