@@ -4,14 +4,8 @@ metadata:
   name: lab
   description: Lab TACACS service
 spec:
+  role: management
   listeners:
-    legacy: 0.0.0.0:49
-    tls:
-      address: 0.0.0.0:300
-      certificateFile: /run/secrets/tls/tls.crt
-      privateKeyFile: /run/secrets/tls/tls.key
-      clientCaFile: /run/secrets/tls/client-ca.crt
-      minimumVersion: "1.3"
     health: 0.0.0.0:8080
   nads:
     - name: oopl-an-001

@@ -9,7 +9,8 @@ invalid_peer="$(mktemp)"
 trap 'rm -f "$rendered" "$invalid_identity" "$invalid_peer"' EXIT
 
 helm lint "$chart" --values "$values"
-helm template chart-security-test "$chart" --values "$values" >"$rendered"
+helm template chart-security-test "$chart" --values "$values" \
+    --set workloads.tls.enabled=true >"$rendered"
 
 require_rendered() {
     local pattern="$1"
@@ -28,6 +29,17 @@ require_rendered 'app.kubernetes.io/name: jitpw-api' \
     "the management peer Pod selector"
 require_rendered 'port: 8443' "the protected management port"
 require_rendered 'type: ClusterIP' "a cluster-internal management Service"
+require_rendered 'role: management' "the management-only server role"
+require_rendered 'role: legacy' "the legacy-only server role"
+require_rendered 'role: tls' "the TLS-only server role"
+require_rendered 'app.kubernetes.io/component: management' \
+    "the management workload selector"
+require_rendered 'app.kubernetes.io/component: legacy' \
+    "the legacy workload selector"
+require_rendered 'app.kubernetes.io/component: tls' \
+    "the TLS workload selector"
+require_rendered 'port: 49' "the legacy TACACS service"
+require_rendered 'port: 300' "the TACACS-over-TLS service"
 
 identities="$(sed -n 's/^[[:space:]]*- certificateIdentity: //p' "$rendered")"
 if printf '%s\n' "$identities" |

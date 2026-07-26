@@ -32,6 +32,13 @@ at the former aggregate `IP=secret` file. JIT store settings, authorization, and
 management RBAC are no longer supplied through separate environment variables
 or JSON files when `--config` is used.
 
+The chart deploys independent `management`, `legacy`, and optional `tls`
+workloads from the same server image. Each rendered configuration has exactly
+one runtime role and one externally meaningful listener. This prevents a
+legacy listener failure or rollout from coupling management availability to
+the TLS data plane. Enable the required roles under `workloads`; enabling TLS
+requires the `secrets.dataPlaneTls` certificate Secret.
+
 Management certificate identities must use an explicit typed selector:
 `cn:`, `dns:`, `email:`, or `uri:`. The chart's NetworkPolicy admits port 8443
 only from a declared namespace and matching Pod labels. Both selectors are

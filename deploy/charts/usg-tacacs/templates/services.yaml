@@ -1,33 +1,39 @@
+{{- range $index, $role := list "management" "legacy" "tls" }}
+{{- $workload := index $.Values.workloads $role }}
+{{- if $workload.enabled }}
+{{- if $index }}
+---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "usg-tacacs.name" . }}
+  name: {{ include "usg-tacacs.name" $ }}-{{ $role }}
   labels:
-    {{- include "usg-tacacs.labels" . | nindent 4 }}
-  {{- with .Values.service.annotations }}
+    {{- include "usg-tacacs.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+  {{- with $.Values.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ ternary "ClusterIP" $.Values.service.type (eq $role "management") }}
+  {{- if ne $role "management" }}
   externalTrafficPolicy: Local
-  {{- with .Values.service.loadBalancerIP }}
+  {{- $address := ternary $.Values.service.legacyLoadBalancerIP $.Values.service.tlsLoadBalancerIP (eq $role "legacy") }}
+  {{- with $address }}
   loadBalancerIP: {{ . }}
   {{- end }}
+  {{- end }}
   selector:
-    {{- include "usg-tacacs.selectorLabels" . | nindent 4 }}
+    {{- include "usg-tacacs.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
   ports:
-    - { name: tacacs, port: 49, targetPort: tacacs }
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "usg-tacacs.name" . }}-management
-  labels:
-    {{- include "usg-tacacs.labels" . | nindent 4 }}
-spec:
-  type: ClusterIP
-  selector:
-    {{- include "usg-tacacs.selectorLabels" . | nindent 4 }}
-  ports:
+    {{- if eq $role "management" }}
     - { name: https, port: 8443, targetPort: management }
+    {{- else if eq $role "legacy" }}
+    - { name: tacacs, port: 49, targetPort: legacy }
+    {{- else }}
+    - { name: tacacss, port: 300, targetPort: tls }
+    {{- end }}
+{{- end }}
+{{- end }}

@@ -1,9 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["image", "nads", "postgres", "secrets", "management", "networkPolicy"],
+  "required": ["workloads", "image", "nads", "postgres", "secrets", "management", "networkPolicy"],
   "properties": {
-    "replicaCount": {"type": "integer", "minimum": 1},
+    "workloads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["management", "legacy", "tls"],
+      "properties": {
+        "management": {"$ref": "#/$defs/workload"},
+        "legacy": {"$ref": "#/$defs/workload"},
+        "tls": {"$ref": "#/$defs/workload"}
+      }
+    },
     "image": {
       "type": "object",
       "required": ["repository", "tag", "digest"],
@@ -20,13 +29,31 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["identity", "sourceIp", "secretFile"],
+        "required": ["identity", "sourceIp", "mode"],
         "properties": {
           "identity": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$"},
           "sourceIp": {"type": "string", "format": "ipv4"},
           "description": {"type": "string"},
-          "secretFile": {"type": "string", "pattern": "^/"}
-        }
+          "mode": {"enum": ["legacy", "tls"]},
+          "secretFile": {"type": "string", "pattern": "^/"},
+          "certificateIdentities": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {"mode": {"const": "legacy"}},
+            "required": ["secretFile"],
+            "not": {"required": ["certificateIdentities"]}
+          },
+          {
+            "properties": {"mode": {"const": "tls"}},
+            "required": ["certificateIdentities"],
+            "not": {"required": ["secretFile"]}
+          }
+        ]
       }
     },
     "configuration": {
@@ -47,7 +74,18 @@
     },
     "secrets": {
       "type": "object",
-      "required": ["runtime", "apiTls", "postgresCa"]
+      "required": ["runtime", "apiTls", "dataPlaneTls", "postgresCa"]
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "legacyLoadBalancerIP", "tlsLoadBalancerIP", "annotations"],
+      "properties": {
+        "type": {"enum": ["LoadBalancer", "NodePort"]},
+        "legacyLoadBalancerIP": {"type": "string"},
+        "tlsLoadBalancerIP": {"type": "string"},
+        "annotations": {"type": "object"}
+      }
     },
     "management": {
       "type": "object",
@@ -103,6 +141,17 @@
             }
           }
         }
+      }
+    }
+  },
+  "$defs": {
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "replicaCount"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replicaCount": {"type": "integer", "minimum": 1}
       }
     }
   }

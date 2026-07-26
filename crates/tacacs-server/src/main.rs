@@ -231,11 +231,13 @@ fn apply_declarative_config(args: &mut Args, config: &ServerConfiguration) -> Re
         args.tls_key = Some(tls.private_key_file.clone());
         args.client_ca = Some(tls.client_ca_file.clone());
     }
-    args.api_enabled = true;
-    args.api_listen = Some(config.spec.management.listener.address);
-    args.api_tls_cert = Some(config.spec.management.listener.certificate_file.clone());
-    args.api_tls_key = Some(config.spec.management.listener.private_key_file.clone());
-    args.api_client_ca = Some(config.spec.management.listener.client_ca_file.clone());
+    args.api_enabled = config.spec.management.is_some();
+    if let Some(management) = &config.spec.management {
+        args.api_listen = Some(management.listener.address);
+        args.api_tls_cert = Some(management.listener.certificate_file.clone());
+        args.api_tls_key = Some(management.listener.private_key_file.clone());
+        args.api_client_ca = Some(management.listener.client_ca_file.clone());
+    }
     args.audit_hmac_key_file = Some(config.spec.audit.hmac_key_file.clone());
     args.legacy_nad_secret.clear();
     args.legacy_nad_secrets_file = None;
@@ -786,17 +788,18 @@ fn load_rbac_config(
     declarative: Option<&ServerConfiguration>,
 ) -> Result<crate::api::RbacConfig> {
     let rbac = if let Some(config) = declarative {
-        let roles = config
+        let management = config
             .spec
             .management
+            .as_ref()
+            .context("management role requires management configuration")?;
+        let roles = management
             .rbac
             .roles
             .iter()
             .map(|(name, role)| (name.clone(), role.permissions.clone()))
             .collect();
-        let users = config
-            .spec
-            .management
+        let users = management
             .rbac
             .subjects
             .iter()
@@ -1563,16 +1566,16 @@ async fn run_server(args: &Args, state: &AppState, otel_enabled: bool) -> Result
     setup_tls_listener(args, state, &mut handles).await?;
     setup_legacy_listener(args, state, &mut handles)?;
 
-    if handles.is_empty() {
-        bail!("no listeners configured; set --listen-tls and/or --listen-legacy");
-    }
-
     let server_state = ServerState::new().with_registry(state.session_registry.clone());
     setup_http_server(args, &server_state, &mut handles);
 
     let (reload_tx, reload_rx) = mpsc::channel::<PolicyReloadRequest>(10);
     setup_management_api(args, state, reload_tx, &mut handles)?;
     setup_nad_reconciliation_watcher(state, &mut handles);
+
+    if handles.is_empty() {
+        bail!("no listeners configured for the selected server role");
+    }
 
     {
         metrics()

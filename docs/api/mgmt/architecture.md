@@ -190,7 +190,15 @@ commit their audit event atomically with the resource change.
 
 ## Deployment
 
-The management listener may share the server process with TACACS data-plane
-listeners, but it uses a distinct port, route namespace, certificate trust
-policy, and Kubernetes NetworkPolicy. It must not be exposed through the public
-JITPW ingress.
+The same signed server image runs as three exclusive Kubernetes workloads:
+`management`, `legacy`, and `tls`. Management listens only on mTLS port 8443;
+legacy listens only on TCP/49; TLS listens only on TCP/300. Each workload has a
+distinct Service, selector, NetworkPolicy, certificate mount, and replica
+count. The management Service is ClusterIP-only and must not be exposed through
+the public JITPW ingress.
+
+Management endpoints backed by PostgreSQL are authoritative across replicas.
+Active session inventory and termination remain process-local and therefore do
+not yet represent sessions owned by the legacy and TLS Deployments. Those
+endpoints must not claim cluster-wide completeness until a distributed session
+registry and authenticated termination channel are implemented.
