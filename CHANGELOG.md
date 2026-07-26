@@ -5,6 +5,65 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.0] - 2026-07-25
+
+### Added
+
+- **Typed declarative server configuration**: one strict YAML model now owns
+  listeners, NADs, authorization, management RBAC, secret-file references,
+  auditing, and the JIT PostgreSQL store. `usg-tacacs-config-check` validates
+  syntax, semantic invariants, unknown fields, TLS 1.3 settings, and optionally
+  mounted files before a Pod starts.
+- **Dedicated TACACS management API contract**: an OpenAPI 3.1.1 management
+  plane provides status, sessions, policy operations, redacted effective
+  configuration, generated configuration schema, validation, metrics, NAD
+  lifecycle, reconciliation status, and durable asynchronous operations.
+  Swagger UI groups operations under Status, Sessions, Policy, Operations,
+  Configuration, Metrics, NADs, and Audit.
+- **PostgreSQL-owned NAD lifecycle**: API-created NADs use idempotent creation,
+  optimistic resource versions, soft deletion, bounded collection queries, and
+  deterministic reconciliation with the Git-managed YAML baseline. Plaintext
+  TACACS secrets are never stored; records contain opaque secret references.
+- **Forensic NAD audit evidence**: append-only PostgreSQL events are
+  hash-chained and HMAC-authenticated. Version 2 authenticates the event UUID,
+  microsecond timestamp, correlation identifier, certificate actor, action,
+  NAD identifier, resource version, and before/after state. Management
+  endpoints export and verify bounded evidence pages.
+- **Durable management operations**: policy reload state is shared between
+  replicas, survives Pod replacement, fails closed during PostgreSQL outages,
+  and marks abandoned operations failed after the bounded recovery interval.
+- **Role-separated Helm deployment**: the chart uses the same signed server
+  image for exclusive `management`, `legacy`, and `tls` workloads, each with
+  independent Deployments, Services, replica counts, ConfigMaps, certificate
+  mounts, load-balancer addresses, selectors, and NetworkPolicies.
+
+### Changed
+
+- **Breaking declarative configuration change**: `spec.role` is now required
+  and must be exactly one of `management`, `legacy`, or `tls`. A role may expose
+  only its corresponding externally meaningful listener; combined legacy and
+  TLS data planes must be deployed as separate workloads.
+- The management API is served only through a TLS 1.3 mutual-authentication
+  listener on port 8443. Certificate RBAC selectors are explicitly typed as
+  `cn:`, `dns:`, `email:`, or `uri:` and ambiguous matches fail closed.
+- Helm chart version `0.2.0` adds typed legacy/TLS NAD values and separate
+  legacy and TLS load-balancer addresses.
+
+### Security
+
+- Removed the runtime plaintext management listener path.
+- Added adversarial coverage for missing, untrusted, ambiguous, and
+  incorrectly typed client identities, TLS 1.2 negotiation, Helm management
+  peer scoping, audit tampering, PostgreSQL loss, and replica handoff.
+- Management port 8443 is ClusterIP-only and admitted only from peers matching
+  both the configured Kubernetes namespace and Pod labels.
+
+### Known limitations
+
+- Active session inventory and termination remain process-local and are not
+  yet authoritative across the separate legacy and TLS Deployments. Durable
+  management resources are shared through PostgreSQL.
+
 ## [0.81.13] - 2026-06-07
 
 ### Added

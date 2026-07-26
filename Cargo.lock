@@ -4256,7 +4256,7 @@ dependencies = [
 
 [[package]]
 name = "tacacs-policy-ingest"
-version = "0.81.13"
+version = "0.82.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4853,7 +4853,7 @@ dependencies = [
 
 [[package]]
 name = "usg-tacacs-client-tls"
-version = "0.81.13"
+version = "0.82.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4870,7 +4870,7 @@ dependencies = [
 
 [[package]]
 name = "usg-tacacs-config"
-version = "0.81.13"
+version = "0.82.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4881,7 +4881,7 @@ dependencies = [
 
 [[package]]
 name = "usg-tacacs-openssh"
-version = "0.81.13"
+version = "0.82.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4897,7 +4897,7 @@ dependencies = [
 
 [[package]]
 name = "usg-tacacs-policy"
-version = "0.81.13"
+version = "0.82.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -4910,7 +4910,7 @@ dependencies = [
 
 [[package]]
 name = "usg-tacacs-proto"
-version = "0.81.13"
+version = "0.82.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4923,7 +4923,7 @@ dependencies = [
 
 [[package]]
 name = "usg-tacacs-secrets"
-version = "0.81.13"
+version = "0.82.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4949,7 +4949,7 @@ dependencies = [
 
 [[package]]
 name = "usg-tacacs-server"
-version = "0.81.13"
+version = "0.82.0"
 dependencies = [
  "anyhow",
  "arc-swap",
