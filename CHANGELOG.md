@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Pull requests now compile the server container's complete builder stage, so
   missing native FIPS build prerequisites fail before a release tag is cut.
+- The server container context now includes only the two OpenAPI documents
+  embedded in the management and JIT API binaries while continuing to exclude
+  unrelated documentation.
 
 ## [0.82.1] - 2026-07-25
 
