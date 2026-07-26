@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Native musl build (used for both amd64 and arm64 release matrix entries).
+# Native glibc build (used for both amd64 and arm64 release matrix entries).
 #
 # Dependency compilation is cached as its own layer via cargo-chef so a source
 # or version change does NOT trigger a full recompile of the (slow) dependency
@@ -8,17 +8,18 @@
 # (cache-to/from type=registry,mode=max) in .github/workflows/release.yml.
 ARG TARGETPLATFORM=linux/arm64
 
-FROM rust:1.95-alpine AS chef
-RUN apk add --no-cache \
-    build-base \
-    cmake \
-    go \
-    linux-headers \
-    musl-dev \
-    openssl-dev \
-    openssl-libs-static \
-    perl \
-    pkgconfig
+FROM rust:1.95-bookworm AS chef
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+       build-essential \
+       cmake \
+       golang \
+       libssl-dev \
+       linux-libc-dev \
+       perl \
+       pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+ENV OPENSSL_STATIC=1
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
@@ -41,11 +42,10 @@ RUN cargo chef cook --release -p usg-tacacs-server --recipe-path recipe.json
 COPY . .
 RUN cargo build --release -p usg-tacacs-server
 
-FROM registry1.dso.mil/ironbank/opensource/alpinelinux/alpine:3.22
-RUN apk add --no-cache ca-certificates
+FROM registry1.dso.mil/ironbank/opensource/debian/debian:12.15
 WORKDIR /app
 
-RUN adduser -D -H -s /sbin/nologin tacacs
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin tacacs
 USER tacacs
 
 COPY --from=builder /app/target/release/usg-tacacs-server /usr/local/bin/usg-tacacs

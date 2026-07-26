@@ -9,8 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Moved native server container builds from Alpine/musl to Debian 12/glibc,
+  matching the Iron Bank Debian 12 runtime. AWS-LC FIPS rejected the
+  musl-produced module during its integrity transformation.
 - Added the Go toolchain and Linux kernel headers required by the AWS-LC FIPS
-  CMake configuration to both native server container builds.
+  CMake configuration to both native server container builds. OpenSSL remains
+  statically linked into the server binary.
 
 ### Changed
 
