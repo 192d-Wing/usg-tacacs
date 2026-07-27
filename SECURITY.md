@@ -19,13 +19,14 @@ Deployment hardening guidance is maintained in
 Do not report suspected vulnerabilities in a public issue, discussion,
 pull request, or other public channel.
 
-Contact the repository owners through an established private
-organizational channel and ask for a secure reporting path. Do not
-include exploit details or sensitive data in the initial message.
+Use GitHub's private vulnerability reporting workflow:
 
-GitHub private vulnerability reporting is not currently enabled for this
-repository. When it becomes available, this policy will be updated with
-the private reporting URL.
+<https://github.com/192d-Wing/usg-tacacs/security/advisories/new>
+
+If that workflow is unavailable, contact the repository owners through
+an established private organizational channel and ask for a secure
+reporting path. Do not include exploit details or sensitive data in the
+initial message.
 
 Include the following when it is safe to do so:
 
