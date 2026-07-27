@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
 import AppLayout from "@cloudscape-design/components/app-layout";
 import SideNavigation from "@cloudscape-design/components/side-navigation";
 import TopNavigation from "@cloudscape-design/components/top-navigation";
@@ -11,12 +10,47 @@ import ResourcesPage from "./pages/Resources";
 import ConfigurationPage from "./pages/Configuration";
 import SessionsPage from "./pages/Sessions";
 
+function pageFor(pathname: string) {
+  switch (pathname) {
+    case "/audit":
+      return <AuditPage />;
+    case "/flows":
+      return <FlowsPage />;
+    case "/alerts":
+      return <AlertsPage />;
+    case "/resources":
+      return <ResourcesPage />;
+    case "/sessions":
+      return <SessionsPage />;
+    case "/configuration":
+      return <ConfigurationPage />;
+    default:
+      return null;
+  }
+}
+
 export default function App() {
-  const nav = useNavigate();
-  const loc = useLocation();
+  const [pathname, setPathname] = useState(() => window.location.pathname);
   const [me, setMe] = useState<{ email?: string; user?: string }>({});
+
   useEffect(() => {
     get("/api/me").then(setMe).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (window.location.pathname === "/") {
+      window.history.replaceState(null, "", "/audit");
+      setPathname("/audit");
+    }
+
+    const followHistory = () => setPathname(window.location.pathname);
+    window.addEventListener("popstate", followHistory);
+    return () => window.removeEventListener("popstate", followHistory);
+  }, []);
+
+  const navigate = useCallback((href: string) => {
+    window.history.pushState(null, "", href);
+    setPathname(window.location.pathname);
   }, []);
 
   return (
@@ -38,12 +72,12 @@ export default function App() {
         toolsHide
         navigation={
           <SideNavigation
-            activeHref={loc.pathname}
+            activeHref={pathname}
             header={{ href: "/", text: "Observability" }}
             onFollow={(e) => {
               if (!e.detail.external) {
                 e.preventDefault();
-                nav(e.detail.href);
+                navigate(e.detail.href);
               }
             }}
             items={[
@@ -57,17 +91,7 @@ export default function App() {
             ]}
           />
         }
-        content={
-          <Routes>
-            <Route path="/" element={<Navigate to="/audit" replace />} />
-            <Route path="/audit" element={<AuditPage />} />
-            <Route path="/flows" element={<FlowsPage />} />
-            <Route path="/alerts" element={<AlertsPage />} />
-            <Route path="/resources" element={<ResourcesPage />} />
-            <Route path="/sessions" element={<SessionsPage />} />
-            <Route path="/configuration" element={<ConfigurationPage />} />
-          </Routes>
-        }
+        content={pageFor(pathname)}
       />
     </>
   );
