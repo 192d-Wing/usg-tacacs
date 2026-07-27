@@ -6,7 +6,8 @@ values="${2:-deploy/sites/example/usg-tacacs.values.yaml}"
 rendered="$(mktemp)"
 invalid_identity="$(mktemp)"
 invalid_peer="$(mktemp)"
-trap 'rm -f "$rendered" "$invalid_identity" "$invalid_peer"' EXIT
+invalid_est="$(mktemp)"
+trap 'rm -f "$rendered" "$invalid_identity" "$invalid_peer" "$invalid_est"' EXIT
 
 helm lint "$chart" --values "$values"
 helm template chart-security-test "$chart" --values "$values" \
@@ -40,6 +41,14 @@ require_rendered 'app.kubernetes.io/component: tls' \
     "the TLS workload selector"
 require_rendered 'port: 49' "the legacy TACACS service"
 require_rendered 'port: 300' "the TACACS-over-TLS service"
+require_rendered 'certificateFile: /run/tls/est/server.crt' \
+    "the EST-managed management certificate"
+require_rendered 'name: EST_INITIAL_ENROLLMENT_REQUIRED, value: "true"' \
+    "fail-closed EST bootstrap"
+require_rendered 'name: EST_PASSWORD_FILE, value: /run/secrets/est/password' \
+    "file-backed EST bootstrap credential"
+require_rendered 'name: est-certificates' "the EST certificate volume"
+require_rendered 'medium: Memory' "tmpfs-backed private-key storage"
 
 identities="$(sed -n 's/^[[:space:]]*- certificateIdentity: //p' "$rendered")"
 if printf '%s\n' "$identities" |
@@ -78,3 +87,22 @@ if helm lint "$chart" --values "$values" --values "$invalid_peer" \
 fi
 
 echo "Management chart negative validation passed."
+
+cat >"$invalid_est" <<'EOF'
+est:
+  management:
+    enabled: true
+    serverUrl: http://est.example.mil/.well-known/est
+    commonName: tacacs-management.example.mil
+    dnsSans: []
+    authentication: basic
+    username: ""
+EOF
+
+if helm lint "$chart" --values "$values" --values "$invalid_est" \
+    >/dev/null 2>&1; then
+    echo "FAIL: chart accepted insecure or incomplete EST configuration" >&2
+    exit 1
+fi
+
+echo "Management EST security validation passed."

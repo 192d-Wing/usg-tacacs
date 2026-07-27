@@ -50,6 +50,10 @@ spec:
             - { name: postgres-ca, mountPath: /run/tls/postgres, readOnly: true }
             {{- if eq $role "management" }}
             - { name: api-tls, mountPath: /run/tls/api, readOnly: true }
+            {{- if $.Values.est.management.enabled }}
+            - { name: est-certificates, mountPath: /run/tls/est }
+            - { name: est-bootstrap, mountPath: /run/secrets/est, readOnly: true }
+            {{- end }}
             {{- else if eq $role "tls" }}
             - { name: dataplane-tls, mountPath: /run/tls/dataplane, readOnly: true }
             {{- end }}
@@ -58,6 +62,29 @@ spec:
           image: {{ include "usg-tacacs.image" $ | quote }}
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           args: ["--config", "/etc/usg-tacacs/server.yaml", "--log-format", "json"]
+          {{- if and (eq $role "management") $.Values.est.management.enabled }}
+          env:
+            - { name: EST_ENABLED, value: "true" }
+            - { name: EST_SERVER_URL, value: {{ $.Values.est.management.serverUrl | quote }} }
+            - { name: EST_COMMON_NAME, value: {{ $.Values.est.management.commonName | quote }} }
+            - { name: EST_DNS_SANS, value: {{ join "," $.Values.est.management.dnsSans | quote }} }
+            - { name: EST_ORGANIZATION, value: {{ $.Values.est.management.organization | quote }} }
+            - { name: EST_CA_LABEL, value: {{ $.Values.est.management.caLabel | quote }} }
+            - { name: EST_CERT_PATH, value: /run/tls/est/server.crt }
+            - { name: EST_KEY_PATH, value: /run/tls/est/server.key }
+            - { name: EST_CA_CERT_PATH, value: /run/tls/est/issuer-chain.crt }
+            - { name: EST_RENEWAL_THRESHOLD, value: {{ $.Values.est.management.renewalThreshold | quote }} }
+            - { name: EST_RENEWAL_CHECK_INTERVAL, value: {{ $.Values.est.management.renewalCheckIntervalSeconds | quote }} }
+            - { name: EST_BOOTSTRAP_TIMEOUT, value: {{ $.Values.est.management.bootstrapTimeoutSeconds | quote }} }
+            - { name: EST_INITIAL_ENROLLMENT_REQUIRED, value: "true" }
+            {{- if eq $.Values.est.management.authentication "basic" }}
+            - { name: EST_USERNAME, value: {{ $.Values.est.management.username | quote }} }
+            - { name: EST_PASSWORD_FILE, value: /run/secrets/est/password }
+            {{- else }}
+            - { name: EST_CLIENT_CERT, value: /run/secrets/est/client.crt }
+            - { name: EST_CLIENT_KEY, value: /run/secrets/est/client.key }
+            {{- end }}
+          {{- end }}
           ports:
             {{- if eq $role "management" }}
             - { name: management, containerPort: 8443 }
@@ -90,6 +117,16 @@ spec:
         {{- if eq $role "management" }}
         - name: api-tls
           secret: { secretName: {{ $.Values.secrets.apiTls }} }
+        {{- if $.Values.est.management.enabled }}
+        - name: est-certificates
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Mi
+        - name: est-bootstrap
+          secret:
+            secretName: {{ $.Values.est.management.bootstrapSecret }}
+            defaultMode: 0400
+        {{- end }}
         {{- else if eq $role "tls" }}
         - name: dataplane-tls
           secret: { secretName: {{ $.Values.secrets.dataPlaneTls }} }

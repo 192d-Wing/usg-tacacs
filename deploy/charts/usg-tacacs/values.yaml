@@ -36,6 +36,21 @@ secrets:
   dataPlaneTls: tacacs-dataplane-tls
   postgresCa: tacacs-postgres-ca
 
+est:
+  management:
+    enabled: false
+    serverUrl: ""
+    commonName: ""
+    dnsSans: []
+    organization: ""
+    caLabel: ""
+    bootstrapSecret: tacacs-est-bootstrap
+    authentication: basic
+    username: ""
+    renewalThreshold: 70
+    renewalCheckIntervalSeconds: 3600
+    bootstrapTimeoutSeconds: 300
+
 service:
   type: LoadBalancer
   legacyLoadBalancerIP: ""

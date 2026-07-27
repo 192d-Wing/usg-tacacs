@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["workloads", "image", "nads", "postgres", "secrets", "management", "networkPolicy"],
+  "required": ["workloads", "image", "nads", "postgres", "secrets", "est", "management", "networkPolicy"],
   "properties": {
     "workloads": {
       "type": "object",
@@ -75,6 +75,80 @@
     "secrets": {
       "type": "object",
       "required": ["runtime", "apiTls", "dataPlaneTls", "postgresCa"]
+    },
+    "est": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["management"],
+      "properties": {
+        "management": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "serverUrl",
+            "commonName",
+            "dnsSans",
+            "organization",
+            "caLabel",
+            "bootstrapSecret",
+            "authentication",
+            "username",
+            "renewalThreshold",
+            "renewalCheckIntervalSeconds",
+            "bootstrapTimeoutSeconds"
+          ],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "serverUrl": {"type": "string"},
+            "commonName": {"type": "string"},
+            "dnsSans": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+              }
+            },
+            "organization": {"type": "string"},
+            "caLabel": {"type": "string"},
+            "bootstrapSecret": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "authentication": {"enum": ["basic", "mtls"]},
+            "username": {"type": "string"},
+            "renewalThreshold": {"type": "integer", "minimum": 1, "maximum": 100},
+            "renewalCheckIntervalSeconds": {"type": "integer", "minimum": 60},
+            "bootstrapTimeoutSeconds": {"type": "integer", "minimum": 1}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"enabled": {"const": true}}},
+              "then": {
+                "properties": {
+                  "serverUrl": {
+                    "type": "string",
+                    "pattern": "^https://\\S+/.well-known/est(?:/\\S+)?$"
+                  },
+                  "commonName": {"type": "string", "minLength": 1},
+                  "dnsSans": {"minItems": 1}
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "enabled": {"const": true},
+                  "authentication": {"const": "basic"}
+                },
+                "required": ["enabled", "authentication"]
+              },
+              "then": {"properties": {"username": {"minLength": 1}}}
+            }
+          ]
+        }
+      }
     },
     "service": {
       "type": "object",

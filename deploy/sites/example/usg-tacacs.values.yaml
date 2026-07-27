@@ -25,6 +25,20 @@ nads:
 postgres:
   url: postgresql://tacacs_jit@postgres.example.invalid:5432/tacacs?sslmode=verify-full
 
+est:
+  management:
+    enabled: true
+    serverUrl: https://est.example.mil/.well-known/est/usg-tacacs
+    commonName: tacacs-management.lab.example.mil
+    dnsSans:
+      - tacacs-management.lab.example.mil
+      - usg-tacacs-management.tacacs.svc
+      - usg-tacacs-management.tacacs.svc.cluster.local
+    organization: Example Organization
+    bootstrapSecret: tacacs-est-bootstrap
+    authentication: basic
+    username: tacacs-bootstrap
+
 service:
   legacyLoadBalancerIP: 192.0.2.2
   tlsLoadBalancerIP: 192.0.2.3
