@@ -473,6 +473,10 @@ pub struct Args {
     #[arg(long, env = "EST_COMMON_NAME")]
     pub est_common_name: Option<String>,
 
+    /// Comma-delimited DNS SANs for the EST-enrolled certificate.
+    #[arg(long, env = "EST_DNS_SANS", value_delimiter = ',')]
+    pub est_dns_sans: Vec<String>,
+
     /// Organization name for the EST certificate.
     #[arg(long, env = "EST_ORGANIZATION")]
     pub est_organization: Option<String>,
@@ -837,6 +841,11 @@ pub fn build_est_config(
         .est_common_name
         .as_ref()
         .ok_or_else(|| "EST enabled but --est-common-name not provided".to_string())?;
+    for dns_name in &args.est_dns_sans {
+        if !valid_est_dns_name(dns_name) {
+            return Err(format!("invalid EST DNS SAN: {dns_name}"));
+        }
+    }
 
     // Resolve password from file or CLI/env
     let password = if let Some(ref pwd_file) = args.est_password_file {
@@ -858,6 +867,7 @@ pub fn build_est_config(
         client_key_path: args.est_client_key_path.clone(),
         ca_label: args.est_ca_label.clone(),
         common_name: common_name.clone(),
+        dns_sans: args.est_dns_sans.clone(),
         organization: args.est_organization.clone(),
         cert_path: args.est_cert_path.clone(),
         key_path: args.est_key_path.clone(),
@@ -869,6 +879,17 @@ pub fn build_est_config(
     };
 
     Ok(Some(config))
+}
+
+fn valid_est_dns_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value == value.to_ascii_lowercase()
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
 }
 
 pub fn credentials_map(args: &Args) -> std::result::Result<StaticCreds, String> {
@@ -1397,6 +1418,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -1527,6 +1549,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -1655,6 +1678,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -1783,6 +1807,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -1912,6 +1937,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -2040,6 +2066,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -2272,6 +2299,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -2397,6 +2425,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -2522,6 +2551,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -2652,6 +2682,7 @@ mod tests {
             est_client_key_path: None,
             est_ca_label: None,
             est_common_name: None,
+            est_dns_sans: Vec::new(),
             est_organization: None,
             est_cert_path: PathBuf::from("/etc/tacacs/server.crt"),
             est_key_path: PathBuf::from("/etc/tacacs/server.key"),

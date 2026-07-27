@@ -758,6 +758,7 @@ fn setup_management_api(
     let jit_lease_store = state.jit_lease_store.clone();
     let nad_store = state.nad_store.clone();
     let runtime_nads = state.runtime_nads.clone();
+    setup_management_est_reload(args, state, api_tls_acceptor.as_ref(), handles)?;
 
     handles.push(tokio::spawn(async move {
         if let Err(err) = crate::api::serve_api(
@@ -827,7 +828,7 @@ fn load_rbac_config(
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
 /// | SC-8 | Transmission Confidentiality | Refuses plaintext API unless --api-allow-plaintext is set |
-fn build_api_tls_acceptor(args: &Args) -> Result<Option<tokio_rustls::TlsAcceptor>> {
+fn build_api_tls_acceptor(args: &Args) -> Result<Option<Arc<RwLock<tokio_rustls::TlsAcceptor>>>> {
     if let (Some(cert), Some(key), Some(client_ca)) = (
         args.api_tls_cert.as_ref(),
         args.api_tls_key.as_ref(),
@@ -835,8 +836,8 @@ fn build_api_tls_acceptor(args: &Args) -> Result<Option<tokio_rustls::TlsAccepto
     ) {
         let tls_config = tls::build_tls_config(cert, key, client_ca, &[])
             .context("building API TLS configuration")?;
-        Ok(Some(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(
-            tls_config,
+        Ok(Some(Arc::new(RwLock::new(
+            tokio_rustls::TlsAcceptor::from(Arc::new(tls_config)),
         ))))
     } else if args.api_allow_plaintext {
         // NIST SC-8: Explicit opt-in required for plaintext mode
@@ -851,6 +852,51 @@ fn build_api_tls_acceptor(args: &Args) -> Result<Option<tokio_rustls::TlsAccepto
              and --api-client-ca, or pass --api-allow-plaintext for non-production use."
         );
     }
+}
+
+fn setup_management_est_reload(
+    args: &Args,
+    state: &AppState,
+    acceptor: Option<&Arc<RwLock<tokio_rustls::TlsAcceptor>>>,
+    handles: &mut Vec<JoinHandle<()>>,
+) -> Result<()> {
+    let (Some(provider), Some(acceptor)) = (&state.est_provider, acceptor) else {
+        return Ok(());
+    };
+    let cert = args
+        .api_tls_cert
+        .clone()
+        .context("management EST reload requires API certificate path")?;
+    let key = args
+        .api_tls_key
+        .clone()
+        .context("management EST reload requires API key path")?;
+    let client_ca = args
+        .api_client_ca
+        .clone()
+        .context("management EST reload requires API client CA path")?;
+    let mut changes = (**provider).subscribe();
+    let acceptor = acceptor.clone();
+    handles.push(tokio::spawn(async move {
+        while let Ok(change) = changes.recv().await {
+            if !matches!(
+                change,
+                usg_tacacs_secrets::SecretChange::TlsCertificates { .. }
+            ) {
+                continue;
+            }
+            match tls::build_tls_config(&cert, &key, &client_ca, &[]) {
+                Ok(config) => {
+                    *acceptor.write().await = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+                    info!("management API certificate reloaded after EST renewal");
+                }
+                Err(error) => {
+                    error!(error = %error, "refusing invalid renewed management certificate");
+                }
+            }
+        }
+    }));
+    Ok(())
 }
 
 /// Setup policy watcher and graceful shutdown handler.

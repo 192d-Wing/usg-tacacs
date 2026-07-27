@@ -206,7 +206,7 @@ async fn serve_tls_api_connection(
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_api(
     addr: SocketAddr,
-    acceptor: Option<TlsAcceptor>,
+    acceptor: Option<Arc<RwLock<TlsAcceptor>>>,
     rbac: RbacConfig,
     policy: Arc<RwLock<PolicyEngine>>,
     policy_path: String,
@@ -241,7 +241,7 @@ pub async fn serve_api(
                 continue;
             }
         };
-        let acceptor = tls_acceptor.clone();
+        let acceptor = tls_acceptor.read().await.clone();
         let app = app.clone();
         tokio::spawn(async move {
             handle_tls_connection(stream, peer_addr, acceptor, app).await;
@@ -249,7 +249,9 @@ pub async fn serve_api(
     }
 }
 
-fn require_mtls_acceptor(acceptor: Option<TlsAcceptor>) -> anyhow::Result<TlsAcceptor> {
+fn require_mtls_acceptor(
+    acceptor: Option<Arc<RwLock<TlsAcceptor>>>,
+) -> anyhow::Result<Arc<RwLock<TlsAcceptor>>> {
     acceptor.ok_or_else(|| anyhow::anyhow!("management API requires TLS 1.3 client authentication"))
 }
 

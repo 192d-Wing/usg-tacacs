@@ -39,6 +39,7 @@ usg-est-client.workspace = true
 # EST dependencies
 hex.workspace = true
 pem-rfc7468 = "0.7"
+rcgen = "0.14"
 x509-cert = { version = "0.2", features = ["pem"] }
 
 # Time handling

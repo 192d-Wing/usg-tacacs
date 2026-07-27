@@ -24,6 +24,7 @@ fn test_est_config_construction() {
         client_key_path: None,
         ca_label: Some("RA".to_string()),
         common_name: "tacacs-01.internal".to_string(),
+        dns_sans: vec!["tacacs-01.internal".to_string()],
         organization: Some("Example Corp".to_string()),
         cert_path: PathBuf::from("/tmp/cert.pem"),
         key_path: PathBuf::from("/tmp/key.pem"),
@@ -36,6 +37,7 @@ fn test_est_config_construction() {
 
     assert!(config.enabled);
     assert_eq!(config.common_name, "tacacs-01.internal");
+    assert_eq!(config.dns_sans, ["tacacs-01.internal"]);
     assert_eq!(config.renewal_threshold_percent, 70);
 }
 
@@ -168,6 +170,7 @@ fn test_est_config_serde() -> Result<()> {
         client_key_path: Some(PathBuf::from("/etc/tacacs/est-client.key")),
         ca_label: Some("RA".to_string()),
         common_name: "tacacs.example.com".to_string(),
+        dns_sans: vec!["tacacs.example.com".to_string()],
         organization: Some("Example Org".to_string()),
         cert_path: PathBuf::from("/etc/tacacs/server.crt"),
         key_path: PathBuf::from("/etc/tacacs/server.key"),
@@ -187,6 +190,7 @@ fn test_est_config_serde() -> Result<()> {
     // Verify round-trip
     assert_eq!(parsed.server_url, config.server_url);
     assert_eq!(parsed.common_name, config.common_name);
+    assert_eq!(parsed.dns_sans, config.dns_sans);
     assert_eq!(parsed.renewal_threshold_percent, 80);
     assert!(parsed.initial_enrollment_required);
 
@@ -243,6 +247,7 @@ fn test_est_config_with_password_file() {
         client_key_path: None,
         ca_label: None,
         common_name: "tacacs.example.com".to_string(),
+        dns_sans: vec!["tacacs.example.com".to_string()],
         organization: None,
         cert_path: PathBuf::from("/etc/tacacs/server.crt"),
         key_path: PathBuf::from("/etc/tacacs/server.key"),

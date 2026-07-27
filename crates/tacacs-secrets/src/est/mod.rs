@@ -256,6 +256,27 @@ impl EstProvider {
         Ok(())
     }
 
+    /// Build a CSR using the project's transitional P-384 software-key profile.
+    ///
+    /// The returned key remains file-backed. TPM and Luna HSM key providers are
+    /// tracked separately and must replace this path for production deployments
+    /// that require a validated hardware cryptographic boundary.
+    fn build_csr(&self) -> Result<(Vec<u8>, rcgen::KeyPair)> {
+        let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384)
+            .context("failed to generate P-384 EST private key")?;
+        let mut csr_builder = CsrBuilder::new()
+            .common_name(&self.config.common_name)
+            .with_key_pair(key_pair);
+        for dns_name in &self.config.dns_sans {
+            csr_builder = csr_builder.san_dns(dns_name);
+        }
+        if let Some(ref org) = self.config.organization {
+            csr_builder = csr_builder.organization(org);
+        }
+
+        csr_builder.build().map_err(Into::into)
+    }
+
     pub async fn bootstrap_enrollment(&self) -> Result<CertificateBundle> {
         info!("starting EST bootstrap enrollment");
 
@@ -264,12 +285,7 @@ impl EstProvider {
             return self.load_existing_certificates().await;
         }
 
-        let mut csr_builder = CsrBuilder::new().common_name(&self.config.common_name);
-        if let Some(ref org) = self.config.organization {
-            csr_builder = csr_builder.organization(org);
-        }
-
-        let (csr_der, key_pair) = csr_builder.build()?;
+        let (csr_der, key_pair) = self.build_csr()?;
 
         info!(cn = %self.config.common_name, "submitting enrollment request to EST server");
         let response = self.client.simple_enroll(&csr_der).await?;
@@ -441,11 +457,7 @@ impl EstProvider {
 
         info!("certificate has reached renewal threshold, initiating renewal");
 
-        let mut csr_builder = CsrBuilder::new().common_name(&self.config.common_name);
-        if let Some(ref org) = self.config.organization {
-            csr_builder = csr_builder.organization(org);
-        }
-        let (csr_der, key_pair) = csr_builder.build()?;
+        let (csr_der, key_pair) = self.build_csr()?;
 
         let response = self.client.simple_reenroll(&csr_der).await?;
 

@@ -222,6 +222,10 @@ pub struct EstConfig {
     /// Common name for the certificate (e.g., "tacacs-01.internal").
     pub common_name: String,
 
+    /// DNS subject alternative names requested in the certificate.
+    #[serde(default)]
+    pub dns_sans: Vec<String>,
+
     /// Organization name for the certificate (optional).
     #[serde(default)]
     pub organization: Option<String>,
@@ -275,6 +279,7 @@ impl std::fmt::Debug for EstConfig {
             .field("client_key_path", &self.client_key_path)
             .field("ca_label", &self.ca_label)
             .field("common_name", &self.common_name)
+            .field("dns_sans", &self.dns_sans)
             .field("organization", &self.organization)
             .field("cert_path", &self.cert_path)
             .field("key_path", &self.key_path)
@@ -305,6 +310,7 @@ impl Default for EstConfig {
             client_key_path: None,
             ca_label: None,
             common_name: String::new(),
+            dns_sans: Vec::new(),
             organization: None,
             cert_path: default_est_cert_path(),
             key_path: default_est_key_path(),
@@ -450,6 +456,7 @@ mod tests {
                 username: Some("bootstrap".to_string()),
                 password: Some("secret123".to_string()),
                 common_name: "tacacs-01.internal".to_string(),
+                dns_sans: vec!["tacacs-01.internal".to_string()],
                 organization: Some("Example Corp".to_string()),
                 ..Default::default()
             }),

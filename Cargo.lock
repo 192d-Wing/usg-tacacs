@@ -4930,6 +4930,7 @@ dependencies = [
  "backon",
  "hex",
  "pem-rfc7468",
+ "rcgen",
  "reqwest 0.13.4",
  "rustls",
  "rustls-pki-types",
