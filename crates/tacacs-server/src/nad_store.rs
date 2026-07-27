@@ -691,8 +691,14 @@ async fn insert_idempotency(
 ) -> Result<(), NadStoreError> {
     sqlx::query(
         "INSERT INTO tacacs_management.nad_idempotency
-            (idempotency_token, request_fingerprint, nad_id, expires_at)
-         VALUES ($1, $2, $3, clock_timestamp() + interval '24 hours')",
+            (idempotency_token, request_fingerprint, nad_id, created_at, expires_at)
+         VALUES (
+            $1,
+            $2,
+            $3,
+            statement_timestamp(),
+            statement_timestamp() + interval '24 hours'
+         )",
     )
     .bind(token)
     .bind(fingerprint)
@@ -1340,6 +1346,16 @@ mod tests {
             panic!("expected create followed by replay");
         };
         assert_eq!(created.nad_id, replayed.nad_id);
+        let lifetime_seconds: f64 = sqlx::query_scalar(
+            "SELECT EXTRACT(EPOCH FROM (expires_at - created_at))::double precision
+               FROM tacacs_management.nad_idempotency
+              WHERE nad_id = $1",
+        )
+        .bind(created.nad_id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(lifetime_seconds, 86_400.0);
 
         let mut conflict = input;
         conflict.description = Some("different request".to_owned());
