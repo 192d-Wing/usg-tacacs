@@ -5,6 +5,22 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.4] - 2026-07-27
+
+### Security
+
+- Removed React Router and its vulnerable transitive dependencies from the
+  operations UI, replacing its seven client-side routes with the browser
+  History API.
+- Refreshed the protocol fuzzing dependency graph to remove vulnerable OpenSSL
+  packages and update `bytes` to 1.11.1.
+- Updated the documentation toolchain to Pygments 2.20.0.
+
+### Added
+
+- Added a root-level security policy with supported-version guidance, safe
+  research boundaries, and the private GitHub vulnerability reporting path.
+
 ## [0.82.3] - 2026-07-27
 
 ### Fixed
