@@ -44,3 +44,11 @@ Management certificate identities must use an explicit typed selector:
 only from a declared namespace and matching Pod labels. Both selectors are
 applied to the same peer; a matching Pod name in another namespace is not
 sufficient.
+
+The optional `est.management` values enroll and renew the management server
+certificate through RFC 7030. Bootstrap passwords or client keys must be
+provided through `est.management.bootstrapSecret`; the chart never renders
+them into a ConfigMap or environment value. The enrolled private key is held in
+a Pod-local memory-backed volume. See
+[`docs/docs/est-provisioning.md`](../docs/docs/est-provisioning.md) for the
+supported lab workflow and production key-custody boundary.
