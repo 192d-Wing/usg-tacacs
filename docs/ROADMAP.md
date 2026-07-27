@@ -1,5 +1,11 @@
 # TACACS+ RS Enterprise Roadmap
 
+> **Historical roadmap with superseded deployment phases.** Early sections
+> describe systemd, Ansible, Docker Compose, and JSON configuration. The current
+> implemented production direction is typed YAML, Helm, separate runtime roles,
+> PostgreSQL management state, NAD reconciliation, and the mTLS Management API.
+> Do not use completed markers in legacy sections as current deployment guidance.
+
 Production deployment roadmap for 184+ locations with centralized GitOps
 management.
 

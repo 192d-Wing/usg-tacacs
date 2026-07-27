@@ -2,213 +2,129 @@
 icon: lucide/user
 ---
 
-# User Guide
+# User guide
 
-This guide is for network engineers and operators who use `usg-tacacs` for device authentication and authorization.
+This guide is for network engineers who connect to devices protected by USG
+TACACS. Your organization may use ordinary enterprise authentication, JITPW
+short-lived credentials, or both for different devices.
 
-## What is TACACS+?
+## What the service does
 
-TACACS+ (Terminal Access Controller Access-Control System Plus) is a protocol that provides:
+The network device sends authentication, command-authorization, and accounting
+requests to USG TACACS. The server identifies the device, validates your
+credential, evaluates authorization policy, and emits signed audit events.
 
-- **Authentication** - Verifying user identity
-- **Authorization** - Determining what commands users can execute
-- **Accounting** - Logging user activities
+You are responsible for using your own canonical identity, protecting your
+workstation and CAC, following change procedures, and closing sessions when
+work is complete.
 
-## How It Works
+## JITPW access
 
-```
-                                    ┌─────────────────┐
-                                    │   LDAP Server   │
-                                    │  (Optional)     │
-                                    └────────┬────────┘
-                                             │
-┌──────────────┐     TACACS+      ┌──────────┴─────────┐
-│   Network    │◄────────────────►│    usg-tacacs      │
-│   Device     │   (TLS/TCP)      │    Server          │
-└──────────────┘                  └──────────┬─────────┘
-                                             │
-                                    ┌────────┴────────┐
-                                    │  Policy Engine  │
-                                    │  (JSON Rules)   │
-                                    └─────────────────┘
+For a JIT-managed device, use your organization's `jit-ssh` client rather than
+requesting or handling a password:
+
+```powershell
+jit-ssh john.e.willman3.mil@a-an-001
 ```
 
-1. You connect to a network device (router, switch, firewall)
-2. The device contacts the TACACS+ server
-3. The server verifies your credentials (local or LDAP)
-4. The server checks if you're allowed to run commands
-5. The server logs your session and commands
+If `User` is set by a matching OpenSSH configuration entry, the hostname form
+may be sufficient:
 
-## Authentication Methods
-
-### Username/Password (PAP)
-
-The most common method. Enter your credentials when prompted:
-
-```
-Username: admin
-Password: ********
+```powershell
+jit-ssh a-an-001
 ```
 
-### ASCII Interactive
+The client authenticates to JITPW with the PIV Authentication certificate on
+your CAC, requests an authorized NAD-bound lease, and launches the system
+OpenSSH client through the configured bastion. The password is passed only to
+the network-device authentication prompt and is never displayed. The bastion
+authenticates your SSH key and proxies encrypted bytes; it does not receive the
+device password.
 
-Some devices use multi-step prompts:
+Leases expire no later than 15 minutes after issuance. Expiration limits new
+authentication; it does not grant permission to retain an unattended session.
+Authorization policy still governs every command.
 
-```
-Username: admin
-Password: ********
-Enter verification code: 123456
-```
+## Identity rules
 
-### CHAP (Challenge-Handshake)
+- Use the lowercase EID assigned by ICAM, such as
+  `john.e.willman3.mil`.
+- An explicit `user@host` argument takes precedence when supported by the
+  client workflow.
+- Otherwise, `jit-ssh` uses the effective `User` selected by OpenSSH
+  configuration for the target.
+- Do not use aliases, shared accounts, uppercase variants, or another person's
+  identity.
 
-Used by some devices for enhanced security. Works automatically - no user action required.
+If no effective user is available, stop and correct the command or SSH
+configuration. Do not guess.
 
-## Authorization
+## Expected connection flow
 
-After authentication, every command you run is checked against the policy:
+1. Insert the CAC and run `jit-ssh`.
+2. Select the PIV Authentication certificate if more than one eligible
+   certificate exists.
+3. Enter the CAC PIN only in the operating-system smart-card prompt.
+4. JITPW evaluates certificate identity, requested device, and ABAC policy.
+5. OpenSSH authenticates to the bastion using the configured SSH key.
+6. The bastion opens the TCP connection to the target device.
+7. The hidden JIT password satisfies only the device's password prompt.
+8. USG TACACS authorizes and accounts for the session and commands.
 
-```
-router# show running-config     ← Allowed
-router# configure terminal      ← May be denied based on policy
-```
+Neither support personnel nor the web UI should ask you to reveal the JIT
+password, CAC PIN, private SSH key, or session credential.
 
-### Understanding Denials
+## Authorization denials
 
-If a command is denied, you'll see a message from the device:
+Successful login does not imply unrestricted access. When a command is denied:
 
-```
-router# reload
-% Authorization denied
-```
+1. Do not repeatedly modify and retry a destructive command.
+2. Record the device, UTC time, exact command, and displayed error.
+3. Record the client correlation ID if it is available.
+4. Confirm you selected the intended device and identity.
+5. Request the required role through the approved access process.
 
-Contact your administrator if you need access to denied commands.
-
-## Best Practices
-
-### Secure Your Credentials
-
-1. **Use strong passwords** - At least 12 characters, mixed case, numbers, symbols
-2. **Never share credentials** - Each user should have their own account
-3. **Report compromises immediately** - If you suspect your password is exposed
-
-### Session Management
-
-1. **Log out when done** - Don't leave sessions open
-2. **Use single-connection mode** - If your device supports it, for efficiency
-3. **Be aware of timeouts** - Sessions may disconnect after inactivity
-
-### Command Authorization
-
-1. **Know your role** - Understand what commands you're authorized to use
-2. **Request access properly** - Follow your organization's change process
-3. **Review before executing** - Double-check destructive commands
+Administrators can correlate the request without knowing the temporary
+password.
 
 ## Troubleshooting
 
-### "Authentication Failed"
+| Symptom | User action |
+| --- | --- |
+| No eligible CAC certificate | Confirm the CAC is inserted and the PIV Authentication certificate is visible to the OS |
+| CAC PIN prompt repeats | Stop before PIN lockout and contact smart-card support |
+| JIT request denied | Confirm lowercase EID/device and request authorization through the approved process |
+| Bastion authentication fails | Check VPN/network reachability and your registered SSH public key |
+| Device authentication fails | Retry once with a fresh lease, then report device, UTC time, and correlation ID |
+| Command denied | Preserve the exact command/error and request the appropriate authorization |
+| Connection times out | Report target, bastion/region, time, and network context |
 
-Possible causes:
+Never work around a JIT failure by requesting the temporary password, placing a
+password in SSH configuration, or bypassing the approved bastion.
 
-- Incorrect username or password
-- Account locked due to too many failures
-- LDAP server unavailable
-- Your account is not in a required group
+## Ordinary TACACS access
 
-Actions:
+Some non-JIT devices may use enterprise credentials according to site policy.
+Enter credentials only into the device's expected SSH prompt. Never place
+passwords in command history, scripts, tickets, or SSH configuration. Device
+authentication, authorization, and accounting remain subject to the same audit
+and acceptable-use requirements.
 
-- Verify credentials carefully
-- Wait a few minutes if locked out
-- Contact your administrator
+## What to provide to support
 
-### "Authorization Denied"
+- device hostname and region;
+- canonical EID;
+- UTC date and time;
+- correlation ID, when shown;
+- whether failure occurred at CAC, JITPW, bastion, device login, or command
+  authorization;
+- exact non-secret error message;
+- `jit-ssh` and OpenSSH versions.
 
-Possible causes:
+Do not send screenshots containing certificates, private paths, tokens,
+passwords, or PIN prompts without following the approved sanitization process.
 
-- Command not permitted for your user/group
-- Policy doesn't cover this command
-- Service/protocol mismatch
+## Related material
 
-Actions:
-
-- Check if the command is appropriate for your role
-- Contact your administrator to request access
-
-### "Connection Timeout"
-
-Possible causes:
-
-- TACACS+ server unreachable
-- Network issues between device and server
-- Firewall blocking port 300 (TLS) or 49 (legacy)
-
-Actions:
-
-- Use local authentication if available
-- Report the issue to your network team
-
-### "Certificate Error"
-
-Possible causes:
-
-- Device certificate not trusted by server
-- Certificate expired
-- Clock skew between device and server
-
-Actions:
-
-- Report to your network administrator
-- They may need to update certificates
-
-## Session Types
-
-### Single-Connection Mode
-
-If enabled, your device maintains one connection for multiple requests:
-
-- More efficient
-- Faster command execution
-- Session bound to initial user
-
-### Standard Mode
-
-Each request uses a new connection:
-
-- More overhead
-- May be required for some devices
-
-## Accounting Records
-
-Your activities are logged for auditing:
-
-| Event | What's Logged |
-|-------|---------------|
-| Login | Username, source IP, time |
-| Commands | Full command text, result |
-| Logout | Session duration, bytes transferred |
-
-These logs help with:
-
-- Security audits
-- Troubleshooting
-- Compliance requirements
-
-## Getting Help
-
-If you encounter issues:
-
-1. Note the exact error message
-2. Record the time and device name
-3. Check if others have the same issue
-4. Contact your network administrator
-
-## Glossary
-
-| Term | Definition |
-|------|------------|
-| AAA | Authentication, Authorization, and Accounting |
-| mTLS | Mutual TLS - both client and server present certificates |
-| NAD | Network Access Device - router, switch, etc. |
-| PAP | Password Authentication Protocol |
-| CHAP | Challenge-Handshake Authentication Protocol |
-| Single-Connect | Mode where device maintains persistent connection |
+- [Device configuration](device-config.md) (for device administrators)
+- [JIT password lease security model](../admin/jit-leases.md)

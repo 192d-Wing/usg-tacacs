@@ -15,16 +15,21 @@ nav = [
     { "TLS Setup" = "tls.md" },
     { "Operations" = "operations.md" },
     { "Container Deployment" = "container.md" },
+    { "Device Configuration" = "user/device-config.md" },
     { "Management API" = "admin/management-api.md" },
     { "JIT Password Leases" = "admin/jit-leases.md" },
     { "Reverse Proxy mTLS" = "admin/reverse-proxy-mtls.md" },
     { "EST Provisioning" = "est-provisioning.md" },
   ]},
+  { "Operator Guide" = [
+    { "Overview" = "operator/index.md" },
+    { "NAD Lifecycle" = "operator/nad-lifecycle.md" },
+    { "Forensic Incident Response" = "operator/incident-response.md" },
+    { "Deployment Reference" = "operations.md" },
+  ]},
   { "User Guide" = [
     { "Overview" = "user/index.md" },
-    { "Device Configuration" = "user/device-config.md" },
     { "Authentication" = "authentication.md" },
-    { "Policy" = "policy.md" },
   ]},
   { "Developer Guide" = [
     { "Overview" = "dev/index.md" },
@@ -63,6 +68,13 @@ description = """
 [project.markdown_extensions.pymdownx.snippets]
 
 [project.markdown_extensions.pymdownx.superfences]
+custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" }
+]
+
+[project.markdown_extensions.pymdownx.emoji]
+emoji_index = "zensical.extensions.emoji.twemoji"
+emoji_generator = "zensical.extensions.emoji.to_svg"
 
 [project.markdown_extensions.pymdownx.highlight]
 anchor_linenums = true

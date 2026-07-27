@@ -1,5 +1,10 @@
 # Production Hardening Guide
 
+> **Historical baseline.** This guide contains standalone/systemd examples that
+> are not authoritative for the current Helm deployment. Use
+> `docs/docs/admin/security.md` for the current baseline. Control claims in this
+> file require revalidation before they are cited for a current release.
+
 **Project:** usg-tacacs TACACS+ Server
 **Date:** 2026-01-11
 **Audience:** Security Engineers, System Administrators

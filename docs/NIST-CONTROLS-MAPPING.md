@@ -1,5 +1,11 @@
 # NIST Security Controls Mapping for usg-tacacs
 
+> **Version-bound evidence:** This mapping names software version 0.76.0 and
+> must not be represented as current-release authorization to operate or a
+> blanket compliance claim. Systemd/JSON references are historical. A new
+> assessment must map the current typed-YAML/Helm architecture and retain test
+> evidence for the exact release.
+
 **Document Version:** 1.0
 **Date:** 2026-01-07
 **Software Version:** 0.76.0

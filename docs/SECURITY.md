@@ -1,5 +1,10 @@
 # Security Policy
 
+> **Configuration notice:** Operational examples later in this file predate
+> authoritative typed YAML and Helm. Use `docs/docs/admin/security.md` and
+> `docs/docs/config.md` for current configuration. Vulnerability reporting and
+> supported-version policy in this document remain applicable.
+
 ## Supported Versions
 
 We actively maintain and provide security updates for the following versions:

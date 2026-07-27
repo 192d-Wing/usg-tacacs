@@ -2,81 +2,180 @@
 icon: lucide/settings
 ---
 
-# Configuration reference
+# Typed configuration reference
 
-You can configure via CLI flags or JSON (`config.example.json` / `config.schema.json`). This page mirrors the schema fields.
+Production workloads consume one strict YAML `TacacsServer` document. The Rust
+type in `crates/tacacs-config` and its generated schema are authoritative.
+Unknown fields, invalid role/listener combinations, duplicate NADs or rule IDs,
+untyped RBAC identities, non-absolute secret paths, and JIT TTLs above 900
+seconds are rejected.
 
-## Transport & TLS
-
-- `listen_tls` (string, required): host:port for TLS listener.
-- `listen_legacy` (string|null): optional legacy TACACS+ listener (TCP/49).
-- `tls_cert`, `tls_key` (string, required): server cert/key.
-- `client_ca` (string, required): CA bundle to verify client certs.
-- `tls_trust_root` (array<string>, default []): extra trust anchors for client auth.
-- `tls_allowed_client_cn` / `tls_allowed_client_san` (array<string>, default []): allowlists for client identities (match-any).
-- `tls_psk` (string|null): TLS pre-shared key (optional).
-- `secret` (string|null, minLength 8): TACACS+ shared secret for obfuscation (legacy listener).
-- `forbid_unencrypted` (bool, default true): drop requests with `TAC_PLUS_UNENCRYPTED_FLAG`.
-- `legacy_nad_secret` (array<object>): per-NAD legacy secrets; when set, legacy connections must originate from a listed IP and will use that IP’s secret. Each entry: `{"ip": "192.0.2.10", "secret": "at-least-8-bytes"}`.
-- `single_connect_idle_secs` (int, default 300): idle timeout for single-connection sessions.
-- `single_connect_keepalive_secs` (int, default 120): keepalive timer for single-connection sessions.
-- `max_connections_per_ip` (int, default 50): per-IP connection cap.
-
-## Authentication
-
-- `user_password` (array<string>, default []): `user:password` entries for static auth.
-- `ascii_attempt_limit` (int, default 5): total ASCII attempts.
-- `ascii_user_attempt_limit` (int, default 3): username prompt attempts.
-- `ascii_pass_attempt_limit` (int, default 5): password prompt attempts.
-- `ascii_backoff_ms` (int, default 0): initial backoff between attempts (ms).
-- `ascii_backoff_max_ms` (int, default 5000): cap for exponential backoff (ms).
-- `ascii_lockout_limit` (int, default 0): lockout after N failures (0 disables).
-
-## LDAPS (authentication + groups)
-
-- `ldaps_url` (string|null): must start with `ldaps://` to enable LDAP.
-- `ldap_bind_dn` / `ldap_bind_password` (string|null): service account for search.
-- `ldap_search_base` (string|null): base DN for user lookup.
-- `ldap_username_attr` (string, default `uid`): attribute to locate user entries.
-- `ldap_group_attr` (string, default `memberOf`): attribute containing group membership.
-- `ldap_required_group` (array<string>, default []): match-any required group/DN (case-insensitive).
-- `ldap_timeout_ms` (int, default 5000): connection/operation timeout.
-- `ldap_ca_file` (string|null): optional extra trust anchor for LDAPS.
-
-## Policy/validation
-
-- `policy` (string, required): path to policy JSON.
-- `schema` (string|null): optional custom schema path.
-- `check_policy` (string|null): validate policy and exit.
-
-## JSON example (abridged)
-
-```json
-{
-  "listen_tls": "0.0.0.0:300",
-  "tls_cert": "./certs/server.pem",
-  "tls_key": "./certs/server-key.pem",
-  "client_ca": "./certs/client-ca.pem",
-  "tls_trust_root": ["./certs/extra-root.pem"],
-  "secret": "strong-shared-secret",
-  "forbid_unencrypted": true,
-  "user_password": ["admin:changeme"],
-  "ldaps_url": "ldaps://ldap.example.com",
-  "ldap_bind_dn": "cn=svc,ou=svc,dc=example,dc=com",
-  "ldap_bind_password": "svc-secret",
-  "ldap_search_base": "dc=example,dc=com",
-  "ldap_required_group": [
-    "cn=netops,ou=groups,dc=example,dc=com",
-    "cn=secops,ou=groups,dc=example,dc=com"
-  ],
-  "policy": "./policy/policy.example.json"
-}
+```yaml
+apiVersion: tacacs.usg.mil/v1alpha1
+kind: TacacsServer
+metadata:
+  name: lab
+  description: Lab TACACS service
+spec:
+  role: management
+  listeners:
+    health: 0.0.0.0:8080
+  nads: []
+  authorization:
+    defaultAllow: false
+    rules: []
+  management:
+    listener:
+      address: 0.0.0.0:8443
+      certificateFile: /run/secrets/management/tls.crt
+      privateKeyFile: /run/secrets/management/tls.key
+      clientCaFile: /run/secrets/management/client-ca.crt
+      minimumVersion: "1.3"
+    rbac:
+      roles: {}
+      subjects: []
+  audit:
+    hmacKeyFile: /run/secrets/audit/hmac-key
 ```
 
-Run-time validation:
+## Top-level fields
 
-```sh
-cargo run -p tacacs-server -- \
-  --check-policy ./policy/policy.example.json \
-  --schema ./policy/policy.schema.json
+| Field | Requirement |
+| --- | --- |
+| `apiVersion` | Exactly `tacacs.usg.mil/v1alpha1` |
+| `kind` | Exactly `TacacsServer` |
+| `metadata.name` | Non-empty instance name |
+| `metadata.description` | Optional operator description |
+| `spec.role` | `management`, `legacy`, or `tls` |
+
+## Roles and listeners
+
+Each document represents exactly one runtime role:
+
+```yaml
+# Legacy data plane
+spec:
+  role: legacy
+  listeners:
+    legacy: 0.0.0.0:49
+    health: 0.0.0.0:8080
 ```
+
+```yaml
+# TLS data plane
+spec:
+  role: tls
+  listeners:
+    tls:
+      address: 0.0.0.0:300
+      certificateFile: /run/tls/dataplane/server.crt
+      privateKeyFile: /run/tls/dataplane/server.key
+      clientCaFile: /run/tls/dataplane/client-ca.crt
+      minimumVersion: "1.3"
+    health: 0.0.0.0:8080
+```
+
+A management document contains `spec.management` and no data-plane listener.
+A legacy or TLS document must not contain `spec.management`.
+
+## NADs
+
+Names and source addresses must be unique.
+
+```yaml
+nads:
+  - name: oopl-an-001
+    description: IOS-XE lab switch
+    sourceAddress: 192.0.2.10
+    mode: legacy
+    secretFile: /run/secrets/nads/oopl-an-001
+  - name: tls-nad-001
+    description: Verified RFC 9887 device
+    sourceAddress: 192.0.2.11
+    mode: tls
+    certificateIdentities:
+      - tls-nad-001.example.mil
+```
+
+`secretFile` is an absolute path inside the container containing only that
+NAD's secret. A TLS NAD requires at least one certificate identity. Declaring
+`mode: tls` does not make a device TLS-capable; verify vendor/platform support
+and packet-level behavior before enabling the TLS role.
+
+## Authorization
+
+```yaml
+authorization:
+  defaultAllow: false
+  rules:
+    - id: network-admin-show
+      priority: 100
+      effect: allow
+      users: []
+      groups: [network-admins]
+      nadGroups: []
+      command: "^show(?: .*)?$"
+```
+
+Rule IDs are unique. `effect` is `allow` or `deny`; omitted match arrays are
+empty. Keep `defaultAllow: false`. See [Authorization policy](policy.md).
+
+## Management and RBAC
+
+Management TLS always uses version 1.3 and client certificates:
+
+```yaml
+management:
+  listener:
+    address: 0.0.0.0:8443
+    certificateFile: /run/tls/api/server.crt
+    privateKeyFile: /run/tls/api/server.key
+    clientCaFile: /run/tls/api/client-ca.crt
+    minimumVersion: "1.3"
+  rbac:
+    roles:
+      nad-automation:
+        description: NAD lifecycle automation
+        permissions: [read:nads, write:nads]
+    subjects:
+      - certificateIdentity: uri:spiffe://example.mil/tacacs/nad-automation
+        role: nad-automation
+```
+
+Certificate identities require a typed `cn:`, `dns:`, `email:`, or `uri:`
+prefix. DNS and email forms must be lowercase. Roles must contain at least one
+permission and bindings must reference a defined role.
+
+## Audit and JIT
+
+```yaml
+audit:
+  hmacKeyFile: /run/secrets/audit/hmac-key
+jit:
+  storeUrl: postgresql://tacacs_jit@postgres.example.mil:5432/tacacs?sslmode=verify-full
+  storePasswordFile: /run/secrets/postgres/password
+  storeCaFile: /run/tls/postgres/ca.crt
+  verifierKeyFile: /run/secrets/jit/verifier-key
+  maximumTtlSeconds: 900
+```
+
+All paths are absolute. `maximumTtlSeconds` must be 1 through 900.
+
+## Validation
+
+```shell
+cargo run --locked -p usg-tacacs-config \
+  --bin usg-tacacs-config-check -- ./server.yaml
+```
+
+Use `--check-files` in the target container or an equivalent environment where
+referenced files are mounted. The Management API also provides dry-run
+validation and schema/effective-config inspection.
+
+## Compatibility configuration
+
+The server still exposes CLI/environment options for integrations not yet
+represented by `TacacsServer`, including some LDAPS, ICAM/OIDC, EST, telemetry,
+rate-limit, and compatibility modes. They are not a second declarative source
+and must not be represented as `config.json`. Track and review them in the
+workload definition until their typed-YAML migration is complete.

@@ -1,5 +1,9 @@
 # NDcPP v4.0 Security Functional Requirements Mapping
 
+> **Planning artifact, not certification evidence.** Revalidate mappings,
+> cryptographic claims, management interfaces, and operational assumptions
+> against the exact current release before use in an evaluation package.
+
 <!-- NIST SP 800-53 Rev. 5 Security Controls
      Control Implementation Matrix
 

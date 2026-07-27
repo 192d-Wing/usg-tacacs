@@ -1,5 +1,11 @@
 # ICAM/OIDC Authentication Configuration
 
+> **Compatibility integration:** ICAM/OIDC options are not yet modeled in the
+> typed `TacacsServer` YAML. Examples below apply only to an explicitly reviewed
+> non-JIT compatibility profile. They must never be enabled as fallback for a
+> JIT-managed NAD. Current production boundaries are documented in
+> `docs/docs/authentication.md`.
+
 **Project:** usg-tacacs TACACS+ Server.  
 **Date:** 2026-06-04.  
 **Audience:** Platform Engineers, Security Architects.

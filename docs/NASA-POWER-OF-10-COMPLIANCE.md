@@ -1,5 +1,10 @@
 # NASA Power of 10 Rule #4 Compliance Report
 
+> **Historical report for v0.77.1.** Results do not automatically apply to the
+> current release. The CI checks are useful engineering gates but do not by
+> themselves establish suitability or certification for safety-critical use.
+> Re-run and retain the exact release evidence before making a scoped claim.
+
 **Date:** 2026-01-30
 **Project:** usg-tacacs TACACS+ Server v0.77.1
 **Rule:** All functions must be ≤60 lines (excluding blank lines)

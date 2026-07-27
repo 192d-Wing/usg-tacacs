@@ -1,221 +1,215 @@
-# usg-tacacs
+# USG TACACS
 
 [![CI](https://github.com/192d-Wing/usg-tacacs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/192d-Wing/usg-tacacs/actions/workflows/ci.yml)
-[![NIST Compliance](https://img.shields.io/badge/NIST%20SP%20800--53-Rev.%205%20Compliant-brightgreen)](./docs/nist-control-analysis.md)
-[![NASA Power of 10](https://img.shields.io/badge/NASA%20Power%20of%2010-Compliant-blue)](#nasa-power-of-10-compliance)
+[![NIST SP 800-53](https://img.shields.io/badge/NIST%20SP%20800--53-Rev.%205-blue)](./docs/nist-control-analysis.md)
+[![NASA Power of 10](https://img.shields.io/badge/NASA%20Power%20of%2010-enforced-blue)](./docs/NASA-POWER-OF-10-COMPLIANCE.md)
 
-A hardened, RFC 9887 TACACS+-over-TLS server written in Rust, built for DoD/IL environments: enterprise identity (LDAPS, ICAM/OIDC, CAC/PIV device flow), signed tamper-evident audit, zero-touch certificate provisioning, and Kubernetes-native deployment.
+USG TACACS is a hardened Rust implementation of TACACS+ for administering
+network devices. It supports RFC 9887 TACACS+ over TLS 1.3 and legacy TACACS+
+for devices that cannot use TLS. Production deployments run as separate
+management, legacy, and TLS workloads on Kubernetes.
 
-## NASA Power of 10 Compliance
+The service integrates with JITPW for NAD-bound, short-lived device
+credentials. TACACS stores a keyed verifier rather than a recoverable password;
+the temporary password is not displayed to the user or exposed to the bastion.
 
-This project adheres to NASA Power of 10 safety-critical coding rules:
+## Capabilities
 
-- ✅ **Rule #4:** All functions ≤60 lines (handle_connection: 52 lines, 96.2% reduction from 1,357)
-- ✅ **Rule #5 & #7:** Safe error handling with zero `.unwrap()` in critical runtime paths
-- ✅ **Rule #11:** Formal NIST SP 800-53 Rev. 5 control markings (100% coverage)
+- RFC 8907 TACACS+ authentication, authorization, and accounting
+- RFC 9887 TACACS+ over TLS 1.3 with mutual authentication
+- Legacy TCP/49 support with unique per-NAD secrets and source enforcement
+- Strict typed `TacacsServer` configuration in declarative YAML
+- Deny-by-default, group- and user-aware command authorization
+- Separate TLS 1.3 mTLS Management API with RBAC
+- OpenAPI 3.1.1 contracts and protected Swagger UI
+- API-owned NAD lifecycle with idempotency, ETags, and reconciliation
+- JITPW password leases bound to a canonical EID and NAD for at most 15 minutes
+- PostgreSQL-backed management state and JIT lease verifiers
+- HMAC-signed, hash-chained forensic NAD audit records
+- LDAPS and ICAM/OIDC authentication integrations
+- Helm deployment with independent management, legacy, and TLS workloads
+- EST certificate enrollment and renewal
+- Prometheus metrics and OpenTelemetry tracing
 
-**Automated Validation:** CI enforces compliance on every commit (function-length, runtime-`unwrap`, and NIST-header checks live in `.github/workflows/ci.yml`). See [NIST Control Analysis](./docs/nist-control-analysis.md) for detailed coverage.
+## Architecture
 
----
+```mermaid
+flowchart LR
+    Admin["Administrator or automation"] -->|"TLS 1.3 mTLS"| Mgmt["Management API"]
+    JITPW["JITPW service"] -->|"mTLS lease API"| Mgmt
+    Mgmt --> DB[("PostgreSQL")]
+    Mgmt --> Reconcile["NAD reconciliation"]
+    Reconcile --> Legacy["Legacy TACACS+ role"]
+    Reconcile --> TLS["TACACS-over-TLS role"]
+    NAD1["Legacy NAD"] -->|"TCP/49, unique secret"| Legacy
+    NAD2["TLS-capable NAD"] -->|"TCP/300, mTLS"| TLS
+    Legacy --> Audit["Signed audit stream"]
+    TLS --> Audit
+    Mgmt --> Audit
+```
 
-## Features
+The Management API is a USG TACACS administrative interface. It is separate
+from the JITPW user API. YAML owns the reviewed baseline; the Management API
+owns resources explicitly created through administrative workflows. Runtime
+reconciliation validates both sources and publishes the active NAD snapshot.
 
-- **RFC 9887 TACACS+ over TLS 1.3** (mTLS only) on TCP/300, with optional legacy TACACS+ (TCP/49) for transitional deployments
-- **Authentication backends** (PAP / CHAP / ASCII login):
-  - Local static credentials (Argon2id hashes), disabled by default
-  - **LDAP** over LDAPS only, service-account bind + match-any required groups
-  - **ICAM / OIDC** via Resource Owner Password Credentials (ROPC); groups extracted from the JWT drive policy
-  - **ICAM device flow (RFC 8628)** — browser-based CAC/PIV authentication, with the verification URL presented at the NAD terminal
-- **Group-aware authorization** — JSON policy with priorities, last-match-wins, per-command regex ACLs (auto-anchored), `groups` + `users` matching, and `--check-policy` validate-only mode against a JSON Schema
-- **Redis-backed group cache** — login→authz group memberships persisted so group policy works across standalone authz transactions and server replicas
-- **Tamper-evident audit** — every audit event (incl. `authn_terminal`) is HMAC-SHA256 signed over a canonical field set; a single emitter guarantees no event bypasses signing
-- **Brute-force / spray defenses** — per-username and per-source-IP rate limiting with lockout, and lockout state masked from clients (same generic failure as bad credentials) to prevent state confirmation
-- **EST (RFC 7030) zero-touch certificate provisioning** with automated enrollment and renewal; optional **OpenBao** (Vault) integration for secrets and PKI
-- **Operations** — SIGHUP hot reload, capability/keepalive (single-connect) support, hardened RFC 8907 semantics (authz protocol/service checks, explicit FOLLOW rejection), Management API with RBAC for session visibility/termination/reload, Prometheus metrics, and OpenTelemetry/OTLP tracing
-- **Process hardening guidance** — run as non-root, drop ambient caps, set RLIMITs, optional chroot/jail (see below)
+## Configuration
 
-## Workspace crates
+Production configuration is one strictly validated YAML document:
+
+```yaml
+apiVersion: tacacs.usg.mil/v1alpha1
+kind: TacacsServer
+metadata:
+  name: lab
+  description: Lab TACACS service
+spec:
+  role: management
+  listeners:
+    health: 0.0.0.0:8080
+  nads:
+    - name: oopl-an-001
+      description: IOS-XE lab switch
+      sourceAddress: 192.0.2.10
+      mode: legacy
+      secretFile: /run/secrets/nads/oopl-an-001
+  authorization:
+    defaultAllow: false
+    rules: []
+  management:
+    listener:
+      address: 0.0.0.0:8443
+      certificateFile: /run/secrets/management/tls.crt
+      privateKeyFile: /run/secrets/management/tls.key
+      clientCaFile: /run/secrets/management/client-ca.crt
+      minimumVersion: "1.3"
+    rbac:
+      roles: {}
+      subjects: []
+  audit:
+    hmacKeyFile: /run/secrets/audit/hmac-key
+```
+
+Use [`docs/config/server.example.yaml`](./docs/config/server.example.yaml) as
+the starting point. Fields that end in `File` are container paths populated by
+a Secret volume or approved CSI provider. Never put secret values in YAML,
+Helm values, ConfigMaps, command lines, or logs.
+
+Validate configuration before deployment:
+
+```shell
+cargo run --locked -p usg-tacacs-config --bin usg-tacacs-config-check -- \
+  ./docs/config/server.example.yaml
+```
+
+Use `--check-files` only in an environment where every referenced secret and
+certificate has been mounted.
+
+## Kubernetes deployment
+
+The supported chart is under [`deploy/charts/usg-tacacs`](./deploy/charts/usg-tacacs).
+Site-specific, non-secret values belong under `deploy/sites/<site-name>`;
+only [`deploy/sites/example`](./deploy/sites/example) is tracked.
+
+```shell
+helm lint deploy/charts/usg-tacacs
+
+helm template usg-tacacs deploy/charts/usg-tacacs \
+  --namespace usg-tacacs \
+  --values deploy/sites/example/usg-tacacs.values.yaml
+```
+
+Provision PostgreSQL, migrations, certificates, NAD secrets, the JIT verifier
+key, and the audit key through approved secret-management workflows before
+installing. Kubernetes Secrets are not Helm values and must not be committed.
+
+See [`deploy/README.md`](./deploy/README.md) and the
+[Operator guide](./docs/docs/operator/index.md) for the production procedure.
+
+## Management API
+
+The management role exposes the administrative API, OpenAPI 3.1.1 contract,
+and Swagger UI. Production access requires direct TLS 1.3 mutual
+authentication and explicit RBAC. An HTTP header cannot substitute for a
+validated client certificate.
+
+NAD mutations require:
+
+- a UUID in `X-Correlation-ID`;
+- `Idempotency-Key` for create; and
+- the current ETag in `If-Match` for update and delete.
+
+An accepted mutation is desired state. Confirm
+`GET /api/mgmt/v1/nads/reconciliation` before treating the NAD as active.
+
+See the [Management API guide](./docs/docs/admin/management-api.md),
+[architecture](./docs/api/mgmt/architecture.md), and
+[OpenAPI contract](./docs/api/mgmt/openapi.yaml).
+
+## JITPW integration
+
+For a managed NAD, USG TACACS authenticates only against an active, unrevoked
+JIT lease bound to the exact canonical lowercase EID and NAD. Authentication
+fails closed if the lease store or required verifier material is unavailable;
+LDAP, ICAM, and static fallback are prohibited for that managed NAD.
+
+See [JIT password leases](./docs/docs/admin/jit-leases.md).
+
+## Development
+
+The workspace contains:
 
 | Crate | Purpose |
-| ----- | ------- |
-| `tacacs-proto` | TACACS+ protocol codec (headers, authn/authz/acct bodies, legacy shared-secret crypto) |
-| `tacacs-policy` | Authorization policy engine: rule matching, group enforcement, regex command ACLs |
-| `tacacs-secrets` | Secrets abstraction: file-based, OpenBao/Vault, PKI, EST zero-touch provisioning |
-| `tacacs-server` | Main server: authn/authz/acct, rate limiting, audit, TLS, ICAM, device flow, group cache |
-| `tacacs-policy-ingest` | Policy ingest HTTP service: REST upload/validation, schema checks, mTLS |
-| `tacacs-client-tls` | TLS-only TACACS+ client library (RFC 9887, TLS 1.3, no MD5 obfuscation) |
+| --- | --- |
+| `tacacs-proto` | TACACS+ protocol codec |
+| `tacacs-policy` | Authorization policy engine |
+| `tacacs-config` | Typed YAML model and configuration checker |
+| `tacacs-secrets` | Secret and certificate integrations |
+| `tacacs-server` | Data plane, Management API, reconciliation, and JIT authentication |
+| `tacacs-policy-ingest` | Policy-ingest service |
+| `tacacs-client-tls` | TACACS-over-TLS client library |
 | `tacacs-openssh` | OpenSSH integration helpers |
-| `tacacs-audit` | Audit forwarding (syslog-over-TLS, Elasticsearch) and HMAC integrity signing |
+| `tacacs-audit` | Audit signing and forwarding |
 
-## Validate policy
-
-```shell
-cargo run -p tacacs-server -- \
-  --check-policy ./policy/policy.example.json \
-  --schema ./policy/policy.schema.json
-```
-
-## Run TLS server
+Common checks:
 
 ```shell
-cargo run -p tacacs-server -- \
-  --listen-tls 0.0.0.0:300 \
-  --tls-cert ./certs/server.pem \
-  --tls-key ./certs/server-key.pem \
-  --client-ca ./certs/client-ca.pem \
-  --policy ./policy/policy.example.json
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
 ```
 
-## ICAM / OIDC authentication (ROPC)
-
-Delegate authentication to ICAM via the OIDC Resource Owner Password Credentials grant. Groups are read from the JWT and feed policy matching:
-
-```shell
-cargo run -p tacacs-server -- \
-  --listen-tls 0.0.0.0:300 \
-  --tls-cert ./certs/server.pem --tls-key ./certs/server-key.pem \
-  --client-ca ./certs/client-ca.pem \
-  --policy ./policy/policy.example.json \
-  --icam-token-endpoint https://icam.example.mil/realms/dod/protocol/openid-connect/token \
-  --icam-client-id tacacs \
-  --icam-client-secret-file /run/secrets/icam-client-secret \
-  --icam-groups-claim groups \
-  --icam-ca-file ./certs/icam-ca.pem
-```
-
-Add `--icam-device-flow` (RFC 8628) to present a browser verification URL at the NAD terminal for CAC/PIV login instead of collecting a password inline. See [docs/ICAM-OIDC-CONFIGURATION.md](./docs/ICAM-OIDC-CONFIGURATION.md) and [docs/docs/authentication.md](./docs/docs/authentication.md).
-
-## Redis group cache
-
-When using ICAM, cache the groups resolved at login so standalone authorization transactions (which carry no JWT) and other server replicas can apply group policy:
-
-```shell
-cargo run -p tacacs-server -- \
-  ... \
-  --group-cache-url rediss://redis:6379 \
-  --group-cache-password-file /run/secrets/redis-password \
-  --group-cache-ttl-secs 900
-```
-
-The cache is best-effort: Redis errors are logged but never block authentication or authorization.
-
-## LDAP authentication (LDAPS only)
-
-```shell
-cargo run -p tacacs-server -- \
-  --listen-tls 0.0.0.0:300 \
-  --tls-cert ./certs/server.pem --tls-key ./certs/server-key.pem \
-  --client-ca ./certs/client-ca.pem \
-  --policy ./policy/policy.example.json \
-  --ldaps-url ldaps://ldap.example.com \
-  --ldap-bind-dn "cn=svc,ou=svc,dc=example,dc=com" \
-  --ldap-bind-password "secret" \
-  --ldap-search-base "dc=example,dc=com" \
-  --ldap-required-group "cn=netops,ou=groups,dc=example,dc=com" \
-  --ldap-required-group "cn=secops,ou=groups,dc=example,dc=com" \
-  --ldap-group-attr memberOf \
-  --ldap-username-attr uid
-```
-
-Notes:
-
-- Only LDAPS is permitted; StartTLS is rejected.
-- Group checks are match-any; group names are compared case-insensitively.
-- Policy rules can also declare `groups` to require group membership for authorization decisions.
-
-## EST zero-touch certificate provisioning
-
-Automatically enroll and renew certificates using RFC 7030 EST:
-
-```shell
-cargo run -p tacacs-server -- \
-  --est-enabled \
-  --est-server-url https://est.example.com/.well-known/est \
-  --est-username bootstrap-user \
-  --est-password secret123 \
-  --est-common-name tacacs-01.internal \
-  --listen-tls 0.0.0.0:300 \
-  --client-ca ./certs/client-ca.pem \
-  --policy ./policy/policy.example.json
-```
-
-The server starts degraded, auto-enrolls certificates, then becomes ready. See [docs/docs/est-provisioning.md](./docs/docs/est-provisioning.md) for complete configuration and deployment guides.
-
-## Audit integrity (HMAC signing)
-
-Sign every audit event so log tampering is detectable. Use a key file in production:
-
-```shell
-cargo run -p tacacs-server -- \
-  ... \
-  --audit-hmac-key-file /run/secrets/audit-hmac-key
-```
-
-All events flow through a single emitter and are signed over a canonical
-`event|peer|user|session|status|reason|data|identity_source` field set (NIST AU-9, SC-13).
-
-## Brute-force and spray defenses
-
-- **Per-username lockout** (`--username-lockout-*`) throttles failures for one identity across rotating source IPs.
-- **Per-source-IP lockout** (`--ip-lockout-*`, default 50 failures / 5 min → 15 min) throttles one NAD spraying many usernames; set `--ip-lockout-limit 0` to disable.
-- **State masking** — locked-out and rate-limited sessions return the same generic failure as bad credentials; the real reason is recorded only in the (signed) audit trail.
-
-## Deployment (Kubernetes)
-
-`deploy/k3s/` contains modular manifests for K3s + Cilium: the TACACS+ deployment/services, a hardened Iron Bank Redis for the group cache, NetworkPolicy, Cilium BGP/LB for an anycast VIP, the management UI with oauth2-proxy, and Prometheus/Loki/Alloy observability. Bring Redis up before the server. See [k3s deployment notes](./deploy/k3s/) and the operations docs below.
-
-## Process hardening (recommended)
-
-Run the daemon under a dedicated non-root user, with strict sandboxing/limits. Example systemd unit excerpt:
-
-```shell
-[Service]
-User=tacacs
-Group=tacacs
-NoNewPrivileges=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
-RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_INET AF_INET6
-LimitNOFILE=4096
-LimitNPROC=256
-MemoryAccounting=yes
-TasksAccounting=yes
-ProtectControlGroups=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-LockPersonality=yes
-```
-
-If you require chroot/jail, place certs/policy inside the jail and adjust paths accordingly.
-
-## Supply-chain hygiene
-
-- Build reproducibly with locked deps: `cargo build --locked`; keep `Cargo.lock` under version control.
-- Vendor third-party crates for offline/attestable builds: `cargo vendor --locked vendor/` and point `CARGO_HOME`/`CARGO_REGISTRIES_CRATES_IO_PROTOCOL=file`.
-- Generate an SBOM for releases (e.g., `syft packages dir:. -o spdx-json > sbom.json`); a checked-in `sbom.spdx.json` is provided.
-- Sign release artifacts/hashes (e.g., `sha256sum target/release/usg-tacacs-* | gpg --clearsign`).
-- CI runs `cargo audit`, `cargo deny check`, and gitleaks secret scanning to catch vulnerable/banlisted crates and hardcoded secrets.
-
-## Logging / auditing guidance
-
-- UTC timestamps enabled by default via the tracing subscriber; audit events include peer/user/session/outcome fields for correlation, and are HMAC-signed (see above).
-- Forward logs to a central collector with integrity (e.g., TLS/syslog with signing) and set up rotation/retention at the service-manager level (systemd journald or logrotate).
-- Consider shipping signed hash manifests of log files for tamper detection if storing locally.
-
-## Configuration files
-
-- `config.example.json` / `config.schema.json` cover server flags including TLS trust roots (`tls_trust_root`), CN/SAN allowlists (`tls_allowed_client_cn`/`tls_allowed_client_san`), max connections per IP, ASCII backoff/lockout, single-connect idle/keepalive timers, and the LDAP/ICAM/group-cache options above.
-- `policy.example.json` / `policy.schema.json` describe authorization rules; rules support `groups` (match-any, combined with `users` and regex command match). Default shell PASS-ADD attrs are added when none are supplied.
+CI also enforces project safety and compliance checks. See
+[Development setup](./docs/docs/dev_setup.md).
 
 ## Documentation
 
-- Authentication: [docs/docs/authentication.md](./docs/docs/authentication.md) · ICAM/OIDC: [docs/ICAM-OIDC-CONFIGURATION.md](./docs/ICAM-OIDC-CONFIGURATION.md)
-- Configuration: [docs/docs/config.md](./docs/docs/config.md) · Policy: [docs/docs/policy.md](./docs/docs/policy.md), [docs/docs/policy-ingest.md](./docs/docs/policy-ingest.md)
-- TLS & EST: [docs/docs/tls.md](./docs/docs/tls.md), [docs/docs/est-provisioning.md](./docs/docs/est-provisioning.md)
-- Operations & Management API: [docs/docs/operations.md](./docs/docs/operations.md), [docs/docs/admin/management-api.md](./docs/docs/admin/management-api.md)
-- Security & compliance: [docs/SECURITY.md](./docs/SECURITY.md), [docs/HARDENING_GUIDE.md](./docs/HARDENING_GUIDE.md), [docs/NIST-CONTROLS-MAPPING.md](./docs/NIST-CONTROLS-MAPPING.md), [docs/NASA-POWER-OF-10-COMPLIANCE.md](./docs/NASA-POWER-OF-10-COMPLIANCE.md)
-- Container usage: [docs/docs/container.md](./docs/docs/container.md)
+Choose the guide for your role:
+
+- [Administrator guide](./docs/docs/admin/index.md) — architecture,
+  configuration, trust, authorization, RBAC, secrets, and deployment design
+- [Operator guide](./docs/docs/operator/index.md) — health, changes, upgrades,
+  backup/recovery, monitoring, and production troubleshooting
+- [NAD lifecycle runbook](./docs/docs/operator/nad-lifecycle.md) — create,
+  reconcile, rotate, disable, and delete NADs
+- [Forensic incident response](./docs/docs/operator/incident-response.md) —
+  evidence preservation, audit integrity, and key compromise
+- [User guide](./docs/docs/user/index.md) — CAC/JITPW access, `jit-ssh`,
+  identity rules, and user troubleshooting
+- [Developer guide](./docs/docs/dev/index.md) — implementation and protocol
+  development
+
+Build the Zensical documentation site:
+
+```shell
+cd docs
+uv run zensical build
+```
+
+## Security
+
+Do not report security vulnerabilities in public issues. Follow
+[`SECURITY.md`](./SECURITY.md) and review the
+[hardening guide](./docs/HARDENING_GUIDE.md) before production deployment.
+
+This project is licensed under the [Apache License 2.0](./LICENSE).

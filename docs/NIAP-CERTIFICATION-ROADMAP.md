@@ -1,5 +1,9 @@
 # NIAP NDcPP v4.0 Certification Roadmap
 
+> **Planning artifact.** This roadmap does not state that USG TACACS is NIAP
+> certified. Reconcile its milestones with the current typed-YAML/Helm
+> architecture and validated cryptographic module boundary before execution.
+
 <!-- NIST SP 800-53 Rev. 5 Security Controls
      Control Implementation Matrix
 
