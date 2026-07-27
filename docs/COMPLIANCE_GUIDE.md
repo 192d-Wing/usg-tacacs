@@ -1,5 +1,11 @@
 # NIST SP 800-53 Compliance Validation Guide
 
+> **Archived validation procedure.** This January 2026 document references a
+> superseded JSON/systemd deployment. It is evidence of the validation approach,
+> not proof that the current release satisfies a control. Revalidate every
+> control against typed YAML, Helm, PostgreSQL, reconciliation, JIT, and the
+> current release artifacts before asserting compliance.
+
 **Project:** usg-tacacs TACACS+ Server
 **Date:** 2026-01-11
 **Audience:** Compliance Officers, Security Auditors, System Administrators

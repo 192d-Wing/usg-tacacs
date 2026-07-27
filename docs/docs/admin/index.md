@@ -2,225 +2,197 @@
 icon: lucide/shield-alert
 ---
 
-# Administrator Guide
+# Administrator guide
 
-This guide covers the deployment, configuration, and management of `usg-tacacs` in production environments.
+This guide is for the people who design and administer a USG TACACS
+installation. It describes desired-state configuration, administrative
+security boundaries, and the interfaces used to manage the service.
 
-## Overview
+Day-to-day procedures, alerts, upgrades, and incident response are in the
+[Operator guide](../operator/index.md). Instructions for people connecting to
+network devices are in the [User guide](../user/index.md).
 
-`usg-tacacs` is a high-performance TACACS+ server written in Rust that provides:
+## Architecture and trust boundaries
 
-- **RFC 8907** compliant TACACS+ protocol implementation
-- **RFC 9887** TACACS+ over TLS 1.3 with mutual authentication
-- Policy-driven command authorization
-- LDAPS integration for enterprise authentication
-- Comprehensive audit logging
+A production deployment separates three runtime roles built from the same
+server image:
 
-## Deployment Options
+| Role | Purpose | Typical listener |
+| --- | --- | --- |
+| `management` | Management API, Swagger UI, health, and reconciliation | TCP/8443, TLS 1.3 mTLS |
+| `legacy` | TACACS+ for NADs without TACACS-over-TLS | TCP/49 |
+| `tls` | TACACS+ over TLS for capable NADs | TCP/300 |
 
-### Standalone Binary
+The roles should run as independent Kubernetes workloads. A failure or rollout
+of one data-plane listener must not take down management or the other listener.
+PostgreSQL holds API-owned NAD desired state, management operations, JIT lease
+verifiers, and forensic NAD audit records. YAML remains authoritative for
+baseline resources.
 
-The simplest deployment is running the compiled binary directly:
+## Authoritative configuration
 
-```sh
-./usg-tacacs-server --config /etc/usg-tacacs/config.json
+USG TACACS uses one strict, typed YAML document. Start with
+`docs/config/server.example.yaml`:
+
+```yaml
+apiVersion: tacacs.usg.mil/v1alpha1
+kind: TacacsServer
+metadata:
+  name: production
+  description: Production TACACS service
+spec:
+  role: management
+  listeners:
+    health: 0.0.0.0:8080
+  nads:
+    - name: oopl-an-001
+      description: IOS-XE access switch
+      sourceAddress: 192.0.2.10
+      mode: legacy
+      secretFile: /run/secrets/nads/oopl-an-001
+  authorization:
+    defaultAllow: false
+    rules: []
+  management:
+    listener:
+      address: 0.0.0.0:8443
+      certificateFile: /run/secrets/management/tls.crt
+      privateKeyFile: /run/secrets/management/tls.key
+      clientCaFile: /run/secrets/management/client-ca.crt
+      minimumVersion: "1.3"
+    rbac:
+      roles: {}
+      subjects: []
+  audit:
+    hmacKeyFile: /run/secrets/audit/hmac-key
 ```
 
-### Systemd Service
+Unknown fields and invalid combinations fail validation. File references are
+paths, never secret values. Do not put shared secrets, database passwords,
+private keys, JIT verifier keys, or audit keys in YAML, Helm values, ConfigMaps,
+environment variables, or command lines.
 
-For production Linux deployments, use systemd with security hardening:
+### Configuration ownership
 
-```ini
-[Unit]
-Description=USG TACACS+ Server
-After=network-online.target
-Wants=network-online.target
+Every NAD has exactly one owner:
 
-[Service]
-Type=simple
-User=tacacs
-Group=tacacs
-ExecStart=/usr/local/bin/usg-tacacs-server --config /etc/usg-tacacs/config.json
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-RestartSec=5
+- **YAML-owned NADs** are immutable through the Management API. Change them in
+  the reviewed configuration repository and roll out the resulting release.
+- **API-owned NADs** are created by an authorized administrator or automation
+  through the Management API. They become usable only after reconciliation
+  validates the resource and resolves its external secret reference.
 
-# Security hardening
-NoNewPrivileges=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
-RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_INET AF_INET6
-LimitNOFILE=4096
-LimitNPROC=256
-MemoryAccounting=yes
-TasksAccounting=yes
-ProtectControlGroups=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-LockPersonality=yes
-RuntimeDirectory=usg-tacacs
-StateDirectory=usg-tacacs
-ReadWritePaths=/var/log/usg-tacacs
+Use `GET /api/mgmt/v1/nads/inventory` to see both sources, ownership, and
+mutability. A name or source-address collision between the two sources fails
+closed and appears in reconciliation status.
 
-[Install]
-WantedBy=multi-user.target
-```
+## Authorization and management RBAC
 
-### Container Deployment
+These are separate controls:
 
-See the [Container Guide](../container.md) for Docker Compose deployment with:
+- `spec.authorization` governs what authenticated network users may do on
+  devices. Rules should be deny-by-default, narrowly scoped, ordered, reviewed,
+  and identified with stable rule IDs.
+- `spec.management.rbac` governs which certificate-authenticated clients may
+  use Management API operations.
 
-- HAProxy L4 load balancing
-- FRR BGP Anycast advertisement
-- Health-based BGP withdraw
+Use typed certificate selectors (`cn:`, `dns:`, `email:`, or `uri:`). Grant
+automation only the permissions it requires. NAD automation normally needs
+`read:nads` and/or `write:nads`; forensic export requires `read:audit`.
 
-## Directory Structure
+See [Policy](../policy.md) and
+[Management API](management-api.md) for the complete formats and permissions.
 
-Recommended file layout:
+## Secret management
 
-```
-/etc/usg-tacacs/
-  config.json           # Server configuration
-  policy.json           # Authorization policy
-  policy.schema.json    # Policy validation schema
-  tls/
-    server.pem          # Server certificate
-    server-key.pem      # Server private key
-    client-ca.pem       # Client CA bundle
-    extra-roots.pem     # Additional trust anchors
+`secretFile: /run/secrets/nads/oopl-an-001` names a file inside the server
+container. In Kubernetes it should be provided by a Secret volume or approved
+CSI secret-store driver. It is not a path on the administrator workstation and
+it is not created by the YAML ConfigMap.
 
-/var/log/usg-tacacs/
-  tacacs.log            # Application logs
-```
+Required controls:
 
-## Initial Setup Checklist
+1. Give each legacy NAD a unique, randomly generated shared secret.
+2. Mount secrets read-only and only into the workload that needs them.
+3. Restrict the secret provider identity to the smallest required path.
+4. Rotate one NAD at a time using the documented recovery path.
+5. Never return resolved secrets through the Management API or log them.
+6. Back up keys only under the organization's approved key-custody procedure.
 
-1. **Create service account**
-   ```sh
-   useradd -r -s /usr/sbin/nologin -d /var/lib/usg-tacacs tacacs
-   ```
+TLS-capable NADs should use unique certificate identities. Legacy TACACS+
+remains supported for devices that cannot use TACACS-over-TLS and should be
+protected by source-address enforcement and a dedicated management network or
+IPsec.
 
-2. **Generate TLS certificates** (see [TLS Guide](../tls.md))
+## Deployment
 
-3. **Create configuration file** from template
-   ```sh
-   cp config.example.json /etc/usg-tacacs/config.json
-   ```
+The supported Kubernetes packaging is the Helm chart under
+`deploy/charts/usg-tacacs`. Site values belong under `deploy/sites/<site>`,
+which is ignored by Git except for the tracked example. Kubernetes Secrets are
+provisioned separately.
 
-4. **Create authorization policy** (see [Policy Guide](../policy.md))
+Before installation:
 
-5. **Validate configuration**
-   ```sh
-   usg-tacacs-server --check-policy /etc/usg-tacacs/policy.json \
-     --schema /etc/usg-tacacs/policy.schema.json
-   ```
+1. Provision PostgreSQL with validated TLS and separate migration/runtime
+   identities.
+2. Provision management mTLS, optional data-plane TLS, NAD, audit, and JIT
+   secrets.
+3. Render the chart and review every listener, Service, NetworkPolicy, volume,
+   and security context.
+4. Run the configuration checker with file checking enabled in the target
+   environment.
+5. Apply database migrations using the migration identity.
+6. Install or upgrade the chart and wait for every role to become ready.
+7. Verify Management API mTLS, reconciliation, legacy/TLS authentication,
+   authorization, accounting, and signed audit delivery.
 
-6. **Set permissions**
-   ```sh
-   chown -R tacacs:tacacs /etc/usg-tacacs
-   chmod 600 /etc/usg-tacacs/tls/server-key.pem
-   chmod 640 /etc/usg-tacacs/config.json
-   ```
+See [Container deployment](../container.md), the repository `deploy/README.md`,
+and the [Operator guide](../operator/index.md).
 
-7. **Start and enable service**
-   ```sh
-   systemctl enable --now usg-tacacs
-   ```
+## Management API
 
-## Configuration Management
+The Management API is separate from the JITPW API. Its authoritative OpenAPI
+3.1.1 contract and Swagger UI are served by the management role. Production
+access requires TLS 1.3 mutual authentication and RBAC; a proxy must preserve
+the authenticated client identity by using TCP passthrough.
 
-### Hot Reload
+Administrative changes require a UUID correlation ID. Creates use an
+`Idempotency-Key`; updates and deletes use the current ETag in `If-Match`.
+Accepted changes are desired state, not proof that the NAD is active. Always
+check reconciliation.
 
-Send `SIGHUP` to reload policy and configuration without restart:
+See [Management API](management-api.md) and
+[NAD lifecycle](../operator/nad-lifecycle.md).
 
-```sh
-systemctl reload usg-tacacs
-# or
-kill -HUP $(pidof usg-tacacs-server)
-```
+## JIT password leases
 
-The server will:
+JITPW issues short-lived, NAD-bound credentials through the dedicated lease
+interface. USG TACACS stores a keyed verifier rather than a recoverable
+password. Managed NADs fail closed and cannot fall back to LDAP, ICAM, or
+static credentials. Maximum lease lifetime is 15 minutes.
 
-- Re-read the policy file
-- Re-read the configuration file
-- Apply changes without dropping connections
+The JITPW issuer needs only its lease-write permission. It must not receive
+general Management API administrator privileges. See
+[JIT password leases](jit-leases.md).
 
-### Configuration Validation
+## Administrative readiness checklist
 
-Always validate before deploying:
+- All configuration passes strict typed validation.
+- Management uses TLS 1.3 mTLS with typed certificate identities.
+- YAML and API ownership are unambiguous.
+- Each legacy NAD has a unique external secret and exact source mapping.
+- Authorization and management RBAC are deny-by-default.
+- PostgreSQL uses certificate-validated TLS and least-privilege roles.
+- Audit HMAC keys and JIT verifier keys are independent.
+- Raw signed audit records reach immutable centralized storage.
+- Restore, rotation, rollback, and break-glass procedures have been exercised.
+- Operators can distinguish accepted API state from reconciled runtime state.
 
-```sh
-usg-tacacs-server --check-policy ./policy.json --schema ./policy.schema.json
-```
+## Related guides
 
-## Monitoring
-
-### Log Analysis
-
-Logs use structured JSON with UTC timestamps:
-
-```json
-{
-  "timestamp": "2025-01-01T00:00:00.000000Z",
-  "level": "INFO",
-  "target": "usg_tacacs_server",
-  "message": "authn_pass",
-  "peer": "192.0.2.10:54321",
-  "user": "admin",
-  "session": 12345678
-}
-```
-
-Key audit events:
-
-| Event | Description |
-|-------|-------------|
-| `conn_open` | Client connection established |
-| `conn_close` | Client connection closed |
-| `authn_pass` | Authentication succeeded |
-| `authn_fail` | Authentication failed |
-| `authz_allow` | Authorization allowed |
-| `authz_deny` | Authorization denied |
-| `acct_accept` | Accounting record accepted |
-| `acct_error` | Accounting record rejected |
-
-### Health Checks
-
-For load balancer integration, monitor:
-
-- TCP connection to port 300 (TLS) or 49 (legacy)
-- Process status via systemd
-- Log output for error patterns
-
-## Backup and Recovery
-
-### What to Backup
-
-- `/etc/usg-tacacs/config.json`
-- `/etc/usg-tacacs/policy.json`
-- `/etc/usg-tacacs/tls/*` (certificates and keys)
-- `/var/log/usg-tacacs/*` (if local logging)
-
-### Recovery Procedure
-
-1. Restore configuration files
-2. Verify permissions
-3. Validate policy: `--check-policy`
-4. Start service
-5. Test authentication from a network device
-
-## Troubleshooting
-
-See the [Troubleshooting section](../operations.md#troubleshooting-checklist) for common issues.
-
-## Next Steps
-
-- [Management API](management-api.md) - REST API for runtime administration
-- [TLS Configuration](../tls.md) - Certificate setup and mTLS
-- [Authentication](../authentication.md) - LDAPS and static credentials
-- [Policy Guide](../policy.md) - Authorization rules
-- [Operations](../operations.md) - Day-to-day management
+- [Configuration reference](../config.md)
+- [TLS setup](../tls.md)
+- [Security hardening](security.md)
+- [Reverse proxy mTLS](reverse-proxy-mtls.md)
+- [Operator guide](../operator/index.md)
+- [Forensic incident response](../operator/incident-response.md)

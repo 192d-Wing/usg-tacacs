@@ -1,5 +1,12 @@
 # Secure Deployment Guide
 
+> **Historical baseline — not the current deployment runbook.** This document
+> records the January 2026 standalone/systemd security design and has not been
+> revalidated against the current typed-YAML, Helm, role-separated release.
+> Use `docs/docs/admin/index.md`, `docs/docs/container.md`, and
+> `docs/docs/operator/index.md` for current deployment. Retain this file only
+> as historical assurance evidence until a formal control revalidation replaces it.
+
 **Project:** usg-tacacs TACACS+ Server
 **Date:** 2026-01-11
 **Audience:** Security Engineers, System Administrators

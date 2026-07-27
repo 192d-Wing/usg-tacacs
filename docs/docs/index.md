@@ -2,129 +2,179 @@
 icon: lucide/shield
 ---
 
-# usg-tacacs documentation
+# USG TACACS documentation
 
-## Overview
+USG TACACS is a hardened Rust TACACS+ service for centralized network-device
+authentication, command authorization, and accounting. It supports both modern
+TACACS+ over TLS 1.3 and legacy TACACS+ for devices that cannot use TLS.
 
-`usg-tacacs` is a Rust TACACS+ server that targets RFC 8907 semantics and defaults to TLS 1.3 with mutual authentication. Legacy TACACS+ on TCP/49 is optional and obfuscation is enforced when a shared secret is configured. Authorization is policy-driven (JSON), and authentication can use static credentials or LDAPS with optional group requirements. Single-connection and capability/keepalive packets are supported. See the [Policy guide](./policy.md) for detailed rule behavior.
+Production deployments use one image in independent `management`, `legacy`,
+and optional `tls` Kubernetes workloads. The service uses typed declarative
+YAML, PostgreSQL-backed administrative state, strict mTLS/RBAC for management,
+and signed forensic audit records.
 
-### Core capabilities
+## Choose your guide
 
-- TLS 1.3 + mTLS on TCP/300; optional legacy TACACS+ on TCP/49 with shared secret.
-- Client certificate allowlists (CN or SAN) and optional extra trust roots.
-- **EST (RFC 7030) zero-touch certificate provisioning** with automated enrollment and renewal.
-- Per-command authorization via JSON policy (priorities, last-match-wins), with user and group matching.
-- Authentication sources: static user/password map or LDAPS (service-account bind, match-any required groups, configurable group attribute).
-- Accounting/authz semantic checks aligned with RFC 8907; explicit rejection of deprecated FOLLOW/ARAP paths.
-- Single-connection flag handling and vendor capability/keepalive packet support.
-- Telemetry/audit logging with UTC timestamps, peer/session identifiers, and outcome codes.
+<div class="grid cards" markdown>
 
-## Quick start
+-   :lucide-shield-alert:{ .lg .middle } **Administrator**
 
-1. **Install Rust:** `rustup toolchain install stable` (if needed).
-2. **Generate TLS material:** create `server.pem`, `server-key.pem`, and a client CA (`client-ca.pem`) for mTLS. Optionally add extra trust roots with `tls_trust_root`.
-3. **Prepare policy:** start from `policy/policy.example.json`; adjust rules, `users`, and `groups` as needed. Validate with:
+    ---
 
-   ```sh
-   cargo run -p tacacs-server -- --check-policy ./policy/policy.example.json --schema ./policy/policy.schema.json
-   ```
+    Design the deployment, typed YAML, authorization policy, management RBAC,
+    certificates, secrets, and JITPW integration.
 
-4. **Run the server (TLS only):**
+    [:octicons-arrow-right-24: Administrator guide](admin/index.md)
 
-   ```sh
-   cargo run -p tacacs-server -- \
-     --listen-tls 0.0.0.0:300 \
-     --tls-cert ./certs/server.pem \
-     --tls-key ./certs/server-key.pem \
-     --client-ca ./certs/client-ca.pem \
-     --policy ./policy/policy.example.json \
-     --secret "use-a-strong-shared-secret"
-   ```
+-   :lucide-server-cog:{ .lg .middle } **Operator**
 
-   Add `--listen-legacy 0.0.0.0:49` if you must serve legacy TACACS+ (obfuscation is required when a secret is set).
-5. **Enable LDAPS (optional):**
+    ---
 
-   ```sh
-   --ldaps-url ldaps://ldap.example.com \
-   --ldap-bind-dn "cn=svc,ou=svc,dc=example,dc=com" \
-   --ldap-bind-password "svc-secret" \
-   --ldap-search-base "dc=example,dc=com" \
-   --ldap-required-group "cn=netops,ou=groups,dc=example,dc=com" \
-   --ldap-group-attr memberOf \
-   --ldap-username-attr uid
-   ```
+    Run health checks, reconcile NADs, deploy upgrades, restore service, monitor
+    audit integrity, and respond to incidents.
 
-   Only LDAPS is permitted; StartTLS is rejected. Group checks are match-any and case-insensitive.
+    [:octicons-arrow-right-24: Operator guide](operator/index.md)
 
-## Configuration reference (flags / config.json)
+-   :lucide-user:{ .lg .middle } **Network user**
 
-You can pass options via CLI flags or JSON (`config.example.json` / `config.schema.json`).
+    ---
 
-### TLS and transport
+    Connect with CAC/JITPW and `jit-ssh`, understand identity and lease rules,
+    and collect useful non-secret troubleshooting information.
 
-- `listen_tls` (host:port, required) — TLS listener for TACACS+.
-- `listen_legacy` (host:port | null) — legacy TACACS+ listener.
-- `tls_cert` / `tls_key` / `client_ca` — server keypair and client CA for mTLS.
-- `tls_trust_root` (array) — extra trust roots for client validation.
-- `tls_allowed_client_cn` / `tls_allowed_client_san` (arrays) — allowlist client cert identities.
-- `tls_psk` (optional) — PSK for TLS if using pre-shared keys.
-- `secret` (string | null) — TACACS+ shared secret; required for legacy obfuscation; min length 8.
-- `forbid_unencrypted` (bool, default true) — drop requests with `TAC_PLUS_UNENCRYPTED_FLAG`.
-- `single_connect_idle_secs` / `single_connect_keepalive_secs` — timeouts for single-connection sessions.
-- `max_connections_per_ip` — simple connection limiter.
+    [:octicons-arrow-right-24: User guide](user/index.md)
 
-For **automated certificate provisioning**, see [EST Certificate Provisioning](./est-provisioning.md).
+-   :lucide-code-xml:{ .lg .middle } **Developer**
 
-### Authentication
+    ---
 
-- `user_password` — array of `user:password` strings for static credentials.
-- ASCII/PAP attempt tuning: `ascii_attempt_limit`, `ascii_user_attempt_limit`, `ascii_pass_attempt_limit`, `ascii_backoff_ms`, `ascii_backoff_max_ms`, `ascii_lockout_limit`.
-- LDAPS:
-  - `ldaps_url` (must start with `ldaps://`)
-  - `ldap_bind_dn`, `ldap_bind_password`, `ldap_search_base`
-  - `ldap_username_attr` (default `uid`)
-  - `ldap_group_attr` (default `memberOf`)
-  - `ldap_required_group` (array, match-any)
-  - `ldap_timeout_ms`, `ldap_ca_file` (optional trust anchor for LDAPS)
+    Build the Rust workspace, understand protocol behavior, and contribute
+    changes under the project's safety checks.
 
-### Authorization policy
+    [:octicons-arrow-right-24: Developer guide](dev/index.md)
 
-Policies live in `policy/policy.example.json` and are validated against `policy/policy.schema.json`.
+</div>
 
-Rule fields:
+## System overview
 
-- `id`: string identifier for audit.
-- `priority`: higher wins; ties resolved by last-match-wins order.
-- `pattern`: regex for command (auto-anchored and normalized).
-- `effect`: `"allow"` or `"deny"`.
-- `users`: array of usernames (case-insensitive).
-- `groups`: array of group names/DNs (match-any, case-insensitive).
+```mermaid
+flowchart LR
+    User["Network administrator"] -->|"jit-ssh"| Bastion["SSH bastion"]
+    Bastion -->|"TCP forwarding"| NAD["Network device"]
+    NAD -->|"TACACS+ TCP/49 or TLS TCP/300"| DataPlane["USG TACACS data plane"]
+    JITPW["JITPW service"] -->|"mTLS lease API"| Management["Management role"]
+    Admin["Administrator or automation"] -->|"TLS 1.3 mTLS"| Management
+    Management --> DB[("PostgreSQL")]
+    Management --> Reconcile["NAD reconciliation"]
+    Reconcile --> DataPlane
+    DataPlane --> Audit["Signed forensic audit"]
+    Management --> Audit
+```
 
-Default shell `PASS_ADD` attributes are injected when none are provided; non-shell decisions return policy-specified attributes only.
+The JITPW API and USG TACACS Management API are separate interfaces. JITPW
+authorizes and issues short-lived access. The Management API administers the
+TACACS service and NAD desired state.
 
-### Accounting and authorization semantics
+## Security model
 
-- Authz rejects deprecated FOLLOW and invalid protocol/service combinations per RFC 8907; error responses include reason codes.
-- Accounting rejects deprecated FOLLOW status; audits include flags/status/attr counts.
-- Single-connection and capability packets are parsed and acknowledged; keepalive timers are configurable.
+- Management requires TLS 1.3 mutual authentication and explicit RBAC.
+- TLS-capable NADs use certificate identity on TCP/300.
+- Legacy NADs use an exact source mapping and a unique external shared-secret
+  file on TCP/49.
+- Authorization and management RBAC are independent and deny-by-default.
+- YAML-owned baseline resources cannot be mutated through the API.
+- API-owned changes require correlation, idempotency or ETag concurrency, and
+  successful reconciliation.
+- JIT passwords expire within 15 minutes, are NAD-bound, and are stored only as
+  keyed verifiers.
+- Secret values and temporary passwords are never returned through management
+  interfaces or written to audit records.
+- Audit records are HMAC-signed and hash-chained before centralized retention.
 
-### Telemetry and auditing
+## Typed configuration
 
-- Logging uses `tracing` with UTC timestamps; include peer addresses, session IDs, and outcomes.
-- Audit events are emitted for authn/authz/acct passes/fails/denies, with policy rule IDs and reasons where applicable.
-- Forward logs to a centralized collector (TLS/syslog) and configure rotation/retention externally.
+The authoritative server configuration is a strict `TacacsServer` YAML
+document:
 
-## Hardening checklist
+```yaml
+apiVersion: tacacs.usg.mil/v1alpha1
+kind: TacacsServer
+metadata:
+  name: lab
+  description: Lab TACACS service
+spec:
+  role: management
+  listeners:
+    health: 0.0.0.0:8080
+  nads:
+    - name: oopl-an-001
+      description: IOS-XE lab switch
+      sourceAddress: 192.0.2.10
+      mode: legacy
+      secretFile: /run/secrets/nads/oopl-an-001
+  authorization:
+    defaultAllow: false
+    rules: []
+  management:
+    listener:
+      address: 0.0.0.0:8443
+      certificateFile: /run/secrets/management/tls.crt
+      privateKeyFile: /run/secrets/management/tls.key
+      clientCaFile: /run/secrets/management/client-ca.crt
+      minimumVersion: "1.3"
+    rbac:
+      roles: {}
+      subjects: []
+  audit:
+    hmacKeyFile: /run/secrets/audit/hmac-key
+```
 
-- Run as a dedicated non-root user; drop ambient capabilities; set RLIMITs for fds/mem/procs.
-- Optionally chroot/jail the process and place certs/policy inside the jail.
-- Keep `Cargo.lock` committed; build with `cargo build --locked`; consider `cargo vendor` for offline reproducibility.
-- Use strong TACACS+ shared secrets on legacy listeners; prefer TLS-only deployments.
-- Restrict TLS clients with CN/SAN allowlists and extra trust roots when needed.
+Start with the repository's
+[`docs/config/server.example.yaml`](https://github.com/192d-Wing/usg-tacacs/blob/main/docs/config/server.example.yaml).
+Paths such as `secretFile` refer to read-only files mounted inside the
+container. They are not secret values and are not paths on the administrator's
+workstation.
 
-## Troubleshooting
+## Deployment path
 
-- **Policy rejected:** run `--check-policy` with the schema to catch validation errors.
-- **Client mTLS fails:** verify client CA, CN/SAN allowlists, and any extra trust roots.
-- **LDAP auth fails:** confirm LDAPS URL, service bind credentials, search base, username/group attributes, and required group values.
-- **Legacy TACACS+ fails:** ensure `secret` is set and `forbid_unencrypted` remains true for production.
+1. Define reviewed, non-secret site values.
+2. Provision PostgreSQL and apply migrations with a dedicated migration role.
+3. Provision management/data-plane certificates and external secret files.
+4. Validate typed configuration, including mounted files.
+5. Render, review, and install the Helm chart.
+6. Verify management mTLS, NAD reconciliation, AAA, and signed audit delivery.
+
+Continue with the [Administrator guide](admin/index.md) for design or the
+[Operator guide](operator/index.md) for the production runbook.
+
+## Management API
+
+The management workload serves:
+
+- a dedicated administrative REST API;
+- its OpenAPI 3.1.1 contract;
+- protected Swagger UI;
+- NAD desired-state and reconciliation endpoints; and
+- bounded forensic audit export and verification.
+
+An accepted NAD mutation is not proof the device is active. Always verify
+reconciliation and run an authentication, authorization, and accounting test.
+
+See [Management API](admin/management-api.md) and
+[NAD lifecycle](operator/nad-lifecycle.md).
+
+## Operational priorities
+
+Monitor more than Pod readiness:
+
+- authenticated management status;
+- reconciliation conflicts and secret-resolution failures;
+- real NAD source-address preservation;
+- synthetic legacy and TLS AAA tests;
+- PostgreSQL availability and TLS validation;
+- configuration hashes and certificate expiry; and
+- signed audit delivery, sequence, and integrity.
+
+If audit integrity fails, preserve evidence before restarting workloads,
+rotating keys, or changing the database. Follow
+[Forensic incident response](operator/incident-response.md).

@@ -1,5 +1,10 @@
 # Operations Security Guide
 
+> **Historical baseline — not the current operator runbook.** Procedures below
+> target the January 2026 standalone/systemd design. Current Kubernetes/Helm,
+> reconciliation, recovery, and forensic procedures are in
+> `docs/docs/operator/index.md` and `docs/docs/operator/incident-response.md`.
+
 **Project:** usg-tacacs TACACS+ Server
 **Date:** 2026-01-11
 **Audience:** Security Operations, DevOps, System Administrators

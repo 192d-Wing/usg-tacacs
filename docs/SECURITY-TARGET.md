@@ -1,5 +1,9 @@
 # Security Target for usg-tacacs TACACS+ Server
 
+> **Draft evaluation artifact.** This is not an approved or evaluated Security
+> Target. Product boundary, version, claims, interfaces, and guidance must be
+> updated and independently reviewed before submission or operational citation.
+
 <!-- NIST SP 800-53 Rev. 5 Security Controls
      Control Implementation Matrix
 
