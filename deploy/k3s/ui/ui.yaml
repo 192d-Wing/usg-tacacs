@@ -25,7 +25,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: ui
-          image: ghcr.io/192d-wing/usg-tacacs-ui:0.82.2
+          image: ghcr.io/192d-wing/usg-tacacs-ui:0.82.3
           imagePullPolicy: Always
           env:
             - { name: LOKI_URL, value: "http://loki.monitoring.svc:3100" }

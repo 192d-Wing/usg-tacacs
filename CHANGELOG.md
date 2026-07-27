@@ -5,6 +5,23 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.3] - 2026-07-27
+
+### Fixed
+
+- Stabilized NAD idempotency timestamps by deriving creation and expiry from
+  one PostgreSQL statement timestamp, preventing microsecond drift from
+  violating the 24-hour expiry constraint.
+- Added a PostgreSQL regression assertion that requires the persisted
+  idempotency lifetime to be exactly 86,400 seconds.
+
+### Changed
+
+- Reorganized the documentation around administrator, operator, user, and
+  developer roles, with clearer navigation and audience-specific entry points.
+- Added dedicated operator runbooks for incident response and NAD lifecycle
+  management.
+
 ## [0.82.2] - 2026-07-25
 
 ### Fixed
