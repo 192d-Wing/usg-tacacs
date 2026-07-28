@@ -25,6 +25,35 @@ nads:
 postgres:
   url: postgresql://tacacs_jit@postgres.example.invalid:5432/tacacs?sslmode=verify-full
 
+pki:
+  enabled: true
+  issuerRef:
+    name: enterprise-est
+    kind: EstIssuer
+    group: pki.usg.mil
+  management:
+    enabled: true
+    secretName: tacacs-management-tls
+    commonName: tacacs-management.example.mil
+    dnsNames:
+      - tacacs-management.example.mil
+      - usg-tacacs-management.tacacs.svc
+      - usg-tacacs-management.tacacs.svc.cluster.local
+  dataPlane:
+    enabled: true
+    secretName: tacacs-dataplane-tls
+    commonName: tacacs.example.mil
+    dnsNames:
+      - tacacs.example.mil
+      - usg-tacacs-tls.tacacs.svc
+      - usg-tacacs-tls.tacacs.svc.cluster.local
+  ui:
+    enabled: true
+    secretName: tacacs-ui-tls
+    commonName: tacacs-ui.example.mil
+    dnsNames:
+      - tacacs-ui.example.mil
+
 service:
   legacyLoadBalancerIP: 192.0.2.2
   tlsLoadBalancerIP: 192.0.2.3

@@ -1,0 +1,44 @@
+{{- if .Values.pki.enabled }}
+{{- $root := . }}
+{{- $durationHours := trimSuffix "h" .Values.pki.duration | int }}
+{{- $renewBeforeHours := trimSuffix "h" .Values.pki.renewBefore | int }}
+{{- if ge $renewBeforeHours $durationHours }}
+{{- fail "pki.renewBefore must be shorter than pki.duration" }}
+{{- end }}
+{{- range $entry := list
+      (dict "name" "management" "config" .Values.pki.management)
+      (dict "name" "dataplane" "config" .Values.pki.dataPlane)
+      (dict "name" "ui" "config" .Values.pki.ui) }}
+{{- if $entry.config.enabled }}
+{{- if not (has $entry.config.commonName $entry.config.dnsNames) }}
+{{- fail (printf "pki.%s.commonName must also appear in dnsNames" $entry.name) }}
+{{- end }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "usg-tacacs.name" $root }}-{{ $entry.name }}
+  labels:
+    {{- include "usg-tacacs.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $entry.name }}
+spec:
+  secretName: {{ $entry.config.secretName }}
+  duration: {{ $root.Values.pki.duration }}
+  renewBefore: {{ $root.Values.pki.renewBefore }}
+  commonName: {{ $entry.config.commonName | quote }}
+  privateKey:
+    algorithm: {{ $root.Values.pki.privateKey.algorithm }}
+    size: {{ $root.Values.pki.privateKey.size }}
+    rotationPolicy: {{ $root.Values.pki.privateKey.rotationPolicy }}
+  usages:
+    - digital signature
+    - server auth
+  dnsNames:
+    {{- toYaml $entry.config.dnsNames | nindent 4 }}
+  issuerRef:
+    name: {{ $root.Values.pki.issuerRef.name }}
+    kind: {{ $root.Values.pki.issuerRef.kind }}
+    group: {{ $root.Values.pki.issuerRef.group }}
+{{- end }}
+{{- end }}
+{{- end }}

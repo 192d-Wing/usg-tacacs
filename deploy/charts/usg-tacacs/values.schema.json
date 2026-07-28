@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["workloads", "image", "nads", "postgres", "secrets", "management", "networkPolicy"],
+  "required": ["workloads", "image", "nads", "postgres", "secrets", "pki", "management", "networkPolicy"],
   "properties": {
     "workloads": {
       "type": "object",
@@ -74,7 +74,56 @@
     },
     "secrets": {
       "type": "object",
-      "required": ["runtime", "apiTls", "dataPlaneTls", "postgresCa"]
+      "additionalProperties": false,
+      "required": ["runtime", "managementClientCa", "dataPlaneClientCa", "postgresCa"],
+      "properties": {
+        "runtime": {"$ref": "#/$defs/secretName"},
+        "managementClientCa": {"$ref": "#/$defs/secretName"},
+        "dataPlaneClientCa": {"$ref": "#/$defs/secretName"},
+        "postgresCa": {"$ref": "#/$defs/secretName"}
+      }
+    },
+    "pki": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "issuerRef",
+        "duration",
+        "renewBefore",
+        "privateKey",
+        "management",
+        "dataPlane",
+        "ui"
+      ],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "issuerRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "kind", "group"],
+          "properties": {
+            "name": {"$ref": "#/$defs/dnsLabel"},
+            "kind": {"const": "EstIssuer"},
+            "group": {"const": "pki.usg.mil"}
+          }
+        },
+        "duration": {"type": "string", "pattern": "^[1-9][0-9]*h$"},
+        "renewBefore": {"type": "string", "pattern": "^[1-9][0-9]*h$"},
+        "privateKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["algorithm", "size", "rotationPolicy"],
+          "properties": {
+            "algorithm": {"const": "ECDSA"},
+            "size": {"const": 384},
+            "rotationPolicy": {"const": "Always"}
+          }
+        },
+        "management": {"$ref": "#/$defs/certificateTarget"},
+        "dataPlane": {"$ref": "#/$defs/certificateTarget"},
+        "ui": {"$ref": "#/$defs/certificateTarget"}
+      }
     },
     "service": {
       "type": "object",
@@ -145,6 +194,33 @@
     }
   },
   "$defs": {
+    "dnsLabel": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "secretName": {
+      "$ref": "#/$defs/dnsLabel"
+    },
+    "dnsName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+    },
+    "certificateTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "secretName", "commonName", "dnsNames"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "secretName": {"$ref": "#/$defs/secretName"},
+        "commonName": {"$ref": "#/$defs/dnsName"},
+        "dnsNames": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/dnsName"}
+        }
+      }
+    },
     "workload": {
       "type": "object",
       "additionalProperties": false,

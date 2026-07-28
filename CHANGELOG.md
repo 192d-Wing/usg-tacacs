@@ -5,6 +5,20 @@ All notable changes to the TACACS+ RS project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added optional Helm-managed cert-manager `Certificate` resources for the
+  management API, TACACS-over-TLS data plane, and UI Ingress, issued through a
+  namespace-scoped `pki.usg.mil/EstIssuer`.
+
+### Changed
+
+- Separated server TLS Secrets from management-client, NAD-client, and
+  PostgreSQL trust bundles, and adopted the standard `tls.crt` and `tls.key`
+  Secret keys.
+
 ## [0.82.4] - 2026-07-27
 
 ### Security
