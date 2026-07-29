@@ -1,0 +1,19 @@
+{{- if and .Values.pki.enabled .Values.pki.issuer.create }}
+apiVersion: pki.usg.mil/v1alpha1
+kind: EstIssuer
+metadata:
+  name: {{ .Values.pki.issuerRef.name }}
+  labels:
+    {{- include "usg-tacacs.labels" . | nindent 4 }}
+spec:
+  serverUrl: {{ .Values.pki.issuer.serverUrl | quote }}
+  authentication:
+    trustSecretName: {{ .Values.pki.issuer.authentication.trustSecretName }}
+    method: {{ .Values.pki.issuer.authentication.method }}
+    secretName: {{ .Values.pki.issuer.authentication.secretName }}
+  policy:
+    allowedDnsSuffixes:
+      {{- toYaml .Values.pki.issuer.policy.allowedDnsSuffixes | nindent 6 }}
+    maxDnsSans: {{ .Values.pki.issuer.policy.maxDnsSans }}
+    maxDuration: {{ .Values.pki.issuer.policy.maxDuration }}
+{{- end }}

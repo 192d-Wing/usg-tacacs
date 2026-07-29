@@ -37,13 +37,27 @@ secrets:
   postgresCa: tacacs-postgres-ca
 
 pki:
-  # When enabled, the chart creates cert-manager Certificate resources. The
-  # namespace-scoped EstIssuer and its immutable credentials must already exist.
+  # When enabled, the chart creates cert-manager Certificate resources.
   enabled: false
   issuerRef:
     name: enterprise-est
     kind: EstIssuer
     group: pki.usg.mil
+  issuer:
+    # Creates the namespace-local EstIssuer named by issuerRef.name. Referenced
+    # trust and bootstrap identity Secrets must already exist in the namespace.
+    create: false
+    serverUrl: https://est.example.mil/.well-known/est
+    authentication:
+      trustSecretName: est-server-trust
+      method: mutualTls
+      secretName: est-bootstrap-identity
+    policy:
+      allowedDnsSuffixes:
+        - example.mil
+        - tacacs.svc.cluster.local
+      maxDnsSans: 10
+      maxDuration: 720h
   duration: 720h
   renewBefore: 168h
   privateKey:
