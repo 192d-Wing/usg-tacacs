@@ -36,8 +36,41 @@ The chart deploys independent `management`, `legacy`, and optional `tls`
 workloads from the same server image. Each rendered configuration has exactly
 one runtime role and one externally meaningful listener. This prevents a
 legacy listener failure or rollout from coupling management availability to
-the TLS data plane. Enable the required roles under `workloads`; enabling TLS
-requires the `secrets.dataPlaneTls` certificate Secret.
+the TLS data plane.
+
+## EST-issued workload certificates
+
+Set `pki.enabled=true` to create three cert-manager `Certificate` resources:
+
+- the management API server certificate;
+- the TACACS-over-TLS data-plane server certificate; and
+- the UI Ingress server certificate.
+
+All three reference the configured namespace-scoped
+`pki.usg.mil/EstIssuer`. Install cert-manager, an explicit CertificateRequest
+approver policy, and `usg-est-issuer` in the TACACS namespace before enabling
+this option. The `EstIssuer` and its labeled, immutable EST credential and
+trust Secrets are PKI-administrator prerequisites; this chart does not render
+or own them.
+
+The resulting Secrets use the Kubernetes TLS convention (`tls.crt` and
+`tls.key`). Pods remain Pending until their required certificate Secret exists,
+so a failed or denied enrollment fails closed. The UI certificate is emitted
+even though the UI Ingress is currently deployed separately.
+
+Server certificates and client trust have different lifecycles and are never
+combined. Provision these trust-only Secrets separately:
+
+- `secrets.managementClientCa`: approved management clients, including CAC and
+  JITPW workload issuers;
+- `secrets.dataPlaneClientCa`: TACACS-over-TLS NAD client issuers; and
+- `secrets.postgresCa`: PostgreSQL server trust.
+
+When `pki.enabled=false`, an approved external certificate controller may
+populate the same Secrets named under `pki.management.secretName` and
+`pki.dataPlane.secretName`. Enable only the certificate targets used at the
+site. Certificate policy is P-384 ECDSA, key rotation on every renewal,
+`digital signature`, and `server auth`.
 
 Management certificate identities must use an explicit typed selector:
 `cn:`, `dns:`, `email:`, or `uri:`. The chart's NetworkPolicy admits port 8443

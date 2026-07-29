@@ -4,10 +4,10 @@ icon: lucide/key-round
 
 # EST certificate provisioning
 
-USG TACACS includes an RFC 7030 EST integration for certificate enrollment and
-renewal. EST settings are currently compatibility CLI/environment
-configuration; certificate file paths consumed by listeners remain in typed
-YAML.
+The USG TACACS Helm chart delegates server certificate lifecycle to
+cert-manager and the namespace-scoped `usg-est-issuer`. This provides one
+audited RFC 7030 path for the management API, TACACS-over-TLS data plane, and
+UI Ingress certificates.
 
 ## Boundary
 
@@ -30,21 +30,81 @@ EST provisions or renews certificate material. It does not:
 - Retain the prior certificate for a bounded rollback window.
 - Audit enrollment, renewal, rejection, reload, and rollback without secrets.
 
+## Prerequisites
+
+Install cert-manager, a CertificateRequest approver policy, and one
+`usg-est-issuer` controller watching the TACACS namespace. Create an
+`EstIssuer` in that namespace and its immutable EST transport-trust and
+authentication Secrets. Issuer credential Secrets must carry
+`pki.usg.mil/est-issuer: "true"` and `immutable: true`.
+
+Application operators must not be able to create or relabel issuer credential
+Secrets. The approver policy must constrain the three expected DNS identities,
+P-384 ECDSA keys, requested durations, and `server auth` usage. Approval and
+issuer policy are independent gates and must both accept a request.
+
 ## Kubernetes lifecycle
 
-Prefer a dedicated certificate controller or approved secret/CSI integration
-when it can satisfy the key-custody requirement. The listener reads:
+Enable all three certificate resources in site values:
 
 ```yaml
-certificateFile: /run/tls/dataplane/server.crt
-privateKeyFile: /run/tls/dataplane/server.key
-clientCaFile: /run/tls/dataplane/client-ca.crt
-minimumVersion: "1.3"
+pki:
+  enabled: true
+  issuerRef:
+    name: enterprise-est
+    kind: EstIssuer
+    group: pki.usg.mil
+  duration: 720h
+  renewBefore: 168h
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  management:
+    enabled: true
+    secretName: tacacs-management-tls
+    commonName: tacacs-management.example.mil
+    dnsNames:
+      - tacacs-management.example.mil
+      - usg-tacacs-management.tacacs.svc
+      - usg-tacacs-management.tacacs.svc.cluster.local
+  dataPlane:
+    enabled: true
+    secretName: tacacs-dataplane-tls
+    commonName: tacacs.example.mil
+    dnsNames:
+      - tacacs.example.mil
+      - usg-tacacs-tls.tacacs.svc
+      - usg-tacacs-tls.tacacs.svc.cluster.local
+  ui:
+    enabled: true
+    secretName: tacacs-ui-tls
+    commonName: tacacs-ui.example.mil
+    dnsNames:
+      - tacacs-ui.example.mil
 ```
 
-The provisioning mechanism updates the mounted source; the workload then
-performs a controlled reload/rollout. Do not bake issued keys into an image or
-write them to a ConfigMap.
+cert-manager generates each private key and stores it in its Kubernetes
+certificate lifecycle Secrets. `usg-est-issuer` reads the immutable CSR from
+the CertificateRequest and never reads or returns the private key.
+
+The management and data-plane listeners consume standard `tls.crt` and
+`tls.key` keys. Their client trust bundles remain separate:
+
+```yaml
+secrets:
+  managementClientCa: tacacs-management-client-ca
+  dataPlaneClientCa: tacacs-dataplane-client-ca
+  postgresCa: tacacs-postgres-ca
+```
+
+Each trust Secret contains `ca.crt`. The management bundle authorizes
+management clients; the data-plane bundle validates TLS-capable NADs; and the
+PostgreSQL bundle validates the database server. None is an EST bootstrap
+credential.
+
+A management or TLS Pod cannot start until Kubernetes can mount its certificate
+and trust Secrets. Denied or unavailable enrollment therefore fails closed.
 
 ## Validation
 
@@ -52,4 +112,5 @@ Test initial enrollment, renewal, failed renewal, expired bootstrap identity,
 untrusted EST server, mismatched key/certificate, rollback, replica
 coordination, and audit evidence in a non-production environment.
 
-Migration of EST options into typed YAML remains future configuration work.
+Check the `Certificate`, `CertificateRequest`, `EstIssuer`, approver, and
+`usg-est-issuer` conditions before investigating the TACACS container.

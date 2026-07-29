@@ -49,9 +49,11 @@ spec:
             - { name: runtime-secrets, mountPath: /run/secrets/tacacs, readOnly: true }
             - { name: postgres-ca, mountPath: /run/tls/postgres, readOnly: true }
             {{- if eq $role "management" }}
-            - { name: api-tls, mountPath: /run/tls/api, readOnly: true }
+            - { name: management-tls, mountPath: /run/tls/management, readOnly: true }
+            - { name: management-client-ca, mountPath: /run/trust/management-client, readOnly: true }
             {{- else if eq $role "tls" }}
             - { name: dataplane-tls, mountPath: /run/tls/dataplane, readOnly: true }
+            - { name: dataplane-client-ca, mountPath: /run/trust/dataplane-client, readOnly: true }
             {{- end }}
       containers:
         - name: tacacs
@@ -88,11 +90,15 @@ spec:
         - name: postgres-ca
           secret: { secretName: {{ $.Values.secrets.postgresCa }} }
         {{- if eq $role "management" }}
-        - name: api-tls
-          secret: { secretName: {{ $.Values.secrets.apiTls }} }
+        - name: management-tls
+          secret: { secretName: {{ $.Values.pki.management.secretName }} }
+        - name: management-client-ca
+          secret: { secretName: {{ $.Values.secrets.managementClientCa }} }
         {{- else if eq $role "tls" }}
         - name: dataplane-tls
-          secret: { secretName: {{ $.Values.secrets.dataPlaneTls }} }
+          secret: { secretName: {{ $.Values.pki.dataPlane.secretName }} }
+        - name: dataplane-client-ca
+          secret: { secretName: {{ $.Values.secrets.dataPlaneClientCa }} }
         {{- end }}
 {{- end }}
 {{- end }}
