@@ -89,6 +89,7 @@
       "required": [
         "enabled",
         "issuerRef",
+        "issuer",
         "duration",
         "renewBefore",
         "privateKey",
@@ -106,6 +107,43 @@
             "name": {"$ref": "#/$defs/dnsLabel"},
             "kind": {"const": "EstIssuer"},
             "group": {"const": "pki.usg.mil"}
+          }
+        },
+        "issuer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["create", "serverUrl", "authentication", "policy"],
+          "properties": {
+            "create": {"type": "boolean"},
+            "serverUrl": {
+              "type": "string",
+              "pattern": "^https://\\S+/\\.well-known/est(/[^/?#]+)?/?$"
+            },
+            "authentication": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["trustSecretName", "method", "secretName"],
+              "properties": {
+                "trustSecretName": {"$ref": "#/$defs/secretName"},
+                "method": {"const": "mutualTls"},
+                "secretName": {"$ref": "#/$defs/secretName"}
+              }
+            },
+            "policy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["allowedDnsSuffixes", "maxDnsSans", "maxDuration"],
+              "properties": {
+                "allowedDnsSuffixes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {"$ref": "#/$defs/dnsName"}
+                },
+                "maxDnsSans": {"type": "integer", "minimum": 1},
+                "maxDuration": {"type": "string", "pattern": "^[1-9][0-9]*h$"}
+              }
+            }
           }
         },
         "duration": {"type": "string", "pattern": "^[1-9][0-9]*h$"},

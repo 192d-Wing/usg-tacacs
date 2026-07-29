@@ -49,9 +49,12 @@ Set `pki.enabled=true` to create three cert-manager `Certificate` resources:
 All three reference the configured namespace-scoped
 `pki.usg.mil/EstIssuer`. Install cert-manager, an explicit CertificateRequest
 approver policy, and `usg-est-issuer` in the TACACS namespace before enabling
-this option. The `EstIssuer` and its labeled, immutable EST credential and
-trust Secrets are PKI-administrator prerequisites; this chart does not render
-or own them.
+this option. Set `pki.issuer.create=true` to have the chart render the
+namespace-local `EstIssuer` named by `pki.issuerRef.name`. The issuer's labeled,
+immutable EST credential and trust Secrets remain PKI-administrator
+prerequisites; this chart references but never renders or owns them. Leave
+`pki.issuer.create=false` when a PKI administrator manages the `EstIssuer`
+separately.
 
 The resulting Secrets use the Kubernetes TLS convention (`tls.crt` and
 `tls.key`). Pods remain Pending until their required certificate Secret exists,

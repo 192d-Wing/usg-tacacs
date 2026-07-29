@@ -33,9 +33,10 @@ EST provisions or renews certificate material. It does not:
 ## Prerequisites
 
 Install cert-manager, a CertificateRequest approver policy, and one
-`usg-est-issuer` controller watching the TACACS namespace. Create an
-`EstIssuer` in that namespace and its immutable EST transport-trust and
-authentication Secrets. Issuer credential Secrets must carry
+`usg-est-issuer` controller watching the TACACS namespace. Create the immutable
+EST transport-trust and authentication Secrets in that namespace. The chart
+can create the namespace-local `EstIssuer`, or a PKI administrator can manage
+it separately. Issuer credential Secrets must carry
 `pki.usg.mil/est-issuer: "true"` and `immutable: true`.
 
 Application operators must not be able to create or relabel issuer credential
@@ -54,6 +55,19 @@ pki:
     name: enterprise-est
     kind: EstIssuer
     group: pki.usg.mil
+  issuer:
+    create: true
+    serverUrl: https://est.example.mil/.well-known/est
+    authentication:
+      trustSecretName: est-server-trust
+      method: mutualTls
+      secretName: est-bootstrap-identity
+    policy:
+      allowedDnsSuffixes:
+        - example.mil
+        - tacacs.svc.cluster.local
+      maxDnsSans: 10
+      maxDuration: 720h
   duration: 720h
   renewBefore: 168h
   privateKey:
@@ -83,6 +97,11 @@ pki:
     dnsNames:
       - tacacs-ui.example.mil
 ```
+
+With `pki.issuer.create=true`, Helm creates the `EstIssuer` in the release
+namespace. The EST URL and policy are ordinary configuration, but the
+transport trust and bootstrap identity remain references to pre-provisioned
+Secrets. Set `create=false` if that issuer is managed outside this release.
 
 cert-manager generates each private key and stores it in its Kubernetes
 certificate lifecycle Secrets. `usg-est-issuer` reads the immutable CSR from

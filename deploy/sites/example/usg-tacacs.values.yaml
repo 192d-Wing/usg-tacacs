@@ -31,6 +31,19 @@ pki:
     name: enterprise-est
     kind: EstIssuer
     group: pki.usg.mil
+  issuer:
+    create: true
+    serverUrl: https://est.example.mil/.well-known/est
+    authentication:
+      trustSecretName: est-server-trust
+      method: mutualTls
+      secretName: est-bootstrap-identity
+    policy:
+      allowedDnsSuffixes:
+        - lab.example.mil
+        - tacacs.svc.cluster.local
+      maxDnsSans: 10
+      maxDuration: 720h
   management:
     enabled: true
     secretName: tacacs-management-tls
