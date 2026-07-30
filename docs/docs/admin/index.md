@@ -133,21 +133,23 @@ provisioned separately.
 
 Before installation:
 
-1. Provision PostgreSQL with validated TLS and separate migration/runtime
-   identities.
-2. Provision management mTLS, optional data-plane TLS, NAD, audit, and JIT
+1. Install the independently managed CloudNativePG operator.
+2. Provision separate migration/runtime database identities and install the
+   `usg-tacacs-postgresql` chart.
+3. Wait for database readiness and successful migrations.
+4. Provision management mTLS, optional data-plane TLS, NAD, audit, and JIT
    secrets.
-3. Render the chart and review every listener, Service, NetworkPolicy, volume,
+5. Render the chart and review every listener, Service, NetworkPolicy, volume,
    and security context.
-4. Run the configuration checker with file checking enabled in the target
+6. Run the configuration checker with file checking enabled in the target
    environment.
-5. Apply database migrations using the migration identity.
-6. Install or upgrade the chart and wait for every role to become ready.
-7. Verify Management API mTLS, reconciliation, legacy/TLS authentication,
+7. Install or upgrade the chart and wait for every role to become ready.
+8. Verify Management API mTLS, reconciliation, legacy/TLS authentication,
    authorization, accounting, and signed audit delivery.
 
 See [Container deployment](../container.md), the repository `deploy/README.md`,
-and the [Operator guide](../operator/index.md).
+[CloudNativePG deployment](cloudnativepg.md), and the
+[Operator guide](../operator/index.md).
 
 ## Management API
 
@@ -183,6 +185,8 @@ general Management API administrator privileges. See
 - Each legacy NAD has a unique external secret and exact source mapping.
 - Authorization and management RBAC are deny-by-default.
 - PostgreSQL uses certificate-validated TLS and least-privilege roles.
+- CloudNativePG uses at least three production instances, encrypted storage,
+  restricted ingress, monitored backups, and tested point-in-time recovery.
 - Audit HMAC keys and JIT verifier keys are independent.
 - Raw signed audit records reach immutable centralized storage.
 - Restore, rotation, rollback, and break-glass procedures have been exercised.

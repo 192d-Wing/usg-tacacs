@@ -45,6 +45,11 @@ instances, topology-aware scheduling, tested backups, and point-in-time
 recovery for production. Backup object stores and CNPG-I plugins are site
 infrastructure and deliberately remain outside this chart.
 
+The complete installation order, trust boundaries, validation checks,
+hardening requirements, and recovery guidance are documented in
+`docs/docs/admin/cloudnativepg.md`. The editable deployment diagram is
+`docs/api/mgmt/tacacs-cloudnativepg.drawio`.
+
 The existing k3s manifests remain reference baselines while their workloads
 are migrated into Helm charts.
 
