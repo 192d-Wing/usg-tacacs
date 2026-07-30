@@ -1,0 +1,40 @@
+cluster:
+  name: tacacs-db
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
+  storage:
+    size: 10Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+database:
+  name: tacacs
+  migrationRole: tacacs_migrator
+  runtimeRole: tacacs_jit
+  migrationSecret: tacacs-postgres-migration
+  runtimeSecret: tacacs-postgres-runtime
+
+migration:
+  enabled: true
+  image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
+
+networkPolicy:
+  enabled: true
+  operator:
+    namespace: cnpg-system
+    podLabels:
+      app.kubernetes.io/name: cloudnative-pg
+  tacacsPodLabels:
+    app.kubernetes.io/name: usg-tacacs
+
+monitoring:
+  enablePodMonitor: false
+

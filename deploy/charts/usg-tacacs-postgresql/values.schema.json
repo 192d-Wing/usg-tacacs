@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["cluster", "database", "migration", "networkPolicy"],
+  "properties": {
+    "cluster": {
+      "type": "object",
+      "required": ["name", "instances", "imageName", "storage"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$", "maxLength": 48},
+        "instances": {"type": "integer", "minimum": 1},
+        "imageName": {"type": "string", "minLength": 1},
+        "storage": {
+          "type": "object",
+          "required": ["size", "storageClass"],
+          "properties": {
+            "size": {"type": "string", "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$"},
+            "storageClass": {"type": "string"}
+          }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["name", "migrationRole", "runtimeRole", "migrationSecret", "runtimeSecret"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$"},
+        "migrationRole": {"type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$"},
+        "runtimeRole": {"type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$"},
+        "migrationSecret": {"type": "string", "minLength": 1},
+        "runtimeSecret": {"type": "string", "minLength": 1}
+      }
+    },
+    "migration": {
+      "type": "object",
+      "required": ["enabled", "image"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
+

@@ -1,0 +1,51 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.cluster.name }}
+  labels:
+    {{- include "usg-tacacs-postgresql.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.cluster.instances }}
+  imageName: {{ .Values.cluster.imageName | quote }}
+  enableSuperuserAccess: false
+  bootstrap:
+    initdb:
+      database: {{ .Values.database.name }}
+      owner: {{ .Values.database.migrationRole }}
+      secret:
+        name: {{ .Values.database.migrationSecret }}
+      dataChecksums: true
+      encoding: UTF8
+  managed:
+    roles:
+      - name: {{ .Values.database.runtimeRole }}
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        createrole: false
+        inherit: true
+        replication: false
+        bypassrls: false
+        connectionLimit: 50
+        passwordSecret:
+          name: {{ .Values.database.runtimeSecret }}
+    services:
+      disabledDefaultServices: ["ro", "r"]
+  postgresql:
+    parameters:
+      password_encryption: scram-sha-256
+      ssl_min_protocol_version: TLSv1.3
+      log_connections: "on"
+      log_disconnections: "on"
+      log_statement: ddl
+  storage:
+    size: {{ .Values.cluster.storage.size }}
+    {{- with .Values.cluster.storage.storageClass }}
+    storageClass: {{ . | quote }}
+    {{- end }}
+  resources:
+    {{- toYaml .Values.cluster.resources | nindent 4 }}
+  monitoring:
+    enablePodMonitor: {{ .Values.monitoring.enablePodMonitor }}
+

@@ -1,0 +1,90 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "usg-tacacs-postgresql.migrationName" . }}
+  labels:
+    {{- include "usg-tacacs-postgresql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "usg-tacacs-postgresql.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+        fsGroup: 26
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ .Values.migration.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              umask 077
+              printf '%s:%s:%s:%s:%s\n' \
+                "$PGHOST" "$PGPORT" "$PGDATABASE" "$PGUSER" \
+                "$(cat /run/secrets/migration/password)" > /tmp/pgpass
+              export PGPASSFILE=/tmp/pgpass
+              until pg_isready --host="$PGHOST" --port="$PGPORT" --dbname="$PGDATABASE" --username="$PGUSER"; do
+                sleep 2
+              done
+              if [ "$(psql --no-psqlrc --tuples-only --no-align --command="SELECT to_regclass('jitpw.jit_leases') IS NOT NULL")" != "t" ]; then
+                psql --no-psqlrc --set=ON_ERROR_STOP=1 --file=/migrations/0001_jit_leases.sql
+              fi
+              psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+                --set=runtime_role="$RUNTIME_ROLE" <<'SQL'
+              REVOKE ALL ON SCHEMA jitpw FROM PUBLIC;
+              REVOKE ALL ON TABLE jitpw.jit_leases FROM PUBLIC;
+              GRANT USAGE ON SCHEMA jitpw TO :"runtime_role";
+              GRANT SELECT, INSERT, UPDATE ON TABLE jitpw.jit_leases TO :"runtime_role";
+              SQL
+              rm -f /tmp/pgpass
+          env:
+            - { name: PGHOST, value: {{ printf "%s-rw" .Values.cluster.name | quote }} }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: {{ .Values.database.name | quote }} }
+            - { name: PGUSER, value: {{ .Values.database.migrationRole | quote }} }
+            - { name: PGSSLMODE, value: verify-full }
+            - { name: PGSSLROOTCERT, value: /run/tls/postgres/ca.crt }
+            - { name: RUNTIME_ROLE, value: {{ .Values.database.runtimeRole | quote }} }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - { name: migration, mountPath: /migrations, readOnly: true }
+            - { name: migration-credentials, mountPath: /run/secrets/migration, readOnly: true }
+            - { name: postgres-ca, mountPath: /run/tls/postgres, readOnly: true }
+            - { name: temporary, mountPath: /tmp }
+      volumes:
+        - name: migration
+          configMap:
+            name: {{ include "usg-tacacs-postgresql.migrationName" . }}
+        - name: migration-credentials
+          secret:
+            secretName: {{ .Values.database.migrationSecret }}
+            items:
+              - { key: password, path: password }
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.cluster.name }}-ca
+            items:
+              - { key: ca.crt, path: ca.crt }
+        - name: temporary
+          emptyDir:
+            sizeLimit: 1Mi
+{{- end }}
+

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: usg-tacacs-postgresql
+description: CloudNativePG database resources for USG TACACS JIT leases
+type: application
+version: 0.1.0
+appVersion: "18.4"
+
