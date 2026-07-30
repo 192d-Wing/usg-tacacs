@@ -8,5 +8,11 @@ metadata:
 data:
   0001_jit_leases.sql: |
 {{ .Files.Get "files/0001_jit_leases.sql" | indent 4 }}
+  0002_management_nads.sql: |
+{{ .Files.Get "files/0002_management_nads.sql" | indent 4 }}
+  0003_nad_audit_hash_v2.sql: |
+{{ .Files.Get "files/0003_nad_audit_hash_v2.sql" | indent 4 }}
+  0004_management_operations.sql: |
+{{ .Files.Get "files/0004_management_operations.sql" | indent 4 }}
 {{- end }}
 

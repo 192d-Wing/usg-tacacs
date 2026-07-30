@@ -38,6 +38,36 @@
         "enabled": {"type": "boolean"},
         "image": {"type": "string", "minLength": 1}
       }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "required": ["enabled", "operator", "tacacsPodLabels", "dns", "kubernetesApiCidrs"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "operator": {
+          "type": "object",
+          "required": ["namespace", "podLabels"],
+          "properties": {
+            "namespace": {"type": "string", "minLength": 1},
+            "podLabels": {"type": "object", "minProperties": 1}
+          }
+        },
+        "tacacsPodLabels": {"type": "object", "minProperties": 1},
+        "dns": {
+          "type": "object",
+          "required": ["namespace", "podLabels"],
+          "properties": {
+            "namespace": {"type": "string", "minLength": 1},
+            "podLabels": {"type": "object", "minProperties": 1}
+          }
+        },
+        "kubernetesApiCidrs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"}
+        }
+      }
     }
   }
 }
