@@ -1,0 +1,152 @@
+<mxfile host="app.diagrams.net" modified="2026-07-30T00:00:00.000Z" agent="Codex" version="26.0.16" type="device">
+  <diagram id="tacacs-cnpg-architecture" name="TACACS CloudNativePG Architecture">
+    <mxGraphModel dx="1800" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="1080" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="USG TACACS with CloudNativePG" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=28;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="20" width="700" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="externalBoundary" value="External clients and network devices" style="swimlane;html=1;rounded=1;horizontal=1;startSize=32;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="30" y="100" width="330" height="830" as="geometry"/>
+        </mxCell>
+        <mxCell id="k8sBoundary" value="Kubernetes namespace" style="swimlane;html=1;rounded=1;horizontal=1;startSize=32;fillColor=#eaf2f8;strokeColor=#2b6ca3;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="100" width="1460" height="830" as="geometry"/>
+        </mxCell>
+        <mxCell id="tacacsBoundary" value="USG TACACS workloads" style="swimlane;html=1;rounded=1;horizontal=1;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="430" y="150" width="450" height="590" as="geometry"/>
+        </mxCell>
+        <mxCell id="cnpgBoundary" value="CloudNativePG database boundary" style="swimlane;html=1;rounded=1;horizontal=1;startSize=30;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="150" width="810" height="590" as="geometry"/>
+        </mxCell>
+        <mxCell id="securityBoundary" value="Externally managed credentials and evidence" style="swimlane;html=1;rounded=1;horizontal=1;startSize=30;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="430" y="770" width="1390" height="125" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="jitpw" value="JITPW service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="190" width="220" height="65" as="geometry"/>
+        </mxCell>
+        <mxCell id="admin" value="Administrators and automation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="300" width="220" height="65" as="geometry"/>
+        </mxCell>
+        <mxCell id="legacyNad" value="Legacy NADs&lt;br&gt;TACACS+ TCP/49" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="480" width="220" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="tlsNad" value="RFC 9887 NADs&lt;br&gt;TACACS+ over TLS 1.3 / TCP/300" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="610" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="management" value="Management workload&lt;br&gt;mTLS TCP/8443" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="200" width="300" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="legacy" value="Legacy TACACS workload&lt;br&gt;TCP/49" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="460" width="300" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="tls" value="TACACS-over-TLS workload&lt;br&gt;TLS 1.3 / TCP/300" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="600" width="300" height="75" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="operator" value="CloudNativePG operator&lt;br&gt;reconciliation, certificate rotation, failover" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="200" width="290" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="clusterCr" value="Cluster CR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="210" width="250" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="rwService" value="tacacs-db-rw Service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="380" width="290" height="65" as="geometry"/>
+        </mxCell>
+        <mxCell id="primary" value="PostgreSQL primary" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="365" width="250" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="replicas" value="PostgreSQL replicas" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="535" width="250" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="migration" value="JIT lease migration Job&lt;br&gt;schema-owner role" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="550" width="290" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="helm" value="usg-tacacs-postgresql&lt;br&gt;Helm chart" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="650" width="290" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="networkPolicy" value="Database NetworkPolicy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="660" width="250" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="runtimeSecret" value="Runtime credential Secret&lt;br&gt;least privilege" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="810" width="300" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="migrationSecret" value="Migration credential Secret&lt;br&gt;schema owner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="810" width="300" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="audit" value="Signed, append-only audit evidence" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="810" width="280" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e1" value="TLS 1.3 mTLS lease API" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="jitpw" target="management">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e2" value="TLS 1.3 mTLS" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="admin" target="management">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e3" value="TACACS+" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="legacyNad" target="legacy">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e4" value="TLS 1.3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="tlsNad" target="tls">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e5" value="verify-full / runtime role" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="management" target="rwService">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e6" value="verify-full / runtime role" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="legacy" target="rwService">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e7" value="verify-full / runtime role" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="tls" target="rwService">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e8" value="reconcile" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="operator" target="clusterCr">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e9" value="owns" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="clusterCr" target="primary">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e10" value="owns" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="clusterCr" target="replicas">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e11" value="routes writes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="rwService" target="primary">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e12" value="TLS 1.3 replication" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;startArrow=block;startFill=1;endArrow=block;endFill=1;" edge="1" parent="1" source="primary" target="replicas">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e13" value="verify-full / migration role" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="migration" target="rwService">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e14" value="creates" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="helm" target="clusterCr">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e15" value="creates" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="helm" target="migration">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e16" value="mounted by workloads" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="runtimeSecret" target="management">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e17" value="mounted by Job" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="migrationSecret" target="migration">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e18" value="enforces ingress" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="networkPolicy" target="primary">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e19" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="management" target="audit">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="legacy" target="audit">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e21" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="tls" target="audit">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

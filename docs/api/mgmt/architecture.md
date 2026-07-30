@@ -246,6 +246,9 @@ create database credentials. Operators supply separate Secrets for the
 schema-owning migration identity and the least-privilege runtime identity used
 by all TACACS workloads. Remote PostgreSQL superuser access is disabled.
 
+An editable diagrams.net source is available in
+[`tacacs-cloudnativepg.drawio`](tacacs-cloudnativepg.drawio).
+
 Management endpoints backed by PostgreSQL are authoritative across replicas.
 Active session inventory and termination remain process-local and therefore do
 not yet represent sessions owned by the legacy and TLS Deployments. Those
