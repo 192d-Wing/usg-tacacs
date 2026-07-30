@@ -1,0 +1,17 @@
+# Documentation-only lab profile. Provision both referenced basic-auth Secrets
+# out of band; each must contain matching `username` and `password` keys.
+cluster:
+  name: tacacs-db
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:REPLACE_WITH_REVIEWED_DIGEST
+  storage:
+    size: 10Gi
+    storageClass: local-path
+
+database:
+  migrationSecret: tacacs-postgres-migration
+  runtimeSecret: tacacs-postgres-runtime
+
+migration:
+  image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:REPLACE_WITH_REVIEWED_DIGEST
+

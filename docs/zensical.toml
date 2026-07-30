@@ -15,6 +15,7 @@ nav = [
     { "TLS Setup" = "tls.md" },
     { "Operations" = "operations.md" },
     { "Container Deployment" = "container.md" },
+    { "CloudNativePG" = "admin/cloudnativepg.md" },
     { "Device Configuration" = "user/device-config.md" },
     { "Management API" = "admin/management-api.md" },
     { "JIT Password Leases" = "admin/jit-leases.md" },

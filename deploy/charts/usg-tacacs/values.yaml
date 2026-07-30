@@ -32,6 +32,7 @@ postgres:
 
 secrets:
   runtime: tacacs-runtime
+  postgresCredentials: tacacs-postgres-runtime
   managementClientCa: tacacs-management-client-ca
   dataPlaneClientCa: tacacs-dataplane-client-ca
   postgresCa: tacacs-postgres-ca

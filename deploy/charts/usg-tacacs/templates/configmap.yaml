@@ -65,7 +65,7 @@ spec:
     hmacKeyFile: /run/secrets/tacacs/audit-hmac-key
   jit:
     storeUrl: {{ $root.Values.postgres.url | quote }}
-    storePasswordFile: /run/secrets/tacacs/postgres-password
+    storePasswordFile: /run/secrets/postgres/postgres-password
     storeCaFile: /run/tls/postgres/ca.crt
     verifierKeyFile: /run/secrets/tacacs/verifier-key
     maximumTtlSeconds: 900

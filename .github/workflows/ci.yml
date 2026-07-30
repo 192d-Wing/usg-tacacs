@@ -57,6 +57,7 @@ jobs:
         with:
           version: v3.18.4
       - run: ./scripts/ci/validate-management-chart.sh
+      - run: bash ./scripts/ci/validate-postgresql-chart.sh
 
   # ==========================================================================
   # Stage 2: Build

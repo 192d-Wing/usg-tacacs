@@ -23,7 +23,11 @@ nads:
     secretFile: /run/secrets/tacacs/oopl-an-001
 
 postgres:
-  url: postgresql://tacacs_jit@postgres.example.invalid:5432/tacacs?sslmode=verify-full
+  url: postgresql://tacacs_jit@tacacs-db-rw:5432/tacacs?sslmode=verify-full
+
+secrets:
+  postgresCredentials: tacacs-postgres-runtime
+  postgresCa: tacacs-db-ca
 
 pki:
   enabled: true

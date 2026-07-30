@@ -1,0 +1,12 @@
+{{- if .Values.migration.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "usg-tacacs-postgresql.migrationName" . }}
+  labels:
+    {{- include "usg-tacacs-postgresql.labels" . | nindent 4 }}
+data:
+  0001_jit_leases.sql: |
+{{ .Files.Get "files/0001_jit_leases.sql" | indent 4 }}
+{{- end }}
+

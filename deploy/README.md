@@ -9,6 +9,47 @@ Kubernetes Secrets are not Helm values and must not be committed. Provision
 them through the approved secret manager or CSI driver before installing a
 chart.
 
+## CloudNativePG
+
+`deploy/charts/usg-tacacs-postgresql` creates the namespaced CloudNativePG
+`Cluster`, its restricted ingress policy, and the JIT lease migration Job. It
+does not install the cluster-scoped CloudNativePG operator and does not create
+credentials.
+
+Install a reviewed, version-pinned CloudNativePG operator first. Provision two
+`kubernetes.io/basic-auth` Secrets:
+
+- `tacacs-postgres-migration` with username `tacacs_migrator`;
+- `tacacs-postgres-runtime` with username `tacacs_jit`.
+
+The migration identity owns the `tacacs` database. The runtime identity is
+non-owner, non-superuser, and receives only `USAGE` on the `jitpw` schema and
+`SELECT`, `INSERT`, and `UPDATE` on `jitpw.jit_leases`. Remote superuser access
+remains disabled. The migration Job uses PostgreSQL TLS 1.3 with
+`sslmode=verify-full` and the operator-managed cluster CA.
+
+Install the database chart before the TACACS chart:
+
+```text
+helm upgrade --install tacacs-db deploy/charts/usg-tacacs-postgresql \
+  --namespace tacacs --values deploy/sites/<site>/usg-tacacs-postgresql.values.yaml
+kubectl --namespace tacacs wait --for=condition=Ready cluster/tacacs-db --timeout=10m
+kubectl --namespace tacacs wait --for=condition=Complete \
+  job --selector=app.kubernetes.io/component=migration --timeout=10m
+helm upgrade --install tacacs deploy/charts/usg-tacacs \
+  --namespace tacacs --values deploy/sites/<site>/usg-tacacs.values.yaml
+```
+
+The chart defaults to one database instance for a lab. Use at least three
+instances, topology-aware scheduling, tested backups, and point-in-time
+recovery for production. Backup object stores and CNPG-I plugins are site
+infrastructure and deliberately remain outside this chart.
+
+The complete installation order, trust boundaries, validation checks,
+hardening requirements, and recovery guidance are documented in
+`docs/docs/admin/cloudnativepg.md`. The editable deployment diagram is
+`docs/api/mgmt/tacacs-cloudnativepg.drawio`.
+
 The existing k3s manifests remain reference baselines while their workloads
 are migrated into Helm charts.
 

@@ -39,8 +39,19 @@ identity and audit invariants.
 
 ## Data and audit
 
-- Use PostgreSQL TLS with separate migration/runtime roles.
-- Encrypt backups and test point-in-time recovery.
+- Install and upgrade the CloudNativePG operator independently through a
+  reviewed, version-pinned release path.
+- Use at least three database instances across independent failure domains.
+- Use PostgreSQL TLS 1.3 with `verify-full` and separate migration/runtime
+  roles; never mount the migration credential into TACACS workloads.
+- Keep remote superuser access disabled and retain the runtime role's
+  non-owner, non-administrator privilege boundary.
+- Enforce database NetworkPolicy for cluster peers, TACACS workloads, the
+  migration Job, and the specifically selected operator Pods only.
+- Use encrypted durable storage. Encrypt backups, restrict object-store
+  credentials, monitor backup age, and test point-in-time recovery.
+- Alert on replication lag, failed backups, storage pressure, unexpected
+  failover, certificate expiry, and repeated database authentication failure.
 - Forward raw signed audit records to immutable centralized storage.
 - Alert on gaps, invalid chains/signatures, unexpected actors, fallback
   attempts, and configuration changes.
@@ -65,7 +76,11 @@ identity and audit invariants.
 - [ ] TLS NADs have lab-verified RFC 9887 handshakes
 - [ ] YAML/API conflicts fail closed
 - [ ] JIT fallback tests fail as designed
+- [ ] Runtime database credentials cannot perform DDL or role administration
+- [ ] Unauthorized Pods cannot reach PostgreSQL
+- [ ] CloudNativePG failover and restore-to-new-cluster exercises pass
 - [ ] Audit verification and restore exercises pass
 - [ ] Break-glass procedures are tested and independently audited
 
-See [Forensic incident response](../operator/incident-response.md).
+See [CloudNativePG deployment](cloudnativepg.md) and
+[Forensic incident response](../operator/incident-response.md).
