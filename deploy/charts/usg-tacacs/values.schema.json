@@ -75,9 +75,10 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["runtime", "managementClientCa", "dataPlaneClientCa", "postgresCa"],
+      "required": ["runtime", "postgresCredentials", "managementClientCa", "dataPlaneClientCa", "postgresCa"],
       "properties": {
         "runtime": {"$ref": "#/$defs/secretName"},
+        "postgresCredentials": {"$ref": "#/$defs/secretName"},
         "managementClientCa": {"$ref": "#/$defs/secretName"},
         "dataPlaneClientCa": {"$ref": "#/$defs/secretName"},
         "postgresCa": {"$ref": "#/$defs/secretName"}

@@ -47,6 +47,7 @@ spec:
           volumeMounts: &mounts
             - { name: configuration, mountPath: /etc/usg-tacacs, readOnly: true }
             - { name: runtime-secrets, mountPath: /run/secrets/tacacs, readOnly: true }
+            - { name: postgres-credentials, mountPath: /run/secrets/postgres, readOnly: true }
             - { name: postgres-ca, mountPath: /run/tls/postgres, readOnly: true }
             {{- if eq $role "management" }}
             - { name: management-tls, mountPath: /run/tls/management, readOnly: true }
@@ -87,6 +88,11 @@ spec:
             name: {{ include "usg-tacacs.name" $ }}-{{ $role }}-configuration
         - name: runtime-secrets
           secret: { secretName: {{ $.Values.secrets.runtime }} }
+        - name: postgres-credentials
+          secret:
+            secretName: {{ $.Values.secrets.postgresCredentials }}
+            items:
+              - { key: password, path: postgres-password }
         - name: postgres-ca
           secret: { secretName: {{ $.Values.secrets.postgresCa }} }
         {{- if eq $role "management" }}
