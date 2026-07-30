@@ -11,12 +11,25 @@ metadata:
   labels:
     {{- include "usg-tacacs.labels" $ | nindent 4 }}
     app.kubernetes.io/component: {{ $role }}
-  {{- with $.Values.service.annotations }}
-  annotations:
+    {{- with $.Values.service.labels }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or $.Values.service.annotations (and (ne $role "management") $.Values.service.loadBalancerAnnotations) }}
+  annotations:
+    {{- with $.Values.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if ne $role "management" }}
+    {{- with $.Values.service.loadBalancerAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
   {{- end }}
 spec:
   type: {{ ternary "ClusterIP" $.Values.service.type (eq $role "management") }}
+  ipFamilyPolicy: {{ $.Values.service.ipFamilyPolicy }}
+  ipFamilies:
+    {{- toYaml $.Values.service.ipFamilies | nindent 4 }}
   {{- if ne $role "management" }}
   externalTrafficPolicy: Local
   {{- $address := ternary $.Values.service.legacyLoadBalancerIP $.Values.service.tlsLoadBalancerIP (eq $role "legacy") }}

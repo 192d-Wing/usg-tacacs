@@ -17,7 +17,7 @@ spec:
     matchLabels:
       {{- include "usg-tacacs.selectorLabels" $ | nindent 6 }}
       app.kubernetes.io/component: {{ $role }}
-  policyTypes: [Ingress]
+  policyTypes: [Ingress, Egress]
   ingress:
     - from:
         {{- if eq $role "management" }}
@@ -25,14 +25,16 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .namespace | quote }}
+          {{- with .podLabels }}
           podSelector:
             matchLabels:
-              {{- toYaml .podLabels | nindent 14 }}
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
         {{- end }}
         {{- else }}
         {{- range $.Values.nads }}
         - ipBlock:
-            cidr: {{ printf "%s/32" .sourceIp }}
+            cidr: {{ printf "%s/%d" .sourceIp (ternary 128 32 (contains ":" .sourceIp)) | quote }}
         {{- end }}
         {{- end }}
       ports:
@@ -43,6 +45,23 @@ spec:
         {{- else }}
         - { protocol: TCP, port: 300 }
         {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ $.Values.networkPolicy.postgresClusterName }}
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.networkPolicy.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $.Values.networkPolicy.dns.podLabels | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
 {{- end }}
 {{- end }}
 {{- end }}

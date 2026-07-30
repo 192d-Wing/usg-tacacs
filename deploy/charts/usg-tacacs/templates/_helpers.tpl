@@ -1,5 +1,9 @@
 {{- define "usg-tacacs.name" -}}
-{{- printf "%s-usg-tacacs" .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- if contains .Chart.Name .Release.Name -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "usg-tacacs.managedNads" -}}
@@ -9,8 +13,12 @@
 {{- end -}}
 
 {{- define "usg-tacacs.legacyNads" -}}
-{{- range $index, $nad := .Values.nads -}}
-{{- if $index }},{{ end -}}{{ $nad.sourceIp }}={{ $nad.identity }}
+{{- $first := true -}}
+{{- range $nad := .Values.nads -}}
+{{- if eq $nad.mode "legacy" -}}
+{{- if not $first }},{{ end -}}{{ $nad.sourceIp }}={{ $nad.identity }}
+{{- $first = false -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

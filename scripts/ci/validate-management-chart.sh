@@ -42,6 +42,12 @@ require_rendered 'app.kubernetes.io/component: legacy' \
 require_rendered 'app.kubernetes.io/component: tls' \
     "the TLS workload selector"
 require_rendered 'port: 49' "the legacy TACACS service"
+require_rendered 'externalTrafficPolicy: Local' "source-preserving external traffic policy"
+require_rendered 'JIT_MANAGED_NADS' "inventory-derived managed NAD environment"
+require_rendered 'JIT_LEGACY_NADS' "inventory-derived legacy NAD environment"
+require_rendered 'policyTypes:.*Ingress.*Egress' "default-deny TACACS egress"
+require_rendered 'port: 5432' "PostgreSQL-only application egress"
+require_rendered 'protocol: UDP, port: 53' "narrow DNS egress"
 require_rendered 'port: 300' "the TACACS-over-TLS service"
 require_rendered 'kind: Certificate' "cert-manager Certificate resources"
 require_rendered 'kind: EstIssuer' "the namespace-scoped EST issuer reference"
