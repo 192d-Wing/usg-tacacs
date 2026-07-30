@@ -197,6 +197,55 @@ distinct Service, selector, NetworkPolicy, certificate mount, and replica
 count. The management Service is ClusterIP-only and must not be exposed through
 the public JITPW ingress.
 
+```mermaid
+flowchart LR
+    JITPW["JITPW service"] -->|"TLS 1.3 mTLS"| Management["Management workload<br/>TCP/8443"]
+    Admin["Administrators and automation"] -->|"TLS 1.3 mTLS"| Management
+    LegacyNAD["Legacy NADs"] -->|"TACACS+ TCP/49"| Legacy["Legacy workload"]
+    TLSNAD["RFC 9887 NADs"] -->|"TACACS+ over TLS 1.3<br/>TCP/300"| TLS["TLS workload"]
+
+    subgraph Kubernetes["Kubernetes namespace"]
+        Management -->|"TLS 1.3 verify-full<br/>runtime role"| RW["tacacs-db-rw Service"]
+        Legacy -->|"TLS 1.3 verify-full<br/>runtime role"| RW
+        TLS -->|"TLS 1.3 verify-full<br/>runtime role"| RW
+
+        subgraph CNPG["CloudNativePG database"]
+            Cluster["Cluster CR"]
+            Operator["CloudNativePG operator"]
+            Primary[("PostgreSQL primary")]
+            Replicas[("PostgreSQL replicas")]
+
+            Operator -->|"reconcile, rotate certificates, fail over"| Cluster
+            Cluster --> RW
+            Cluster --> Primary
+            Cluster --> Replicas
+            RW --> Primary
+            Primary <-->|"TLS 1.3 replication"| Replicas
+        end
+
+        Migration["JIT lease migration Job"] -->|"TLS 1.3 verify-full<br/>migration role"| RW
+        DBChart["usg-tacacs-postgresql Helm chart"] --> Cluster
+        DBChart --> Migration
+        RuntimeSecret["Runtime credential Secret"] --> Management
+        RuntimeSecret --> Legacy
+        RuntimeSecret --> TLS
+        MigrationSecret["Migration credential Secret"] --> Migration
+        NetworkPolicy["Database NetworkPolicy"] -.-> Primary
+        NetworkPolicy -.-> Replicas
+    end
+
+    Management --> Audit["Signed, append-only audit evidence"]
+    Legacy --> Audit
+    TLS --> Audit
+```
+
+The CloudNativePG operator is a cluster platform dependency installed and
+upgraded independently of USG TACACS. The `usg-tacacs-postgresql` chart creates
+the namespaced `Cluster`, migration Job, and database NetworkPolicy. It does not
+create database credentials. Operators supply separate Secrets for the
+schema-owning migration identity and the least-privilege runtime identity used
+by all TACACS workloads. Remote PostgreSQL superuser access is disabled.
+
 Management endpoints backed by PostgreSQL are authoritative across replicas.
 Active session inventory and termination remain process-local and therefore do
 not yet represent sessions owned by the legacy and TLS Deployments. Those
