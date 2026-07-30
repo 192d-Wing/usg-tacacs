@@ -35,15 +35,41 @@ the temporary password is not displayed to the user or exposed to the bastion.
 
 ```mermaid
 flowchart LR
-    Admin["Administrator or automation"] -->|"TLS 1.3 mTLS"| Mgmt["Management API"]
+    Admin["Administrator or automation"] -->|"TLS 1.3 mTLS"| Mgmt["Management role"]
     JITPW["JITPW service"] -->|"mTLS lease API"| Mgmt
-    Mgmt --> DB[("PostgreSQL")]
     Mgmt --> Reconcile["NAD reconciliation"]
     Reconcile --> Legacy["Legacy TACACS+ role"]
     Reconcile --> TLS["TACACS-over-TLS role"]
     NAD1["Legacy NAD"] -->|"TCP/49, unique secret"| Legacy
     NAD2["TLS-capable NAD"] -->|"TCP/300, mTLS"| TLS
-    Legacy --> Audit["Signed audit stream"]
+
+    subgraph CNPG["CloudNativePG database boundary"]
+        ClusterCR["Cluster CR"]
+        Operator["CloudNativePG operator"]
+        RW["tacacs-db-rw Service"]
+        Primary[("PostgreSQL primary")]
+        Replica[("PostgreSQL replicas")]
+        Migration["Release migration Job"]
+        Operator -->|"reconcile, failover, certificates"| ClusterCR
+        ClusterCR --> RW
+        ClusterCR --> Primary
+        ClusterCR --> Replica
+        RW --> Primary
+        Primary <-->|"TLS 1.3 replication"| Replica
+        Migration -->|"TLS 1.3 verify-full; migration role"| RW
+    end
+
+    Mgmt -->|"TLS 1.3 verify-full; runtime role"| RW
+    Legacy -->|"TLS 1.3 verify-full; runtime role"| RW
+    TLS -->|"TLS 1.3 verify-full; runtime role"| RW
+    DBChart["PostgreSQL Helm chart"] --> ClusterCR
+    DBChart --> Migration
+    MigrationSecret["Migration basic-auth Secret"] --> Migration
+    RuntimeSecret["Runtime basic-auth Secret"] --> Mgmt
+    RuntimeSecret --> Legacy
+    RuntimeSecret --> TLS
+    Primary --> Audit["Signed audit stream"]
+        Legacy --> Audit
     TLS --> Audit
     Mgmt --> Audit
 ```
@@ -52,6 +78,9 @@ The Management API is a USG TACACS administrative interface. It is separate
 from the JITPW user API. YAML owns the reviewed baseline; the Management API
 owns resources explicitly created through administrative workflows. Runtime
 reconciliation validates both sources and publishes the active NAD snapshot.
+The CloudNativePG operator is installed independently as a platform component.
+The PostgreSQL chart creates only namespaced database resources and never
+creates either credential Secret.
 
 ## Configuration
 

@@ -64,16 +64,39 @@ flowchart LR
     NAD -->|"TACACS+ TCP/49 or TLS TCP/300"| DataPlane["USG TACACS data plane"]
     JITPW["JITPW service"] -->|"mTLS lease API"| Management["Management role"]
     Admin["Administrator or automation"] -->|"TLS 1.3 mTLS"| Management
-    Management --> DB[("PostgreSQL")]
     Management --> Reconcile["NAD reconciliation"]
     Reconcile --> DataPlane
-    DataPlane --> Audit["Signed forensic audit"]
+
+    subgraph CNPG["CloudNativePG database boundary"]
+        ClusterCR["Cluster CR"]
+        Operator["CloudNativePG operator"]
+        RW["tacacs-db-rw Service"]
+        Primary[("PostgreSQL primary")]
+        Replicas[("PostgreSQL replicas")]
+        Migration["Migration Job"]
+        Operator -->|"reconcile and failover"| ClusterCR
+        ClusterCR --> RW
+        ClusterCR --> Primary
+        ClusterCR --> Replicas
+        RW --> Primary
+        Primary <-->|"TLS 1.3 replication"| Replicas
+        Migration -->|"verify-full; migration role"| RW
+    end
+
+    Management -->|"verify-full; runtime role"| RW
+    DataPlane -->|"verify-full; runtime role"| RW
+    DBChart["PostgreSQL Helm chart"] --> ClusterCR
+    DBChart --> Migration
+    Primary --> Audit["Signed forensic audit"]
+        DataPlane --> Audit
     Management --> Audit
 ```
 
 The JITPW API and USG TACACS Management API are separate interfaces. JITPW
 authorizes and issues short-lived access. The Management API administers the
-TACACS service and NAD desired state.
+TACACS service and NAD desired state. CloudNativePG is an independently
+installed platform operator; the database chart owns the namespaced Cluster
+and migration resources, while credential Secrets remain externally managed.
 
 ## Security model
 
