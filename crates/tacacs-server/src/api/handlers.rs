@@ -82,6 +82,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{info, warn};
+use usg_tacacs_config::management_actions;
 use usg_tacacs_policy::PolicyEngine;
 use utoipa_swagger_ui::{Config as SwaggerConfig, SwaggerUi};
 use uuid::Uuid;
@@ -199,36 +200,86 @@ pub fn build_api_router(
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/audit/nads", get(list_nad_audit))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::LIST_NAD_AUDIT_EVENTS,
+                ))),
+        )
+        .merge(
+            Router::new()
                 .route("/api/mgmt/v1/audit/nads/verify", get(verify_nad_audit))
-                .route_layer(middleware::from_fn(require_permission(&rbac, "read:audit"))),
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::VERIFY_NAD_AUDIT_EVENTS,
+                ))),
         )
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/nads", get(list_nads))
-                .route("/api/mgmt/v1/nads/inventory", get(list_nad_inventory))
-                .route(
-                    "/api/mgmt/v1/nads/reconciliation",
-                    get(get_nad_reconciliation),
-                )
-                .route("/api/mgmt/v1/nads/{id}", get(get_nad))
-                .route_layer(middleware::from_fn(require_permission(&rbac, "read:nads"))),
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::LIST_NADS,
+                ))),
         )
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/nads", post(create_nad))
-                .route(
-                    "/api/mgmt/v1/nads/{id}",
-                    patch(update_nad).delete(delete_nad),
-                )
                 .route_layer(DefaultBodyLimit::max(16 * 1024))
-                .route_layer(middleware::from_fn(require_permission(&rbac, "write:nads"))),
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::CREATE_NAD,
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/mgmt/v1/nads/inventory", get(list_nad_inventory))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::LIST_NAD_INVENTORY,
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route(
+                    "/api/mgmt/v1/nads/reconciliation",
+                    get(get_nad_reconciliation),
+                )
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::GET_NAD_RECONCILIATION,
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/mgmt/v1/nads/{id}", get(get_nad))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::GET_NAD,
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/mgmt/v1/nads/{id}", patch(update_nad))
+                .route_layer(DefaultBodyLimit::max(16 * 1024))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::UPDATE_NAD,
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/mgmt/v1/nads/{id}", delete(delete_nad))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::DELETE_NAD,
+                ))),
         )
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/status", get(get_status))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:status",
+                    management_actions::GET_STATUS,
                 ))),
         )
         .merge(
@@ -236,7 +287,7 @@ pub fn build_api_router(
                 .route("/api/mgmt/v1/sessions", get(get_sessions))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:sessions",
+                    management_actions::LIST_SESSIONS,
                 ))),
         )
         .merge(
@@ -244,7 +295,7 @@ pub fn build_api_router(
                 .route("/api/mgmt/v1/sessions/{id}", delete(delete_session))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "write:sessions",
+                    management_actions::DELETE_SESSION,
                 ))),
         )
         .merge(
@@ -252,16 +303,24 @@ pub fn build_api_router(
                 .route("/api/mgmt/v1/policy", get(get_policy))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:policy",
+                    management_actions::GET_POLICY,
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/mgmt/v1/policy", post(upload_policy))
+                .route_layer(DefaultBodyLimit::max(256 * 1024))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::REPLACE_POLICY,
                 ))),
         )
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/policy/reload", post(reload_policy))
-                .route("/api/mgmt/v1/policy", post(upload_policy))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "write:policy",
+                    management_actions::RELOAD_POLICY,
                 ))),
         )
         .merge(
@@ -269,19 +328,40 @@ pub fn build_api_router(
                 .route("/api/mgmt/v1/operations/{id}", get(get_operation))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:operations",
+                    management_actions::GET_OPERATION,
                 ))),
         )
         .merge(
             Router::new()
                 .route("/api/mgmt/v1/config", get(get_config))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::GET_RUNTIME_CONFIG,
+                ))),
+        )
+        .merge(
+            Router::new()
                 .route("/api/mgmt/v1/config/effective", get(get_effective_config))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::GET_EFFECTIVE_CONFIG,
+                ))),
+        )
+        .merge(
+            Router::new()
                 .route("/api/mgmt/v1/config/schema", get(get_config_schema))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::GET_CONFIG_SCHEMA,
+                ))),
+        )
+        .merge(
+            Router::new()
                 .route("/api/mgmt/v1/config/validate", post(validate_config))
                 .route_layer(DefaultBodyLimit::max(256 * 1024))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:config",
+                    management_actions::VALIDATE_CONFIG,
                 ))),
         )
         .merge(
@@ -289,20 +369,27 @@ pub fn build_api_router(
                 .route("/api/mgmt/v1/metrics", get(get_metrics))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:metrics",
+                    management_actions::GET_METRICS,
                 ))),
         )
         .merge(
             Router::new()
                 .route("/api/jit/v1/leases", post(create_jit_lease))
-                .route("/api/jit/v1/leases/{lease_id}", delete(revoke_jit_lease))
                 // Compatibility aliases for JITPW clients using the original contract.
                 .route("/api/v1/jit-leases", post(create_jit_lease))
-                .route("/api/v1/jit-leases/{lease_id}", delete(revoke_jit_lease))
                 .route_layer(DefaultBodyLimit::max(16 * 1024))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "write:jit-leases",
+                    management_actions::CREATE_JIT_LEASE,
+                ))),
+        )
+        .merge(
+            Router::new()
+                .route("/api/jit/v1/leases/{lease_id}", delete(revoke_jit_lease))
+                .route("/api/v1/jit-leases/{lease_id}", delete(revoke_jit_lease))
+                .route_layer(middleware::from_fn(require_permission(
+                    &rbac,
+                    management_actions::REVOKE_JIT_LEASE,
                 ))),
         )
         .merge(
@@ -311,7 +398,7 @@ pub fn build_api_router(
                 .route("/api/v1/jit-leases/{lease_id}", get(get_jit_lease))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:jit-leases",
+                    management_actions::GET_JIT_LEASE,
                 ))),
         )
         .merge(
@@ -323,7 +410,7 @@ pub fn build_api_router(
                 .route("/api/docs/mgmt/openapi.yaml", get(get_mgmt_openapi))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:config",
+                    management_actions::GET_MANAGEMENT_OPEN_API,
                 ))),
         )
         .merge(
@@ -335,7 +422,7 @@ pub fn build_api_router(
                 .route("/api/docs/jit/openapi.yaml", get(get_jit_openapi))
                 .route_layer(middleware::from_fn(require_permission(
                     &rbac,
-                    "read:jit-leases",
+                    management_actions::GET_JIT_OPEN_API,
                 ))),
         )
         .with_state(state)
@@ -1171,7 +1258,7 @@ fn problem(status: StatusCode, code: &'static str, correlation_id: String) -> Re
 
 /// GET /api/v1/status - Server health and statistics.
 ///
-/// Requires permission: `read:status`
+/// Requires permission: `tacacs:GetStatus`
 async fn get_status(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     let uptime = SystemTime::now()
         .duration_since(state.start_time)
@@ -1220,7 +1307,7 @@ async fn get_status(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 
 /// GET /api/v1/sessions - List active sessions.
 ///
-/// Requires permission: `read:sessions`
+/// Requires permission: `tacacs:ListSessions`
 ///
 /// # NIST Controls
 ///
@@ -1255,7 +1342,7 @@ async fn get_sessions(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 
 /// DELETE /api/v1/sessions/:id - Terminate a session.
 ///
-/// Requires permission: `write:sessions`
+/// Requires permission: `tacacs:DeleteSession`
 ///
 /// # NIST Controls
 ///
@@ -1286,7 +1373,7 @@ async fn delete_session(
 
 /// GET /api/v1/policy - Get current policy information.
 ///
-/// Requires permission: `read:policy`
+/// Requires permission: `tacacs:GetPolicy`
 async fn get_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     let policy = state.policy.read().await;
     let rule_count = policy.rule_count();
@@ -1310,13 +1397,13 @@ async fn get_policy(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
 
 /// POST /api/v1/policy/reload - Trigger policy hot reload.
 ///
-/// Requires permission: `write:policy`
+/// Requires permission: `tacacs:ReloadPolicy`
 ///
 /// # NIST Controls
 ///
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
-/// | AC-3 | Access Enforcement | Requires `write:policy` permission |
+/// | AC-3 | Access Enforcement | Requires `tacacs:ReloadPolicy` permission |
 /// | AU-12 | Audit Generation | Logs reload request initiation |
 /// | CM-3 | Configuration Change Control | API-triggered policy reload with audit logging |
 async fn reload_policy(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Response {
@@ -1499,13 +1586,13 @@ fn current_timestamp() -> String {
 
 /// POST /api/v1/policy - Upload new policy from JSON.
 ///
-/// Requires permission: `write:policy`
+/// Requires permission: `tacacs:ReplacePolicy`
 ///
 /// # NIST Controls
 ///
 /// | Control | Name | Implementation |
 /// |---------|------|----------------|
-/// | AC-3 | Access Enforcement | Requires `write:policy` permission |
+/// | AC-3 | Access Enforcement | Requires `tacacs:ReplacePolicy` permission |
 /// | AU-12 | Audit Generation | Logs upload request and validation result |
 /// | CM-3 | Configuration Change Control | API-based policy upload with validation |
 ///
@@ -1637,7 +1724,7 @@ async fn upload_policy(
 
 /// GET /api/v1/config - Get running configuration (sanitized).
 ///
-/// Requires permission: `read:config`
+/// Requires permission: `tacacs:GetRuntimeConfig`
 async fn get_config(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     let mut listen_addrs = Vec::new();
     if let Some(addr) = state.config.listen_tls {
@@ -1761,7 +1848,7 @@ fn diagnostic_path(message: &str) -> Option<String> {
 
 /// GET /api/v1/metrics - Get Prometheus metrics.
 ///
-/// Requires permission: `read:metrics`
+/// Requires permission: `tacacs:GetMetrics`
 async fn get_metrics() -> Result<Response<Body>, (StatusCode, &'static str)> {
     let body_text = metrics().encode();
     Response::builder()
@@ -2077,7 +2164,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn jit_openapi_requires_read_permission() {
+    async fn jit_openapi_requires_get_jit_openapi_action() {
         let app = make_test_router(make_test_rbac());
 
         let response = app
@@ -2095,7 +2182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mgmt_openapi_requires_config_read_permission() {
+    async fn mgmt_openapi_requires_get_management_openapi_action() {
         let app = make_test_router(make_test_rbac());
 
         let response = app
@@ -2341,7 +2428,7 @@ mod tests {
         let rbac = make_test_rbac();
         let app = make_test_router(rbac);
 
-        // Viewer should have access to read:status
+        // Viewer should have access to tacacs:GetStatus.
         let response = app
             .oneshot(
                 Request::builder()
@@ -2361,7 +2448,7 @@ mod tests {
         let rbac = make_test_rbac();
         let app = make_test_router(rbac);
 
-        // Viewer role only has read:status and read:metrics, not read:policy
+        // Viewer has tacacs:GetStatus and tacacs:GetMetrics, not tacacs:GetPolicy.
         let response = app
             .oneshot(
                 Request::builder()
@@ -2374,6 +2461,77 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_nads_and_get_nad_require_distinct_actions() {
+        let nad_id = Uuid::new_v4();
+
+        let mut get_rbac = make_test_rbac();
+        get_rbac.roles.insert(
+            "nad-detail".to_owned(),
+            vec![management_actions::GET_NAD.to_owned()],
+        );
+        get_rbac
+            .users
+            .insert("CN=nad-detail.test".to_owned(), "nad-detail".to_owned());
+
+        let detail_response = make_test_router(get_rbac.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/mgmt/v1/nads/{nad_id}"))
+                    .header("X-User-CN", "CN=nad-detail.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let list_response = make_test_router(get_rbac)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mgmt/v1/nads")
+                    .header("X-User-CN", "CN=nad-detail.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::FORBIDDEN);
+
+        let mut list_rbac = make_test_rbac();
+        list_rbac.roles.insert(
+            "nad-list".to_owned(),
+            vec![management_actions::LIST_NADS.to_owned()],
+        );
+        list_rbac
+            .users
+            .insert("CN=nad-list.test".to_owned(), "nad-list".to_owned());
+
+        let list_response = make_test_router(list_rbac.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mgmt/v1/nads")
+                    .header("X-User-CN", "CN=nad-list.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let detail_response = make_test_router(list_rbac)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/mgmt/v1/nads/{nad_id}"))
+                    .header("X-User-CN", "CN=nad-list.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::FORBIDDEN);
     }
 
     // ==================== Endpoint Functionality Tests ====================
@@ -2866,7 +3024,7 @@ mod tests {
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 1234);
         let conn_id = registry.try_register_connection(peer_addr).await.unwrap();
 
-        // Viewer should not be able to delete sessions (requires write:sessions)
+        // Viewer cannot delete sessions (requires tacacs:DeleteSession).
         let response = app
             .oneshot(
                 Request::builder()

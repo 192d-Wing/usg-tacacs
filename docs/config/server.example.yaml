@@ -39,12 +39,36 @@ spec:
         admin:
           description: Full TACACS management
           permissions:
-            - "read:*"
-            - "write:*"
+            - tacacs:GetStatus
+            - tacacs:ListSessions
+            - tacacs:DeleteSession
+            - tacacs:GetPolicy
+            - tacacs:ReplacePolicy
+            - tacacs:ReloadPolicy
+            - tacacs:GetOperation
+            - tacacs:GetRuntimeConfig
+            - tacacs:GetEffectiveConfig
+            - tacacs:GetConfigSchema
+            - tacacs:ValidateConfig
+            - tacacs:GetMetrics
+            - tacacs:ListNadAuditEvents
+            - tacacs:VerifyNadAuditEvents
+            - tacacs:ListNads
+            - tacacs:CreateNad
+            - tacacs:ListNadInventory
+            - tacacs:GetNadReconciliation
+            - tacacs:GetNad
+            - tacacs:UpdateNad
+            - tacacs:DeleteNad
+            - tacacs:CreateJitLease
+            - tacacs:GetJitLease
+            - tacacs:RevokeJitLease
+            - tacacs:GetManagementOpenApi
+            - tacacs:GetJitOpenApi
         viewer:
           permissions:
-            - read:status
-            - read:metrics
+            - tacacs:GetStatus
+            - tacacs:GetMetrics
       subjects:
         - certificateIdentity: cn:tacacs-admin.example.mil
           role: admin

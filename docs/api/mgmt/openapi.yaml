@@ -29,6 +29,7 @@ paths:
     get:
       tags: [Status]
       operationId: getStatus
+      x-required-permission: tacacs:GetStatus
       summary: Get server status
       responses:
         "200":
@@ -43,6 +44,7 @@ paths:
     get:
       tags: [Sessions]
       operationId: listSessions
+      x-required-permission: tacacs:ListSessions
       summary: List active TACACS sessions
       responses:
         "200":
@@ -65,6 +67,7 @@ paths:
     delete:
       tags: [Sessions]
       operationId: deleteSession
+      x-required-permission: tacacs:DeleteSession
       summary: Terminate an active TACACS session
       responses:
         "204":
@@ -77,6 +80,7 @@ paths:
     get:
       tags: [Policy]
       operationId: getPolicy
+      x-required-permission: tacacs:GetPolicy
       summary: Get the active authorization policy
       responses:
         "200":
@@ -90,6 +94,7 @@ paths:
     post:
       tags: [Policy]
       operationId: replacePolicy
+      x-required-permission: tacacs:ReplacePolicy
       summary: Validate and replace the authorization policy
       requestBody:
         required: true
@@ -120,6 +125,7 @@ paths:
     post:
       tags: [Policy]
       operationId: reloadPolicy
+      x-required-permission: tacacs:ReloadPolicy
       summary: Reload the policy from its configured source
       responses:
         "202":
@@ -143,6 +149,7 @@ paths:
     get:
       tags: [Operations]
       operationId: getOperation
+      x-required-permission: tacacs:GetOperation
       summary: Get the current result of an asynchronous management operation
       responses:
         "200":
@@ -159,6 +166,7 @@ paths:
     get:
       tags: [Configuration]
       operationId: getRuntimeConfig
+      x-required-permission: tacacs:GetRuntimeConfig
       summary: Get the redacted runtime configuration
       responses:
         "200":
@@ -173,6 +181,7 @@ paths:
     get:
       tags: [Configuration]
       operationId: getEffectiveConfig
+      x-required-permission: tacacs:GetEffectiveConfig
       summary: Get the redacted effective declarative configuration
       responses:
         "200":
@@ -189,6 +198,7 @@ paths:
     get:
       tags: [Configuration]
       operationId: getConfigSchema
+      x-required-permission: tacacs:GetConfigSchema
       summary: Get the JSON Schema generated from the authoritative Rust configuration types
       responses:
         "200":
@@ -203,6 +213,7 @@ paths:
     post:
       tags: [Configuration]
       operationId: validateConfig
+      x-required-permission: tacacs:ValidateConfig
       summary: Parse and semantically validate a declarative YAML configuration without applying it
       requestBody:
         required: true
@@ -226,6 +237,7 @@ paths:
     get:
       tags: [Metrics]
       operationId: getMetrics
+      x-required-permission: tacacs:GetMetrics
       summary: Get Prometheus metrics
       responses:
         "200":
@@ -240,6 +252,7 @@ paths:
     get:
       tags: [Audit]
       operationId: listNadAuditEvents
+      x-required-permission: tacacs:ListNadAuditEvents
       summary: Export NAD management audit evidence
       description: >
         Returns a bounded chronological page from the append-only,
@@ -293,6 +306,7 @@ paths:
     get:
       tags: [Audit]
       operationId: verifyNadAuditEvents
+      x-required-permission: tacacs:VerifyNadAuditEvents
       summary: Verify a page of the NAD audit chain
       description: >
         Recomputes event hashes, verifies HMAC signatures in constant time,
@@ -332,6 +346,7 @@ paths:
     get:
       tags: [NADs]
       operationId: listNads
+      x-required-permission: tacacs:ListNads
       summary: List API-owned network access devices
       parameters:
         - name: namePrefix
@@ -370,6 +385,7 @@ paths:
     post:
       tags: [NADs]
       operationId: createNad
+      x-required-permission: tacacs:CreateNad
       summary: Create an API-owned network access device
       parameters:
         - $ref: "#/components/parameters/CorrelationId"
@@ -416,6 +432,7 @@ paths:
     get:
       tags: [NADs]
       operationId: listNadInventory
+      x-required-permission: tacacs:ListNadInventory
       summary: List YAML-owned and API-owned network access devices
       description: >
         Returns a unified read-only inventory. YAML-owned entries are immutable
@@ -438,6 +455,7 @@ paths:
     get:
       tags: [NADs]
       operationId: getNadReconciliation
+      x-required-permission: tacacs:GetNadReconciliation
       summary: Query API-owned NAD runtime reconciliation
       description: >
         Returns aggregate counts for the complete current snapshot and a
@@ -489,6 +507,7 @@ paths:
     get:
       tags: [NADs]
       operationId: getNad
+      x-required-permission: tacacs:GetNad
       summary: Get an API-owned network access device
       responses:
         "200":
@@ -509,6 +528,7 @@ paths:
     patch:
       tags: [NADs]
       operationId: updateNad
+      x-required-permission: tacacs:UpdateNad
       summary: Replace mutable fields of an API-owned NAD
       parameters:
         - $ref: "#/components/parameters/CorrelationId"
@@ -544,6 +564,7 @@ paths:
     delete:
       tags: [NADs]
       operationId: deleteNad
+      x-required-permission: tacacs:DeleteNad
       summary: Soft-delete an API-owned network access device
       parameters:
         - $ref: "#/components/parameters/CorrelationId"

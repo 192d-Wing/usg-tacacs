@@ -23,8 +23,9 @@ paths:
     post:
       tags: [JIT leases]
       operationId: createJitLease
+      x-required-permission: tacacs:CreateJitLease
       summary: Create a device-bound credential lease
-      description: Requires `write:jit-leases` and an authorized JITPW mTLS identity.
+      description: Requires `tacacs:CreateJitLease` and an authorized JITPW mTLS identity.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/CorrelationId'
@@ -73,8 +74,9 @@ paths:
     get:
       tags: [JIT leases]
       operationId: getJitLease
+      x-required-permission: tacacs:GetJitLease
       summary: Get non-secret lease metadata
-      description: Requires `read:jit-leases`.
+      description: Requires `tacacs:GetJitLease`.
       responses:
         '200':
           description: Lease metadata
@@ -93,8 +95,9 @@ paths:
     delete:
       tags: [JIT leases]
       operationId: revokeJitLease
+      x-required-permission: tacacs:RevokeJitLease
       summary: Revoke a lease
-      description: Requires `write:jit-leases`. Revocation is idempotent.
+      description: Requires `tacacs:RevokeJitLease`. Revocation is idempotent.
       responses:
         '204':
           description: Lease is revoked or was already revoked

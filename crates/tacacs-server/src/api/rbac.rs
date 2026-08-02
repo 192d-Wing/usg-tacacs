@@ -44,8 +44,8 @@
 //! - **AC-3 (Access Enforcement)**: Enforces role-based permissions for
 //!   Management API endpoints.
 //!
-//! - **AC-6 (Least Privilege)**: Supports granular permissions (read:*, write:*,
-//!   read:status, etc.) enabling minimum necessary access.
+//! - **AC-6 (Least Privilege)**: Supports exact, service-scoped actions such as
+//!   `tacacs:GetStatus` and `tacacs:CreateNad`.
 //!
 //! - **AU-12 (Audit Generation)**: Permission denials are logged via tracing.
 
@@ -58,8 +58,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::warn;
+use usg_tacacs_config::management_actions;
 use uuid::Uuid;
 
 #[derive(Serialize)]
@@ -113,15 +114,44 @@ impl Default for RbacConfig {
         let mut roles = HashMap::new();
         roles.insert(
             "admin".to_string(),
-            vec!["read:*".to_string(), "write:*".to_string()],
+            management_actions::ALL
+                .iter()
+                .map(|permission| (*permission).to_owned())
+                .collect(),
         );
         roles.insert(
             "operator".to_string(),
-            vec!["read:*".to_string(), "write:sessions".to_string()],
+            [
+                management_actions::GET_STATUS,
+                management_actions::LIST_SESSIONS,
+                management_actions::DELETE_SESSION,
+                management_actions::GET_POLICY,
+                management_actions::GET_OPERATION,
+                management_actions::GET_RUNTIME_CONFIG,
+                management_actions::GET_EFFECTIVE_CONFIG,
+                management_actions::GET_CONFIG_SCHEMA,
+                management_actions::VALIDATE_CONFIG,
+                management_actions::GET_METRICS,
+                management_actions::LIST_NAD_AUDIT_EVENTS,
+                management_actions::VERIFY_NAD_AUDIT_EVENTS,
+                management_actions::LIST_NADS,
+                management_actions::LIST_NAD_INVENTORY,
+                management_actions::GET_NAD_RECONCILIATION,
+                management_actions::GET_NAD,
+                management_actions::GET_JIT_LEASE,
+                management_actions::GET_MANAGEMENT_OPEN_API,
+                management_actions::GET_JIT_OPEN_API,
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         );
         roles.insert(
             "viewer".to_string(),
-            vec!["read:status".to_string(), "read:metrics".to_string()],
+            vec![
+                management_actions::GET_STATUS.to_owned(),
+                management_actions::GET_METRICS.to_owned(),
+            ],
         );
 
         Self {
@@ -142,7 +172,13 @@ impl RbacConfig {
             }
         }
         for permissions in self.roles.values() {
-            if permissions.is_empty() || !permissions.iter().all(|value| valid_permission(value)) {
+            let unique = permissions.iter().collect::<HashSet<_>>();
+            if permissions.is_empty()
+                || unique.len() != permissions.len()
+                || !permissions
+                    .iter()
+                    .all(|value| management_actions::is_supported(value))
+            {
                 return Err("invalid_rbac_permission");
             }
         }
@@ -177,22 +213,8 @@ impl RbacConfig {
             }
         };
 
-        // Check for exact match or wildcard
-        for perm in permissions {
-            if perm == permission {
-                return true;
-            }
-
-            // Handle wildcards (e.g., "read:*" matches "read:status")
-            if perm.ends_with(":*") {
-                let prefix = &perm[..perm.len() - 1]; // "read:"
-                if permission.starts_with(prefix) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        management_actions::is_supported(permission)
+            && permissions.iter().any(|granted| granted == permission)
     }
 }
 
@@ -226,18 +248,6 @@ fn valid_identity_text(value: &str, maximum: usize) -> bool {
         && !value
             .chars()
             .any(|character| character.is_control() || character.is_whitespace())
-}
-
-fn valid_permission(value: &str) -> bool {
-    let Some((verb, resource)) = value.split_once(':') else {
-        return false;
-    };
-    matches!(verb, "read" | "write")
-        && !resource.is_empty()
-        && resource.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_*".contains(&byte)
-        })
-        && (!resource.contains('*') || resource == "*")
 }
 
 /// Middleware for RBAC permission checking.
@@ -349,7 +359,7 @@ impl RbacMiddleware {
 ///
 /// # Arguments
 /// * `config` - RBAC configuration (cloned for 'static lifetime)
-/// * `permission` - Required permission string (e.g., "read:status")
+/// * `permission` - Required permission string (e.g., `tacacs:GetStatus`)
 #[allow(clippy::type_complexity)]
 pub fn require_permission(
     config: &RbacConfig,
@@ -378,44 +388,68 @@ mod tests {
         let mut config = RbacConfig::default();
         config
             .users
-            .insert("CN=admin.tacacs.internal".to_string(), "admin".to_string());
+            .insert("cn:admin.tacacs.internal".to_string(), "admin".to_string());
 
-        assert!(config.has_permission("CN=admin.tacacs.internal", "read:status"));
-        assert!(config.has_permission("CN=admin.tacacs.internal", "write:sessions"));
-        assert!(config.has_permission("CN=admin.tacacs.internal", "read:policy"));
+        assert!(config.has_permission("cn:admin.tacacs.internal", management_actions::GET_STATUS));
+        assert!(config.has_permission(
+            "cn:admin.tacacs.internal",
+            management_actions::DELETE_SESSION
+        ));
+        assert!(config.has_permission(
+            "cn:admin.tacacs.internal",
+            management_actions::REPLACE_POLICY
+        ));
     }
 
     #[test]
     fn test_rbac_operator_limited_write() {
         let mut config = RbacConfig::default();
         config.users.insert(
-            "CN=operator.tacacs.internal".to_string(),
+            "cn:operator.tacacs.internal".to_string(),
             "operator".to_string(),
         );
 
-        assert!(config.has_permission("CN=operator.tacacs.internal", "read:status"));
-        assert!(config.has_permission("CN=operator.tacacs.internal", "write:sessions"));
-        assert!(!config.has_permission("CN=operator.tacacs.internal", "write:policy"));
+        assert!(config.has_permission(
+            "cn:operator.tacacs.internal",
+            management_actions::GET_STATUS
+        ));
+        assert!(config.has_permission(
+            "cn:operator.tacacs.internal",
+            management_actions::DELETE_SESSION
+        ));
+        assert!(!config.has_permission(
+            "cn:operator.tacacs.internal",
+            management_actions::REPLACE_POLICY
+        ));
     }
 
     #[test]
     fn test_rbac_viewer_read_only() {
         let mut config = RbacConfig::default();
         config.users.insert(
-            "CN=viewer.tacacs.internal".to_string(),
+            "cn:viewer.tacacs.internal".to_string(),
             "viewer".to_string(),
         );
 
-        assert!(config.has_permission("CN=viewer.tacacs.internal", "read:status"));
-        assert!(config.has_permission("CN=viewer.tacacs.internal", "read:metrics"));
-        assert!(!config.has_permission("CN=viewer.tacacs.internal", "read:policy"));
-        assert!(!config.has_permission("CN=viewer.tacacs.internal", "write:sessions"));
+        assert!(config.has_permission("cn:viewer.tacacs.internal", management_actions::GET_STATUS));
+        assert!(
+            config.has_permission("cn:viewer.tacacs.internal", management_actions::GET_METRICS)
+        );
+        assert!(
+            !config.has_permission("cn:viewer.tacacs.internal", management_actions::GET_POLICY)
+        );
+        assert!(!config.has_permission(
+            "cn:viewer.tacacs.internal",
+            management_actions::DELETE_SESSION
+        ));
     }
 
     #[test]
     fn test_rbac_unknown_user_denied() {
         let config = RbacConfig::default();
-        assert!(!config.has_permission("CN=unknown.tacacs.internal", "read:status"));
+        assert!(
+            !config.has_permission("cn:unknown.tacacs.internal", management_actions::GET_STATUS)
+        );
     }
 
     #[test]
@@ -427,7 +461,7 @@ mod tests {
         config
             .users
             .insert("dns:admin.example.mil".to_owned(), "admin".to_owned());
-        let middleware = RbacMiddleware::new(config, "read:status");
+        let middleware = RbacMiddleware::new(config, management_actions::GET_STATUS);
         let mut request = Request::new(Body::empty());
         request.extensions_mut().insert(TlsPeerIdentity {
             candidates: vec![
@@ -453,7 +487,7 @@ mod tests {
         config
             .users
             .insert("cn:admin.example.mil".to_owned(), "admin".to_owned());
-        let middleware = RbacMiddleware::new(config, "read:status");
+        let middleware = RbacMiddleware::new(config, management_actions::GET_STATUS);
         let mut request = Request::new(Body::empty());
         request.headers_mut().insert(
             "X-User-CN",
@@ -466,12 +500,33 @@ mod tests {
     }
 
     #[test]
-    fn rbac_validation_rejects_broad_or_malformed_wildcards() {
+    fn rbac_validation_rejects_wildcards_and_unknown_actions() {
         let mut config = RbacConfig::default();
         config.roles.insert(
             "bad".to_owned(),
-            vec!["read:status*".to_owned(), "admin".to_owned()],
+            vec!["tacacs:*".to_owned(), "tacacs:GteNad".to_owned()],
         );
         assert_eq!(config.validate(), Err("invalid_rbac_permission"));
+    }
+
+    #[test]
+    fn one_nad_action_does_not_authorize_an_adjacent_action() {
+        let mut config = RbacConfig::default();
+        config.roles.insert(
+            "nad-reader".to_owned(),
+            vec![management_actions::GET_NAD.to_owned()],
+        );
+        config.users.insert(
+            "cn:nad-reader.example.mil".to_owned(),
+            "nad-reader".to_owned(),
+        );
+
+        assert!(config.has_permission("cn:nad-reader.example.mil", management_actions::GET_NAD));
+        assert!(
+            !config.has_permission("cn:nad-reader.example.mil", management_actions::CREATE_NAD)
+        );
+        assert!(
+            !config.has_permission("cn:nad-reader.example.mil", management_actions::DELETE_NAD)
+        );
     }
 }
