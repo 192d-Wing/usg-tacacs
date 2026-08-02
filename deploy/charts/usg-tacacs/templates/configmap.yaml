@@ -53,11 +53,37 @@ spec:
       roles:
         admin:
           description: Full TACACS management access
-          permissions: ["read:*", "write:*"]
+          permissions:
+            - tacacs:ListNadAuditEvents
+            - tacacs:VerifyNadAuditEvents
+            - tacacs:ListNads
+            - tacacs:CreateNad
+            - tacacs:ListNadInventory
+            - tacacs:GetNadReconciliation
+            - tacacs:GetNad
+            - tacacs:UpdateNad
+            - tacacs:DeleteNad
+            - tacacs:GetStatus
+            - tacacs:ListSessions
+            - tacacs:DeleteSession
+            - tacacs:GetPolicy
+            - tacacs:ReplacePolicy
+            - tacacs:ReloadPolicy
+            - tacacs:GetOperation
+            - tacacs:GetRuntimeConfig
+            - tacacs:GetEffectiveConfig
+            - tacacs:GetConfigSchema
+            - tacacs:ValidateConfig
+            - tacacs:GetMetrics
+            - tacacs:CreateJitLease
+            - tacacs:GetJitLease
+            - tacacs:RevokeJitLease
+            - tacacs:GetManagementOpenApi
+            - tacacs:GetJitOpenApi
         jitpw-issuer:
-          permissions: ["write:jit-leases"]
+          permissions: ["tacacs:CreateJitLease", "tacacs:RevokeJitLease"]
         jitpw-auditor:
-          permissions: ["read:jit-leases"]
+          permissions: ["tacacs:GetJitLease"]
       subjects:
         {{- toYaml $root.Values.management.subjects | nindent 8 }}
   {{- end }}

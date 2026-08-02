@@ -65,8 +65,21 @@ require_rendered 'certificateFile: /run/tls/dataplane/tls.crt' \
     "the standard data-plane certificate path"
 require_rendered 'clientCaFile: /run/trust/dataplane-client/ca.crt' \
     "the separate data-plane client trust path"
+require_rendered 'tacacs:ListNads' "the NAD collection action"
+require_rendered 'tacacs:GetNad' "the single-NAD action"
+require_rendered 'tacacs:CreateNad' "the NAD creation action"
+require_rendered 'tacacs:UpdateNad' "the NAD update action"
+require_rendered 'tacacs:DeleteNad' "the NAD deletion action"
+require_rendered 'tacacs:CreateJitLease' "the JIT lease creation action"
+require_rendered 'tacacs:GetJitLease' "the JIT lease read action"
+require_rendered 'tacacs:RevokeJitLease' "the JIT lease revocation action"
 
-certificate_count="$(grep -c '^kind: Certificate$' "$rendered")"
+if grep -Eq 'permissions:.*\*|-[[:space:]]+(read|write):' "$rendered"; then
+    echo "FAIL: rendered chart contains a wildcard or legacy permission" >&2
+    exit 1
+fi
+
+certificate_count="$(grep -Ec '^kind: Certificate[[:space:]]*$' "$rendered")"
 if [[ "$certificate_count" -ne 3 ]]; then
     echo "FAIL: expected 3 Certificate resources, found $certificate_count" >&2
     exit 1
@@ -74,7 +87,7 @@ fi
 
 helm template chart-security-test "$chart" --values "$values" \
     --set pki.enabled=false >"$without_pki"
-if grep -q '^kind: Certificate$' "$without_pki"; then
+if grep -Eq '^kind: Certificate[[:space:]]*$' "$without_pki"; then
     echo "FAIL: chart rendered Certificate resources while pki.enabled=false" >&2
     exit 1
 fi
