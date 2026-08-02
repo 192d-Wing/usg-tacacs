@@ -7,17 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.0] - 2026-08-02
+
 ### Added
 
 - Added optional Helm-managed cert-manager `Certificate` resources for the
   management API, TACACS-over-TLS data plane, and UI Ingress, issued through a
   namespace-scoped `pki.usg.mil/EstIssuer`.
+- Added optional namespace-scoped `EstIssuer` management for TACACS workload
+  certificate enrollment.
+- Added the repository-owned CloudNativePG chart with persistent storage,
+  certificate-validated PostgreSQL TLS, separate migration and runtime
+  identities, bounded schema migrations, and scoped NetworkPolicies.
+- Added 26 exact `tacacs:{Action}{Object}` authorization controls, including
+  distinct List and Get operations, machine-readable OpenAPI requirements,
+  route-isolation tests, and an administrator action catalog.
 
 ### Changed
 
 - Separated server TLS Secrets from management-client, NAD-client, and
   PostgreSQL trust bundles, and adopted the standard `tls.crt` and `tls.key`
   Secret keys.
+- Hardened the TACACS chart for dual-stack k3s deployments with source-IP
+  preserving legacy TACACS LoadBalancer traffic and narrow management,
+  PostgreSQL, DNS, and NAD network paths.
+- **Breaking management RBAC change:** roles must enumerate supported exact
+  actions. Legacy `read:*`, `write:*`, and resource-group permissions are no
+  longer accepted.
+
+### Security
+
+- Removed wildcard authorization matching so permission to one API operation
+  cannot authorize an adjacent read, mutation, or audit operation.
+- Restricted the PostgreSQL runtime identity from schema changes, ownership,
+  role management, truncation, and destructive privileges while retaining a
+  separate migration identity.
+- Updated `event-listener` to 5.4.2 to address `RUSTSEC-2026-0221`, which could
+  allow a non-`Send` event tag to cross thread boundaries.
 
 ## [0.82.4] - 2026-07-27
 
