@@ -8,6 +8,9 @@ The USG TACACS Management API administers TACACS runtime state. It is separate
 from the JITPW user API. The management workload serves the OpenAPI 3.1.1
 contract and Swagger UI on the same TLS 1.3 mTLS origin.
 
+See [Authorization controls](authorization-controls.md) for the complete action
+catalog and decision attributes.
+
 ## Security
 
 Production startup requires a server certificate, private key, client CA, TLS

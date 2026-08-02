@@ -195,6 +195,8 @@ general Management API administrator privileges. See
 
 ## Related guides
 
+- [Authorization controls](authorization-controls.md)
+- [Management API](management-api.md)
 - [Configuration reference](../config.md)
 - [TLS setup](../tls.md)
 - [Security hardening](security.md)
