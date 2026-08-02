@@ -92,7 +92,8 @@ This document maps the security controls implemented in **usg-tacacs** (a produc
 | **Configuration** | RBAC roles (admin, operator, viewer), systemd security directives |
 
 **Evidence:**
-- Permission model: `read:*`, `write:*`, `read:status`, etc.
+- Permission model: exact service-scoped actions such as `tacacs:GetStatus`
+  and `tacacs:CreateNad`; wildcards are rejected.
 - User-to-role mapping via TLS client certificate CN/SAN
 - Process runs without root privileges
 - Capability bounding set dropped via systemd

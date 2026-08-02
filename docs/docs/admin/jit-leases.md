@@ -17,7 +17,8 @@ verifiers. Passwords are never returned by the API or written to audit.
 - TLS NAD identity comes from its client certificate.
 - Legacy NAD identity requires an exact source mapping and unique secret.
 - JITPW and TACACS communicate over the mTLS management listener.
-- The issuer receives only `write:jit-leases`.
+- The issuer receives only `tacacs:CreateJitLease` and
+  `tacacs:RevokeJitLease`.
 
 ## Typed configuration
 
@@ -39,9 +40,9 @@ management:
   rbac:
     roles:
       jitpw-issuer:
-        permissions: [write:jit-leases]
+        permissions: [tacacs:CreateJitLease, tacacs:RevokeJitLease]
       jitpw-auditor:
-        permissions: [read:jit-leases]
+        permissions: [tacacs:GetJitLease]
     subjects:
       - certificateIdentity: dns:jitpw-api.jitpw-system.svc
         role: jitpw-issuer
@@ -71,9 +72,9 @@ on the management origin. Operations are:
 
 | Method | Path | Permission |
 | --- | --- | --- |
-| `POST` | `/api/v1/jit-leases` | `write:jit-leases` |
-| `GET` | `/api/v1/jit-leases/{lease_id}` | `read:jit-leases` |
-| `DELETE` | `/api/v1/jit-leases/{lease_id}` | `write:jit-leases` |
+| `POST` | `/api/v1/jit-leases` | `tacacs:CreateJitLease` |
+| `GET` | `/api/v1/jit-leases/{lease_id}` | `tacacs:GetJitLease` |
+| `DELETE` | `/api/v1/jit-leases/{lease_id}` | `tacacs:RevokeJitLease` |
 
 Creation requires `Idempotency-Key` and `X-Correlation-ID`. Proxies, service
 meshes, APM, and request loggers must not capture create bodies.

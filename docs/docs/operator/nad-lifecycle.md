@@ -19,7 +19,8 @@ lifecycle management. Do not define the same NAD in both stores.
 2. For a legacy NAD, generate a unique shared secret in the approved secret
    manager and mount it at the path represented by the API's opaque
    `secretRef`. Never include the secret value in the request.
-3. Submit `POST /api/mgmt/v1/nads` using an mTLS identity with `write:nads`.
+3. Submit `POST /api/mgmt/v1/nads` using an mTLS identity with
+   `tacacs:CreateNad`.
 4. Record the resource ID, ETag, actor, correlation ID, and audit event.
 5. Poll reconciliation until the resource is applied or returns a stable
    failure.

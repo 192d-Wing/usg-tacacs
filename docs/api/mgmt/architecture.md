@@ -49,8 +49,9 @@ The version-controlled OpenAPI 3.1.1 contract is
 - Swagger UI: `/api/docs/mgmt`
 - OpenAPI YAML: `/api/docs/mgmt/openapi.yaml`
 
-Both endpoints are protected by mTLS and the `read:config` RBAC permission.
-The contract deliberately excludes JIT lease operations.
+Both endpoints are protected by mTLS. The UI and YAML document require
+`tacacs:GetManagementOpenApi`. The contract deliberately excludes JIT lease
+operations.
 
 Release security gates are tracked in
 [`adversarial-test-matrix.md`](adversarial-test-matrix.md). Deterministic
@@ -78,8 +79,10 @@ operations:
 - `GET /api/mgmt/v1/config/effective` returns the active declarative document,
   its SHA-256 content hash, and explicit immutable YAML ownership metadata.
 
-These operations require `read:config`. They never rewrite the source file or
-a mounted ConfigMap. The effective view contains secret references only; the
+These operations require `tacacs:GetRuntimeConfig`,
+`tacacs:GetEffectiveConfig`, `tacacs:GetConfigSchema`, and
+`tacacs:ValidateConfig`, respectively. They never rewrite the source file or a
+mounted ConfigMap. The effective view contains secret references only; the
 service never reads referenced secret contents to populate an API response.
 
 Policy reload is asynchronous. `POST /policy/reload` returns an operation
@@ -144,9 +147,10 @@ event containing the certificate actor, UUID correlation identifier, before
 and after state, and resource version. Database triggers reject updates and
 deletes against the audit table.
 
-The evidence log is readable through `GET /api/mgmt/v1/audit/nads` with the
-dedicated `read:audit` permission. Reads are chronological, bounded to 200
-events, and filterable by NAD, correlation identifier, or action. Evidence
+The evidence log is readable through `GET /api/mgmt/v1/audit/nads` with
+`tacacs:ListNadAuditEvents`; chain verification requires
+`tacacs:VerifyNadAuditEvents`. Reads are chronological, bounded to 200 events,
+and filterable by NAD, correlation identifier, or action. Evidence
 includes the chain hashes and HMAC output, but never the HMAC key or resolved
 TACACS secret material.
 
@@ -171,15 +175,17 @@ historical evidence.
 
 The management API exposes:
 
-- `GET /api/mgmt/v1/nads` and `GET /api/mgmt/v1/nads/{nadId}` with `read:nads`;
-- `GET /api/mgmt/v1/nads/inventory` with `read:nads` for the unified YAML and
-  API-owned view;
-- `GET /api/mgmt/v1/nads/reconciliation` with `read:nads` for bounded,
-  optionally state-filtered runtime status and aggregate health counts;
-- `POST /api/mgmt/v1/nads` with `write:nads`, `X-Correlation-ID`, and
+- `GET /api/mgmt/v1/nads` with `tacacs:ListNads` and
+  `GET /api/mgmt/v1/nads/{nadId}` with `tacacs:GetNad`;
+- `GET /api/mgmt/v1/nads/inventory` with `tacacs:ListNadInventory` for the
+  unified YAML and API-owned view;
+- `GET /api/mgmt/v1/nads/reconciliation` with
+  `tacacs:GetNadReconciliation` for bounded, optionally state-filtered runtime
+  status and aggregate health counts;
+- `POST /api/mgmt/v1/nads` with `tacacs:CreateNad`, `X-Correlation-ID`, and
   `Idempotency-Key`;
-- `PATCH /api/mgmt/v1/nads/{nadId}` and
-  `DELETE /api/mgmt/v1/nads/{nadId}` with `write:nads`,
+- `PATCH /api/mgmt/v1/nads/{nadId}` with `tacacs:UpdateNad` and
+  `DELETE /api/mgmt/v1/nads/{nadId}` with `tacacs:DeleteNad`,
   `X-Correlation-ID`, and the current `If-Match` ETag.
 
 Creation returns `201 Created`; replaying the same idempotency key and request

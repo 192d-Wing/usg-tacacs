@@ -55,7 +55,8 @@ The Redis record contains only the verifier and lease metadata.
 
 1. TLS 1.3 and a validated client certificate are mandatory for the management
    API in production.
-2. `write:jit-leases` and `read:jit-leases` are distinct RBAC permissions.
+2. `tacacs:CreateJitLease`, `tacacs:GetJitLease`, and
+   `tacacs:RevokeJitLease` are distinct RBAC actions.
 3. EIDs are lowercase ASCII and match `^[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?$`.
 4. Lease lifetime is positive and no greater than 900 seconds.
 5. One active lease may exist for an `(eid, nad_identity)` pair. An idempotent

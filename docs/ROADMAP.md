@@ -808,13 +808,13 @@ Add REST API to `tacacs-server` for runtime management:
 
 | Endpoint                | Method | Permission       | Description              |
 | ----------------------- | ------ | ---------------- | ------------------------ |
-| `/api/v1/status`        | GET    | `read:status`    | Server health and stats  |
-| `/api/v1/sessions`      | GET    | `read:sessions`  | Active sessions list     |
-| `/api/v1/sessions/{id}` | DELETE | `write:sessions` | Terminate session        |
-| `/api/v1/policy`        | GET    | `read:policy`    | Current policy           |
-| `/api/v1/policy/reload` | POST   | `write:policy`   | Trigger hot reload       |
-| `/api/v1/config`        | GET    | `read:config`    | Running config (sanitized) |
-| `/api/v1/metrics`       | GET    | `read:metrics`   | Prometheus metrics       |
+| `/api/v1/status`        | GET    | `tacacs:GetStatus`    | Server health and stats  |
+| `/api/v1/sessions`      | GET    | `tacacs:ListSessions`  | Active sessions list     |
+| `/api/v1/sessions/{id}` | DELETE | `tacacs:DeleteSession` | Terminate session        |
+| `/api/v1/policy`        | GET    | `tacacs:GetPolicy`     | Current policy           |
+| `/api/v1/policy/reload` | POST   | `tacacs:ReloadPolicy`  | Trigger hot reload       |
+| `/api/v1/config`        | GET    | `tacacs:GetRuntimeConfig` | Running config (sanitized) |
+| `/api/v1/metrics`       | GET    | `tacacs:GetMetrics`    | Prometheus metrics       |
 
 **RBAC Configuration**:
 
@@ -827,9 +827,9 @@ Add REST API to `tacacs-server` for runtime management:
     "tls_key": "/etc/tacacs/api-key.pem",
     "rbac": {
       "roles": {
-        "admin": ["read:*", "write:*"],
-        "operator": ["read:*", "write:sessions"],
-        "viewer": ["read:status", "read:metrics"]
+        "admin": ["tacacs:GetStatus", "tacacs:ListSessions", "tacacs:DeleteSession"],
+        "operator": ["tacacs:GetStatus", "tacacs:ListSessions", "tacacs:DeleteSession"],
+        "viewer": ["tacacs:GetStatus", "tacacs:GetMetrics"]
       },
       "users": {
         "CN=admin.tacacs.internal": "admin",
@@ -844,7 +844,7 @@ Add REST API to `tacacs-server` for runtime management:
 
 - ✅ All 7 API endpoints implemented with proper HTTP handlers
 - ✅ RBAC system with three default roles (`admin`, `operator`, `viewer`)
-- ✅ Wildcard permission matching (`read:*`, `write:*`)
+- ✅ Exact service-scoped action matching with wildcard rejection
 - ✅ User-to-role mapping via client certificate CN (X-User-CN header)
 - ✅ RBAC configuration loading from JSON file or defaults
 - ✅ Integration with main server startup (`--api-enabled`, `--api-listen`)
@@ -873,9 +873,9 @@ Add REST API to `tacacs-server` for runtime management:
 ```json
 {
   "roles": {
-    "admin": ["read:*", "write:*"],
-    "operator": ["read:*", "write:sessions"],
-    "viewer": ["read:status", "read:metrics"]
+    "admin": ["tacacs:GetStatus", "tacacs:ListSessions", "tacacs:DeleteSession"],
+    "operator": ["tacacs:GetStatus", "tacacs:ListSessions", "tacacs:DeleteSession"],
+    "viewer": ["tacacs:GetStatus", "tacacs:GetMetrics"]
   },
   "users": {
     "CN=admin.tacacs.internal": "admin",

@@ -628,9 +628,9 @@ if !creds.contains_key(user) {
 | `crates/tacacs-server/src/api/handlers.rs` | 327-488 | Policy reload API |
 
 **Management Functions:**
-- Policy reload (requires `write:policy` permission)
+- Policy reload (requires `tacacs:ReloadPolicy` permission)
 - Configuration validation
-- Session termination (requires `write:sessions` permission)
+- Session termination (requires `tacacs:DeleteSession` permission)
 
 **NIST Controls:** CM-3, AC-3
 
@@ -677,12 +677,12 @@ if !creds.contains_key(user) {
 |----------|--------|------------|-------------|
 | `/health` | GET | None | Health check |
 | `/ready` | GET | None | Readiness probe |
-| `/metrics` | GET | `read:metrics` | Prometheus metrics |
-| `/api/v1/sessions` | GET | `read:sessions` | List active sessions |
-| `/api/v1/sessions/:id` | DELETE | `write:sessions` | Terminate session |
-| `/api/v1/policy/reload` | POST | `write:policy` | Reload policy |
-| `/api/v1/policy` | POST | `write:policy` | Upload new policy |
-| `/api/v1/config` | GET | `read:config` | View configuration |
+| `/metrics` | GET | `tacacs:GetMetrics` | Prometheus metrics |
+| `/api/v1/sessions` | GET | `tacacs:ListSessions` | List active sessions |
+| `/api/v1/sessions/:id` | DELETE | `tacacs:DeleteSession` | Terminate session |
+| `/api/v1/policy/reload` | POST | `tacacs:ReloadPolicy` | Reload policy |
+| `/api/v1/policy` | POST | `tacacs:ReplacePolicy` | Upload new policy |
+| `/api/v1/config` | GET | `tacacs:GetRuntimeConfig` | View configuration |
 
 **NIST Controls:** CM-2, CM-3, SI-4
 
@@ -704,9 +704,9 @@ if !creds.contains_key(user) {
 
 | Role | Permissions | Use Case |
 |------|-------------|----------|
-| `admin` | `read:*`, `write:*` | Full administrative access |
-| `operator` | `read:*`, `write:sessions` | Session management only |
-| `viewer` | `read:status`, `read:metrics` | Read-only monitoring |
+| `admin` | Every explicitly enumerated `tacacs:*` action | Full administrative access |
+| `operator` | Explicit read actions plus `tacacs:DeleteSession` | Session management only |
+| `viewer` | `tacacs:GetStatus`, `tacacs:GetMetrics` | Read-only monitoring |
 
 **Role Assignment:**
 - User-to-role mapping in RBAC config file

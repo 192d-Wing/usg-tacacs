@@ -24,9 +24,14 @@ management:
   rbac:
     roles:
       nad-automation:
-        permissions: [read:nads, write:nads]
+        permissions:
+          - tacacs:ListNads
+          - tacacs:GetNad
+          - tacacs:CreateNad
+          - tacacs:UpdateNad
+          - tacacs:DeleteNad
       forensic-reader:
-        permissions: [read:audit]
+        permissions: [tacacs:ListNadAuditEvents, tacacs:VerifyNadAuditEvents]
     subjects:
       - certificateIdentity: uri:spiffe://example.mil/tacacs/nad-automation
         role: nad-automation
@@ -35,6 +40,11 @@ management:
 Supported identity selectors are `cn:`, `dns:`, `email:`, and `uri:`. Exactly
 one configured selector must match the validated certificate. Runtime requests
 cannot assert identity through a header.
+
+Permissions are exact `tacacs:{Action}{Object}` strings. They do not imply
+adjacent actions: `tacacs:ListNads` does not grant `tacacs:GetNad`, and neither
+grants create, update, or delete. Wildcards and unknown actions are rejected
+when configuration is validated.
 
 Use TCP passthrough if a load balancer is required. Restrict the Service with
 NetworkPolicy in addition to mTLS and RBAC.
@@ -53,26 +63,26 @@ The repository contracts are:
 
 ## Configuration inspection
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/api/mgmt/v1/config/validate` | Dry-run typed YAML validation |
-| `GET` | `/api/mgmt/v1/config/schema` | Typed configuration schema |
-| `GET` | `/api/mgmt/v1/config/effective` | Effective declarative config and hash |
+| Method | Path | Action | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/mgmt/v1/config/validate` | `tacacs:ValidateConfig` | Dry-run typed YAML validation |
+| `GET` | `/api/mgmt/v1/config/schema` | `tacacs:GetConfigSchema` | Typed configuration schema |
+| `GET` | `/api/mgmt/v1/config/effective` | `tacacs:GetEffectiveConfig` | Effective declarative config and hash |
 
 Validation does not resolve secret contents. Effective configuration may show
 file references but never returns file contents.
 
 ## NAD lifecycle
 
-| Method | Path | Control |
-| --- | --- | --- |
-| `GET` | `/api/mgmt/v1/nads` | Paginated API-owned NADs |
-| `GET` | `/api/mgmt/v1/nads/inventory` | YAML and API inventory |
-| `GET` | `/api/mgmt/v1/nads/reconciliation` | Applied/failure state |
-| `GET` | `/api/mgmt/v1/nads/{nadId}` | One API-owned NAD |
-| `POST` | `/api/mgmt/v1/nads` | `Idempotency-Key` |
-| `PATCH` | `/api/mgmt/v1/nads/{nadId}` | Current `If-Match` ETag |
-| `DELETE` | `/api/mgmt/v1/nads/{nadId}` | Current `If-Match` ETag |
+| Method | Path | Action | Control |
+| --- | --- | --- | --- |
+| `GET` | `/api/mgmt/v1/nads` | `tacacs:ListNads` | Paginated API-owned NADs |
+| `GET` | `/api/mgmt/v1/nads/inventory` | `tacacs:ListNadInventory` | YAML and API inventory |
+| `GET` | `/api/mgmt/v1/nads/reconciliation` | `tacacs:GetNadReconciliation` | Applied/failure state |
+| `GET` | `/api/mgmt/v1/nads/{nadId}` | `tacacs:GetNad` | One API-owned NAD |
+| `POST` | `/api/mgmt/v1/nads` | `tacacs:CreateNad` | `Idempotency-Key` |
+| `PATCH` | `/api/mgmt/v1/nads/{nadId}` | `tacacs:UpdateNad` | Current `If-Match` ETag |
+| `DELETE` | `/api/mgmt/v1/nads/{nadId}` | `tacacs:DeleteNad` | Current `If-Match` ETag |
 
 Mutations require a UUID `X-Correlation-ID`. Legacy NAD requests contain an
 opaque `secretRef`, never the secret value.
