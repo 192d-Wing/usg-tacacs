@@ -18,7 +18,7 @@ clap.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
-x509-cert = { version = "0.2", features = ["pem"] }
+x509-cert = { version = "0.3", features = ["pem"] }
 usg-tacacs-policy.workspace = true
 usg-tacacs-proto.workspace = true
 usg-tacacs-secrets.workspace = true
