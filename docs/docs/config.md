@@ -136,7 +136,12 @@ management:
     roles:
       nad-automation:
         description: NAD lifecycle automation
-        permissions: [read:nads, write:nads]
+        permissions:
+          - tacacs:ListNads
+          - tacacs:GetNad
+          - tacacs:CreateNad
+          - tacacs:UpdateNad
+          - tacacs:DeleteNad
     subjects:
       - certificateIdentity: uri:spiffe://example.mil/tacacs/nad-automation
         role: nad-automation

@@ -60,6 +60,11 @@ spec:
         - name: tacacs
           image: {{ include "usg-tacacs.image" $ | quote }}
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          env:
+            - name: JIT_MANAGED_NADS
+              value: {{ include "usg-tacacs.managedNads" $ | quote }}
+            - name: JIT_LEGACY_NADS
+              value: {{ include "usg-tacacs.legacyNads" $ | quote }}
           args: ["--config", "/etc/usg-tacacs/server.yaml", "--log-format", "json"]
           ports:
             {{- if eq $role "management" }}

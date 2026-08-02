@@ -12,6 +12,70 @@ pub const API_VERSION: &str = "tacacs.usg.mil/v1alpha1";
 pub const KIND: &str = "TacacsServer";
 pub const MAX_JIT_TTL_SECONDS: u64 = 900;
 
+/// Stable, service-scoped authorization actions for the HTTP APIs.
+/// Permissions are an exact allow-list so new endpoints require explicit grants.
+pub mod management_actions {
+    pub const LIST_NAD_AUDIT_EVENTS: &str = "tacacs:ListNadAuditEvents";
+    pub const VERIFY_NAD_AUDIT_EVENTS: &str = "tacacs:VerifyNadAuditEvents";
+    pub const LIST_NADS: &str = "tacacs:ListNads";
+    pub const CREATE_NAD: &str = "tacacs:CreateNad";
+    pub const LIST_NAD_INVENTORY: &str = "tacacs:ListNadInventory";
+    pub const GET_NAD_RECONCILIATION: &str = "tacacs:GetNadReconciliation";
+    pub const GET_NAD: &str = "tacacs:GetNad";
+    pub const UPDATE_NAD: &str = "tacacs:UpdateNad";
+    pub const DELETE_NAD: &str = "tacacs:DeleteNad";
+    pub const GET_STATUS: &str = "tacacs:GetStatus";
+    pub const LIST_SESSIONS: &str = "tacacs:ListSessions";
+    pub const DELETE_SESSION: &str = "tacacs:DeleteSession";
+    pub const GET_POLICY: &str = "tacacs:GetPolicy";
+    pub const REPLACE_POLICY: &str = "tacacs:ReplacePolicy";
+    pub const RELOAD_POLICY: &str = "tacacs:ReloadPolicy";
+    pub const GET_OPERATION: &str = "tacacs:GetOperation";
+    pub const GET_RUNTIME_CONFIG: &str = "tacacs:GetRuntimeConfig";
+    pub const GET_EFFECTIVE_CONFIG: &str = "tacacs:GetEffectiveConfig";
+    pub const GET_CONFIG_SCHEMA: &str = "tacacs:GetConfigSchema";
+    pub const VALIDATE_CONFIG: &str = "tacacs:ValidateConfig";
+    pub const GET_METRICS: &str = "tacacs:GetMetrics";
+    pub const CREATE_JIT_LEASE: &str = "tacacs:CreateJitLease";
+    pub const GET_JIT_LEASE: &str = "tacacs:GetJitLease";
+    pub const REVOKE_JIT_LEASE: &str = "tacacs:RevokeJitLease";
+    pub const GET_MANAGEMENT_OPEN_API: &str = "tacacs:GetManagementOpenApi";
+    pub const GET_JIT_OPEN_API: &str = "tacacs:GetJitOpenApi";
+
+    pub const ALL: &[&str] = &[
+        LIST_NAD_AUDIT_EVENTS,
+        VERIFY_NAD_AUDIT_EVENTS,
+        LIST_NADS,
+        CREATE_NAD,
+        LIST_NAD_INVENTORY,
+        GET_NAD_RECONCILIATION,
+        GET_NAD,
+        UPDATE_NAD,
+        DELETE_NAD,
+        GET_STATUS,
+        LIST_SESSIONS,
+        DELETE_SESSION,
+        GET_POLICY,
+        REPLACE_POLICY,
+        RELOAD_POLICY,
+        GET_OPERATION,
+        GET_RUNTIME_CONFIG,
+        GET_EFFECTIVE_CONFIG,
+        GET_CONFIG_SCHEMA,
+        VALIDATE_CONFIG,
+        GET_METRICS,
+        CREATE_JIT_LEASE,
+        GET_JIT_LEASE,
+        REVOKE_JIT_LEASE,
+        GET_MANAGEMENT_OPEN_API,
+        GET_JIT_OPEN_API,
+    ];
+
+    pub fn is_supported(value: &str) -> bool {
+        ALL.contains(&value)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerConfiguration {
@@ -337,6 +401,15 @@ fn validate_rbac(rbac: &Rbac) -> Result<()> {
         if role.permissions.is_empty() {
             bail!("RBAC role {name} must contain at least one permission");
         }
+        let mut permissions = HashSet::new();
+        for permission in &role.permissions {
+            if !management_actions::is_supported(permission) {
+                bail!("RBAC role {name} contains unsupported permission: {permission}");
+            }
+            if !permissions.insert(permission) {
+                bail!("RBAC role {name} contains duplicate permission: {permission}");
+            }
+        }
     }
     Ok(())
 }
@@ -439,6 +512,43 @@ mod tests {
         config.spec.role = ServerRole::Legacy;
         config.spec.listeners.legacy = Some("0.0.0.0:49".parse().unwrap());
         config.spec.listeners.tls = Some(config.spec.management.take().unwrap().listener);
+        assert!(config.validate(false).is_err());
+    }
+
+    #[test]
+    fn rbac_rejects_wildcard_and_unknown_actions() {
+        for permission in ["tacacs:*", "tacacs:GteNad", "read:nads"] {
+            let mut config = management_example();
+            config
+                .spec
+                .management
+                .as_mut()
+                .unwrap()
+                .rbac
+                .roles
+                .get_mut("viewer")
+                .unwrap()
+                .permissions = vec![permission.to_owned()];
+            assert!(config.validate(false).is_err(), "accepted {permission}");
+        }
+    }
+
+    #[test]
+    fn rbac_rejects_duplicate_actions() {
+        let mut config = management_example();
+        let viewer = config
+            .spec
+            .management
+            .as_mut()
+            .unwrap()
+            .rbac
+            .roles
+            .get_mut("viewer")
+            .unwrap();
+        viewer.permissions = vec![
+            management_actions::GET_STATUS.to_owned(),
+            management_actions::GET_STATUS.to_owned(),
+        ];
         assert!(config.validate(false).is_err());
     }
 }

@@ -97,8 +97,9 @@ These are separate controls:
   use Management API operations.
 
 Use typed certificate selectors (`cn:`, `dns:`, `email:`, or `uri:`). Grant
-automation only the permissions it requires. NAD automation normally needs
-`read:nads` and/or `write:nads`; forensic export requires `read:audit`.
+automation only the exact actions it requires. For example, read-only NAD
+inventory can use `tacacs:ListNads` and `tacacs:GetNad`, while forensic export
+uses `tacacs:ListNadAuditEvents` and `tacacs:VerifyNadAuditEvents`.
 
 See [Policy](../policy.md) and
 [Management API](management-api.md) for the complete formats and permissions.
@@ -194,6 +195,8 @@ general Management API administrator privileges. See
 
 ## Related guides
 
+- [Authorization controls](authorization-controls.md)
+- [Management API](management-api.md)
 - [Configuration reference](../config.md)
 - [TLS setup](../tls.md)
 - [Security hardening](security.md)

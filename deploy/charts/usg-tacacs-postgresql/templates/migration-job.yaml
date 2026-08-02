@@ -43,12 +43,29 @@ spec:
               if [ "$(psql --no-psqlrc --tuples-only --no-align --command="SELECT to_regclass('jitpw.jit_leases') IS NOT NULL")" != "t" ]; then
                 psql --no-psqlrc --set=ON_ERROR_STOP=1 --file=/migrations/0001_jit_leases.sql
               fi
+              if [ "$(psql --no-psqlrc --tuples-only --no-align --command="SELECT to_regclass('tacacs_management.nads') IS NOT NULL")" != "t" ]; then
+                psql --no-psqlrc --set=ON_ERROR_STOP=1 --file=/migrations/0002_management_nads.sql
+              fi
+              if [ "$(psql --no-psqlrc --tuples-only --no-align --command="SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'tacacs_management' AND table_name = 'nad_audit_events' AND column_name = 'hash_version')")" != "t" ]; then
+                psql --no-psqlrc --set=ON_ERROR_STOP=1 --file=/migrations/0003_nad_audit_hash_v2.sql
+              fi
+              if [ "$(psql --no-psqlrc --tuples-only --no-align --command="SELECT to_regclass('tacacs_management.operations') IS NOT NULL")" != "t" ]; then
+                psql --no-psqlrc --set=ON_ERROR_STOP=1 --file=/migrations/0004_management_operations.sql
+              fi
               psql --no-psqlrc --set=ON_ERROR_STOP=1 \
-                --set=runtime_role="$RUNTIME_ROLE" <<'SQL'
+                --set=database="$PGDATABASE" --set=runtime_role="$RUNTIME_ROLE" <<'SQL'
+              REVOKE ALL ON DATABASE :"database" FROM PUBLIC;
+              GRANT CONNECT ON DATABASE :"database" TO :"runtime_role";
+              REVOKE CREATE ON SCHEMA public FROM PUBLIC;
               REVOKE ALL ON SCHEMA jitpw FROM PUBLIC;
               REVOKE ALL ON TABLE jitpw.jit_leases FROM PUBLIC;
               GRANT USAGE ON SCHEMA jitpw TO :"runtime_role";
               GRANT SELECT, INSERT, UPDATE ON TABLE jitpw.jit_leases TO :"runtime_role";
+              REVOKE ALL ON SCHEMA tacacs_management FROM PUBLIC;
+              REVOKE ALL ON ALL TABLES IN SCHEMA tacacs_management FROM PUBLIC;
+              REVOKE ALL ON ALL FUNCTIONS IN SCHEMA tacacs_management FROM PUBLIC;
+              GRANT USAGE ON SCHEMA tacacs_management TO :"runtime_role";
+              GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA tacacs_management TO :"runtime_role";
               SQL
               rm -f /tmp/pgpass
           env:

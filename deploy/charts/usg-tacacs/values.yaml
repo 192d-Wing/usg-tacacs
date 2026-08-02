@@ -92,7 +92,11 @@ service:
   type: LoadBalancer
   legacyLoadBalancerIP: ""
   tlsLoadBalancerIP: ""
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv4]
+  labels: {}
   annotations: {}
+  loadBalancerAnnotations: {}
 
 management:
   subjects:
@@ -109,6 +113,11 @@ authorization:
 
 networkPolicy:
   enabled: true
+  postgresClusterName: tacacs-db
+  dns:
+    namespace: kube-system
+    podLabels:
+      k8s-app: kube-dns
   managementPeers:
     - namespace: jitpw-system
       podLabels:
